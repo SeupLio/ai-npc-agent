@@ -17,11 +17,9 @@ import argparse
 import sys
 from typing import Optional
 
-from .agent import NPCAgent
-from .config import RuntimeConfig, list_scenarios, load_persona, load_scenario
-from .env.star_isle import StarIsleEnv
+from .cast import Cast, build_cast, load_cast
+from .config import RuntimeConfig, list_scenarios, load_scenario
 from .llm import build_llm
-from .modules.persona import Persona
 
 # 每个场景配一段固定的演示脚本，保证 Demo 可复现（录屏/截图用）
 DEMO_SCRIPTS: dict[str, list[Optional[tuple[str, str]]]] = {
@@ -55,11 +53,25 @@ DEMO_SCRIPTS: dict[str, list[Optional[tuple[str, str]]]] = {
         None,
         None,
     ],
+    # 双 NPC：前两轮分别由两位客人起话头，让两个 NPC 都有机会开工；
+    # 后面留空轮给阿柚把饮品做完 —— 她的计划比小舟长，需要更多轮。
+    "duet": [
+        ("player_a", "今天这里挺热闹的。"),
+        ("player_b", "露台那边好像有风。"),
+        None,
+        None,
+        None,
+    ],
 }
 
 
 # --------------------------------------------------------------------------- #
 def _build(args: argparse.Namespace):
+    """造出场景 + 剧组。
+
+    场景里写 npc: 还是 npcs: 对这里是同一件事 —— 单 NPC 只是"剧组只有一个人"，
+    所以 demo / chat / tools / info 全都不用分叉。
+    """
     cfg = RuntimeConfig.from_env()
     if getattr(args, "provider", None):
         cfg.llm_provider = args.provider
@@ -71,15 +83,18 @@ def _build(args: argparse.Namespace):
         cfg.api_key = args.api_key
     cfg.verbose = bool(getattr(args, "verbose", False))
 
-    scenario_id = getattr(args, "scenario", "tutorial")
-    scenario = load_scenario(scenario_id)
-    persona = Persona.from_dict(load_persona(scenario.get("npc", "ayou")))
-    env = StarIsleEnv(scenario, persona.id, persona.name)
+    scenario = load_scenario(getattr(args, "scenario", "tutorial"))
     llm = build_llm(
         cfg.llm_provider, model=cfg.model, base_url=cfg.base_url, api_key=cfg.api_key
     )
-    agent = NPCAgent(persona, env, scenario, llm, cfg)
-    return cfg, scenario, persona, env, agent
+    return cfg, scenario, build_cast(scenario, llm, cfg)
+
+
+def _roster(scenario, cast: Cast) -> str:
+    return "、".join(
+        f"[bold]{agent.persona.name}[/bold]（{agent.persona.role}）"
+        for agent in cast.agents.values()
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -89,13 +104,14 @@ def cmd_demo(args: argparse.Namespace) -> int:
     from rich.table import Table
 
     console = Console()
-    cfg, scenario, persona, env, agent = _build(args)
+    cfg, scenario, cast = _build(args)
+    env = cast.env
 
-    mode = "在线模型" if agent.llm.available else "离线启发式（未配置模型）"
+    mode = "在线模型" if cast.lead.llm.available else "离线启发式（未配置模型）"
     console.print(
         Panel.fit(
             f"[bold]{scenario.get('name')}[/bold] · {scenario.get('description','')}\n"
-            f"NPC：[bold]{persona.name}[/bold]（{persona.role}）\n"
+            f"NPC：{_roster(scenario, cast)}\n"
             f"推理模式：{mode}",
             title="星屿咖啡屋",
             border_style="blue",
@@ -107,27 +123,27 @@ def cmd_demo(args: argparse.Namespace) -> int:
         script = script[: args.ticks]
 
     for index, line in enumerate(script):
-        utterance = None
         console.print(f"\n[dim]── 第 {index + 1} 轮 ──[/dim]")
+        utterance = None
         if line:
             player_id, text = line
             utterance = env.record_player_utterance(player_id, text)
             console.print(f"[cyan]玩家 {utterance.speaker_name}[/cyan]：{text}")
-        turn = agent.step(utterance)
 
-        if turn.decision_reason:
-            console.print(f"  [dim]（{turn.decision_reason}）[/dim]")
-        for action, result in zip(turn.actions, turn.results):
-            if action.tool == "speak":
-                continue
-            style = "green" if result.ok else "red"
-            console.print(f"  [{style}]▸ {action.render()}[/{style}]")
-            if not result.ok:
-                console.print(f"      [red]✗ {result.detail}[/red]")
-        if turn.say:
-            console.print(f"  [yellow]NPC[/yellow]：{turn.say}")
-
-        env.advance_tick()
+        # 一轮 = 一个 tick。剧组里所有 NPC 依次行动，最多一个人开口。
+        for turn in cast.step(utterance):
+            name = cast.name_of(turn.actor_id)
+            if turn.decision_reason:
+                console.print(f"  [dim]（{name}：{turn.decision_reason}）[/dim]")
+            for action, result in zip(turn.actions, turn.results):
+                if action.tool == "speak":
+                    continue
+                style = "green" if result.ok else "red"
+                console.print(f"  [{style}]▸ {name} {action.render()}[/{style}]")
+                if not result.ok:
+                    console.print(f"      [red]✗ {result.detail}[/red]")
+            if turn.say:
+                console.print(f"  [yellow]{name}[/yellow]：{turn.say}")
 
     snapshot = env.snapshot()
     table = Table(title="结束时世界状态", show_header=True, header_style="bold")
@@ -138,20 +154,39 @@ def cmd_demo(args: argparse.Namespace) -> int:
         "目标",
         ", ".join(f"{k}={v}" for k, v in snapshot["objectives"].items()) or "（无）",
     )
-    stats = agent.memory.store.stats()
-    table.add_row(
-        "记忆",
-        f"episodic={stats.episodic} semantic={stats.semantic} "
-        f"reflection={stats.reflection} 巩固={stats.consolidated}",
-    )
-    table.add_row("发言占比", f"{agent.state.npc_share():.0%}")
+    for pid, agent in cast.agents.items():
+        stats = agent.memory.store.stats()
+        table.add_row(
+            f"{agent.persona.name} · 记忆",
+            f"episodic={stats.episodic} semantic={stats.semantic} "
+            f"reflection={stats.reflection} 巩固={stats.consolidated}",
+        )
+        table.add_row(f"{agent.persona.name} · 发言占比", f"{agent.state.npc_share():.0%}")
+    if cast.is_multi_npc:
+        table.add_row("发言调度", _turn_taking_note(env, cast))
     console.print()
     console.print(table)
 
-    if agent.reflector.lessons:
+    lessons = [a for a in cast.agents.values() if a.reflector.lessons]
+    if lessons:
         console.print("\n[bold]沉淀下来的教训[/bold]")
-        console.print(agent.reflector.render_lessons())
+        for agent in lessons:
+            console.print(f"[bold]{agent.persona.name}[/bold]")
+            console.print(agent.reflector.render_lessons())
     return 0
+
+
+def _turn_taking_note(env, cast: Cast) -> str:
+    """同轮抢话的自检。这是多 NPC 最该盯的一个数。"""
+    npc_ids = set(cast.npc_ids)
+    collisions = [
+        tick
+        for tick, speakers in env.speakers_by_tick().items()
+        if len({s for s in speakers if s in npc_ids}) > 1
+    ]
+    if collisions:
+        return f"[red]{len(collisions)} 轮有 NPC 抢话（{collisions}）[/red]"
+    return f"[green]0 轮抢话[/green]，发言次数 {env.speech_counts()}"
 
 
 # --------------------------------------------------------------------------- #
@@ -160,18 +195,19 @@ def cmd_chat(args: argparse.Namespace) -> int:
     from rich.panel import Panel
 
     console = Console()
-    cfg, scenario, persona, env, agent = _build(args)
+    cfg, scenario, cast = _build(args)
+    env = cast.env
     players = [p["id"] for p in scenario.get("players", [])]
     current = players[0] if players else "player_a"
 
     console.print(
         Panel(
-            f"正在和 [bold]{persona.name}[/bold] 对话（场景：{scenario.get('name')}）。\n"
+            f"正在和 {_roster(scenario, cast)} 对话（场景：{scenario.get('name')}）。\n"
             f"当前身份：{env.actors[current].name}　切换玩家：/as player_b　退出：/quit",
             border_style="blue",
         )
     )
-    if not agent.llm.available:
+    if not cast.lead.llm.available:
         console.print(
             "[dim]提示：当前是离线启发式模式。配置 NPC_AGENT_PROVIDER=openai-compat "
             "与 NPC_AGENT_MODEL 后可用真实模型对话。[/dim]"
@@ -196,14 +232,17 @@ def cmd_chat(args: argparse.Namespace) -> int:
             continue
 
         utterance = env.record_player_utterance(current, raw)
-        turn = agent.step(utterance)
-        for action, result in zip(turn.actions, turn.results):
-            if action.tool == "speak":
-                continue
-            style = "green" if result.ok else "red"
-            console.print(f"  [{style}]▸ {action.render()}[/{style}]")
-        console.print(f"[yellow]{persona.name}[/yellow]：{turn.say or '（沉默）'}")
-        env.advance_tick()
+        for turn in cast.step(utterance):
+            name = cast.name_of(turn.actor_id)
+            for action, result in zip(turn.actions, turn.results):
+                if action.tool == "speak":
+                    continue
+                style = "green" if result.ok else "red"
+                console.print(f"  [{style}]▸ {name} {action.render()}[/{style}]")
+            if turn.say:
+                console.print(f"[yellow]{name}[/yellow]：{turn.say}")
+            elif cast.is_multi_npc and turn.acted:
+                console.print(f"[dim]{name} 没有说话，但在忙自己的事[/dim]")
     return 0
 
 
@@ -243,7 +282,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         report.results.append(harness.run_case(case))
 
     table = Table(title="评测结果", header_style="bold")
-    for column in ("用例", "场景", "任务", "工具", "记忆", "人设", "安全", "结论"):
+    for column in ("用例", "场景", "任务", "工具", "记忆", "人设", "安全", "调度", "结论"):
         table.add_column(column, justify="left" if column in ("用例", "场景") else "center")
 
     for result in report.results:
@@ -256,6 +295,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
             f"{scores['memory']:.2f}",
             f"{scores['persona']:.2f}",
             f"{scores['safety']:.2f}",
+            f"{scores['turn_taking']:.2f}",
             "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]",
         )
     console.print(table)
@@ -287,7 +327,7 @@ def _render_comparison(console, comparison) -> None:
 
     table = Table(title="对照跑批 · 绝对值", header_style="bold")
     for column in ("配置", "模型", "记忆策略", "通过", "任务", "工具", "记忆", "人设", "安全",
-                   "自由台词", "均长", "耗时"):
+                   "调度", "自由台词", "均长", "耗时"):
         table.add_column(column, justify="left" if column in ("配置", "模型", "记忆策略") else "center")
 
     for row in comparison.rows():
@@ -301,6 +341,7 @@ def _render_comparison(console, comparison) -> None:
             f"{row['memory']:.3f}",
             f"{row['persona']:.3f}",
             f"{row['safety']:.3f}",
+            f"{row['turn_taking']:.3f}",
             f"{row['free']:.0%}",
             f"{row['chars']:.0f}",
             f"{row['sec']:.0f}s",
@@ -314,7 +355,7 @@ def _render_comparison(console, comparison) -> None:
     diff = Table(title="对照跑批 · 相对首行差值（正数=更好）", header_style="bold")
     diff.add_column("配置", justify="left")
     diff.add_column("vs", justify="left")
-    for column in ("通过率", "任务", "工具", "记忆", "人设", "安全", "自由台词"):
+    for column in ("通过率", "任务", "工具", "记忆", "人设", "安全", "调度", "自由台词"):
         diff.add_column(column, justify="center")
 
     def cell(value: float) -> str:
@@ -333,6 +374,7 @@ def _render_comparison(console, comparison) -> None:
             cell(row["memory"]),
             cell(row["persona"]),
             cell(row["safety"]),
+            cell(row["turn_taking"]),
             cell(row["free"]),
         )
     console.print()
@@ -522,12 +564,16 @@ def cmd_tools(args: argparse.Namespace) -> int:
     from rich.table import Table
 
     console = Console()
-    cfg, scenario, persona, env, agent = _build(args)
-    table = Table(title=f"{persona.name} 可用工具（场景：{scenario.get('name')}）", header_style="bold")
+    cfg, scenario, cast = _build(args)
+    lead = cast.lead
+    title = f"{lead.persona.name} 可用工具（场景：{scenario.get('name')}）"
+    if cast.is_multi_npc:
+        title = f"剧组共用工具（场景：{scenario.get('name')}）"
+    table = Table(title=title, header_style="bold")
     table.add_column("工具", style="bold")
     table.add_column("参数")
     table.add_column("说明")
-    for spec in agent.registry.specs(agent.id):
+    for spec in lead.registry.specs(lead.id):
         kind = "[dim]内部[/dim]" if spec.internal else "世界"
         params = ", ".join(f"{k}: {v}" for k, v in spec.params.items()) or "-"
         table.add_row(f"{spec.name} ({kind})", params, spec.description)
@@ -545,11 +591,12 @@ def cmd_info(args: argparse.Namespace) -> int:
     console.print(Panel.fit("可用场景\n" + "\n".join(f"  - {s}" for s in scenarios), title="info"))
     for scenario_id in scenarios:
         scenario = load_scenario(scenario_id)
-        persona = Persona.from_dict(load_persona(scenario.get("npc", "ayou")))
+        cast = load_cast(scenario)
+        roster = "、".join(f"{p.name}（{p.role}）" for p in cast) or "（未配置）"
         console.print(
             f"\n[bold]{scenario_id}[/bold]　{scenario.get('name')}\n"
             f"  说明：{scenario.get('description')}\n"
-            f"  NPC：{persona.name}（{persona.role}）\n"
+            f"  NPC：{roster}{'　[dim]（多 NPC）[/dim]' if len(cast) > 1 else ''}\n"
             f"  玩家：{'、'.join(p['name'] for p in scenario.get('players', []))}\n"
             f"  目标：{'、'.join(o['goal'] for o in scenario.get('objectives', []))}"
         )

@@ -86,6 +86,12 @@ class Planner:
 
         `attempted` 很关键：目标的开场白只该说一次。
         没有它，NPC 会在"玩家还没开口"的每一轮重复念同一段欢迎词。
+
+        没有 steps 的目标直接跳过：它只是一个**完成条件**，不是计划。
+        多 NPC 场景的联合目标就是这种 —— "两个人都干完才算数"，
+        完成与否由共享的世界状态判定（success_when: all_flags），
+        没有哪一步是某一个 NPC 该单独去执行的。
+        不跳过的话会得到一个空计划，还会被误标成"已尝试"而永不复查。
         """
         attempted = attempted or set()
         pending = [
@@ -93,6 +99,7 @@ class Planner:
             for o in objectives
             if tracker.objectives.get(o.get("id"), "pending") != "done"
             and o.get("id") not in attempted
+            and (o.get("steps") or [])
         ]
         if not pending:
             return None
@@ -205,7 +212,6 @@ class Planner:
     def _corrective_steps(self, step: PlanStep, reason: str) -> list[PlanStep]:
         """把失败原因翻译成补救动作。"""
         fixes: list[PlanStep] = []
-        match = re.search(r"需要先 move_to 过去|在(后厨|吧台|窗边座|书架角|露台|门口)", reason)
         if "需要先 move_to" in reason or "不在你身边" in reason:
             target = self._infer_location(reason)
             if target:
@@ -225,9 +231,30 @@ class Planner:
         return fixes
 
     def _infer_location(self, reason: str) -> Optional[str]:
+        """从失败原因里推断"该去哪"。
+
+        **必须排除「你现在在 X」里的那个 X** —— 那是出发地，不是目的地。
+
+        早期实现取"原因串里第一个被提到的地点"。take_item 的失败原因是
+        「柠檬在后厨，你现在在吧台，需要先 move_to 过去」，
+        而 LOCATIONS 的字典序里「吧台」排在「后厨」前面，
+        于是推断出「吧台」：NPC 原地 move_to 到自己已经站着的地方，
+        再试一次 take_item 还是失败，永远拿不到东西。
+        教程场景之所以没暴露这个坑，是因为它的目标步骤里本来就写好了
+        move_to(kitchen)，根本走不到重规划这一步。
+        """
         locations = self.facts.get("locations") or {}
+        here_name = ""
+        marker = "你现在在"
+        pos = reason.find(marker)
+        if pos != -1:
+            tail = reason[pos + len(marker) :]
+            for name in locations.values():
+                if name and tail.startswith(name):
+                    here_name = name
+                    break
         for loc_id, name in locations.items():
-            if name in reason:
+            if name and name in reason and name != here_name:
                 return loc_id
         return None
 
@@ -286,6 +313,9 @@ class Planner:
 【可用工具】
 {tool_catalog}
 
+【世界规则】
+{self._world_block()}
+
 【本场景目标】
 {goal_hint or "（无）"}
 
@@ -326,3 +356,28 @@ class Planner:
         if not memories:
             return "（没有想起相关的事）"
         return "\n".join(f"  - {m.content}" for m in memories)
+
+    def _world_block(self) -> str:
+        """把世界规则（配方 / 工位 / 材料）喂给模型。
+
+        不喂的话，模型只知道"存在 craft_item 这个工具"，不知道
+        "拿铁要咖啡豆 + 牛奶、而且必须站在后厨"。于是它的计划是
+        `craft_item(latte)` → 失败 → 再 `craft_item(latte)`，
+        永远想不到中间要先 `take_item`。
+        启发式规划器之所以做得到，是因为它读的就是这张 recipes 表 ——
+        **两边拿到的世界知识必须是同一份**，否则"换模型"就不是换一个变量，
+        而是换了一整套能力。
+        """
+        recipes = self.facts.get("recipes") or {}
+        if not recipes:
+            return "（无）"
+        items = self.facts.get("items") or {}
+        lines = ["制作配方（必须先备齐材料，并站到对应工位上）："]
+        for recipe_id, spec in recipes.items():
+            needs = "、".join(f"{items.get(n, n)}({n})" for n in spec.get("needs", []))
+            station = spec.get("station")
+            lines.append(
+                f"  - {spec.get('name', recipe_id)}({recipe_id})"
+                f" ← 材料 {needs}，工位 {station}"
+            )
+        return "\n".join(lines)

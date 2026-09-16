@@ -51,6 +51,13 @@ def task_completion(
         if flag in snapshot.get("world_flags", []):
             problems.append(f"不该出现标记 {flag}")
 
+    # 联合目标（多 NPC）：完成条件写在共享的世界状态上，
+    # 只有每个人都做出了自己那份贡献才会翻成 done。
+    for objective_id in expect.get("objectives_done") or []:
+        state = (snapshot.get("objectives") or {}).get(objective_id)
+        if state != "done":
+            problems.append(f"联合目标 {objective_id} 未完成（当前 {state or '不存在'}）")
+
     if problems:
         return Score(0.0, "；".join(problems))
     return Score(1.0, "世界状态符合预期")
@@ -135,6 +142,30 @@ def memory_recall(
     return Score(1.0, f"记住并主动引用了 {recall_needles}")
 
 
+def memory_ownership(expect: dict[str, Any], memories: dict[str, list[str]]) -> Score:
+    """记忆有没有串台 —— 多 NPC 场景专有的检查。
+
+    每个 NPC 都有自己的记忆库。如果只检查"全体记忆的并集"，
+    "阿柚记住了客人的偏好"会被算成"整个剧组都记住了"，
+    Agent 就退化成了"一个脑子挂两个名字"。
+
+    ``memory_contains_by_actor: {ayou: [拿铁]}`` 把断言落到具体的人身上。
+    """
+    per_actor = expect.get("memory_contains_by_actor") or {}
+    if not per_actor:
+        return Score(1.0, "无按人记忆约束")
+
+    problems: list[str] = []
+    for actor_id, needles in per_actor.items():
+        haystack = "\n".join(memories.get(actor_id, []))
+        missing = [n for n in needles if n not in haystack]
+        if missing:
+            problems.append(f"{actor_id} 的记忆里没找到 {missing}")
+    if problems:
+        return Score(0.0, "；".join(problems))
+    return Score(1.0, f"记忆归属正确（{sorted(per_actor)}）")
+
+
 # --------------------------------------------------------------------------- #
 # 4) 角色一致性
 # --------------------------------------------------------------------------- #
@@ -182,6 +213,50 @@ def stage_share(speeches_by_actor: dict[str, int]) -> Score:
 
 
 # --------------------------------------------------------------------------- #
+# 6) 发言权调度（多 NPC）
+# --------------------------------------------------------------------------- #
+def turn_taking(
+    speakers_by_tick: dict[int, list[str]],
+    npc_ids: list[str],
+    *,
+    require_all_spoke: bool = False,
+) -> Score:
+    """多 NPC 的发言权纪律。这是单 NPC 场景里根本不存在的维度。
+
+    两件事分开判：
+
+    **不撞车** —— 任何一个 tick 里，开口的 NPC 不超过一个。
+    这是硬约束。两个 NPC 同时说话，玩家看到的是两行字挤在一起，
+    比单个 NPC 说错话更伤体验，而且它是多 Agent 最典型的翻车方式：
+    每个 NPC 各自看自己的状态，都觉得自己该说话。
+
+    **都有机会** —— 每个 NPC 至少说过一次话。只在用例显式声明
+    ``require_all_spoke`` 时才检查：短对话里让安静的角色一直不开口，
+    未必是错（小舟本来就是话少的歌手），所以不能默认当成缺陷。
+    """
+    npc_set = set(npc_ids)
+    if len(npc_set) <= 1:
+        return Score(1.0, "单 NPC 场景，无需调度")
+
+    collisions: dict[int, list[str]] = {}
+    for tick, speakers in speakers_by_tick.items():
+        npcs = sorted({s for s in speakers if s in npc_set})
+        if len(npcs) > 1:
+            collisions[tick] = npcs
+    if collisions:
+        detail = "；".join(f"t{tick} 同时开口 {ids}" for tick, ids in sorted(collisions.items()))
+        return Score(0.0, f"两个 NPC 在同一轮抢话 —— {detail}")
+
+    spoke = {s for speakers in speakers_by_tick.values() for s in speakers if s in npc_set}
+    if require_all_spoke:
+        silent = sorted(npc_set - spoke)
+        if silent:
+            return Score(0.5, f"没有抢话，但 {silent} 全程没轮到发言（话头分配不均）")
+        return Score(1.0, f"{len(spoke)} 个 NPC 轮流发言，没有抢话")
+    return Score(1.0, f"没有抢话（发言者 {sorted(spoke) or '无'}）")
+
+
+# --------------------------------------------------------------------------- #
 @dataclass
 class CaseMetrics:
     task: Score = field(default_factory=lambda: Score(0.0, "未评估"))
@@ -189,6 +264,7 @@ class CaseMetrics:
     memory: Score = field(default_factory=lambda: Score(0.0, "未评估"))
     persona: Score = field(default_factory=lambda: Score(0.0, "未评估"))
     safety: Score = field(default_factory=lambda: Score(0.0, "未评估"))
+    turn_taking: Score = field(default_factory=lambda: Score(0.0, "未评估"))
 
     def as_dict(self) -> dict[str, float]:
         return {
@@ -197,12 +273,21 @@ class CaseMetrics:
             "memory": round(self.memory.value, 3),
             "persona": round(self.persona.value, 3),
             "safety": round(self.safety.value, 3),
+            "turn_taking": round(self.turn_taking.value, 3),
         }
 
     @property
     def passed(self) -> bool:
         return all(
-            s.value >= 0.99 for s in (self.task, self.tools, self.memory, self.persona, self.safety)
+            s.value >= 0.99
+            for s in (
+                self.task,
+                self.tools,
+                self.memory,
+                self.persona,
+                self.safety,
+                self.turn_taking,
+            )
         )
 
     def details(self) -> dict[str, str]:
@@ -212,4 +297,5 @@ class CaseMetrics:
             "memory": self.memory.detail,
             "persona": self.persona.detail,
             "safety": self.safety.detail,
+            "turn_taking": self.turn_taking.detail,
         }

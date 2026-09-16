@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>离线启发式 vs 真实模型</title>
+<style>
+  :root {
+    --ink: #1f2430; --muted: #6b7280; --line: #e5e7eb;
+    --bg: #ffffff; --soft: #f7f8fa; --accent: #2f6fd0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 28px 64px; background: var(--bg); color: var(--ink);
+    font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 2px solid var(--line); }
+  h4 { font-size: 14px; margin: 0 0 6px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 22px; }
+  .headline {
+    background: var(--soft); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    border-radius: 8px; padding: 14px 18px; font-size: 14.5px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+  th { background: var(--soft); font-weight: 600; font-size: 12.5px; color: #374151; white-space: nowrap; }
+  td.num { text-align: right; white-space: nowrap; }
+  td.name { font-weight: 600; white-space: nowrap; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  tbody tr:hover { background: #fbfcfe; }
+  .bar { display: inline-block; width: 64px; height: 7px; background: #eceef2; border-radius: 4px;
+         overflow: hidden; vertical-align: middle; margin-right: 7px; }
+  .bar-fill { display: block; height: 100%; }
+  .bar-num { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #374151; }
+  .up { color: #0f9d58; font-weight: 600; }
+  .down { color: #d93025; font-weight: 600; }
+  .flat { color: #9aa1ab; }
+  .muted { color: var(--muted); }
+  .fail { background: #fff8f7; border: 1px solid #f3d3cf; border-radius: 8px;
+          padding: 12px 16px; margin-bottom: 10px; }
+  .fail ul { margin: 4px 0 0; padding-left: 20px; }
+  .fail li { font-size: 13px; }
+  .sample { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px;
+            margin-bottom: 10px; background: #fcfcfd; }
+  .sample ul { margin: 4px 0 0; padding: 0; list-style: none; }
+  .sample li { padding: 4px 0; border-bottom: 1px dashed #eef0f3; font-size: 13.5px; }
+  .sample li:last-child { border-bottom: none; }
+  .tag { display: inline-block; min-width: 34px; text-align: center; font-size: 11px;
+         padding: 1px 6px; border-radius: 4px; margin-right: 9px; vertical-align: 1px; }
+  .t-free { background: #e6f4ea; color: #137333; border: 1px solid #c6e7d0; }
+  .t-scripted { background: #f1f3f4; color: #5f6368; border: 1px solid #e0e3e6; }
+  .line { color: #1f2430; }
+  code { background: #eef0f4; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .note { background: var(--soft); border: 1px solid var(--line); border-radius: 8px;
+          padding: 14px 18px; font-size: 13.5px; color: #374151; }
+  .note li { margin-bottom: 5px; }
+  .warn { background: #fffbf0; border: 1px solid #f0dfb8; border-left: 4px solid #e8a33d;
+          border-radius: 8px; padding: 12px 16px; margin-top: 12px; font-size: 13.5px;
+          color: #6b5320; }
+  footer { margin-top: 36px; color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>离线启发式 vs 真实模型</h1>
+  <div class="sub">同一套用例、同一套指标、只换推理后端。重点看「自由台词」这一列 —— 它衡量台词是人写的还是模型写的。</div>
+  <div class="headline"><strong>离线启发式</strong> 通过 <strong>2/2</strong>，自由台词 <strong>0%</strong>　·　<strong>模型·kimi-k2.7-code（启发式规划）</strong> 通过 <strong>2/2</strong>，自由台词 <strong>50%</strong></div>
+  
+
+  <h2>绝对值</h2>
+  <table>
+    <thead><tr>
+      <th>配置</th><th>模型</th><th>记忆策略</th><th>通过</th>
+      <th>任务完成</th><th>工具调用</th><th>记忆召回</th><th>人设一致</th><th>安全边界</th><th>发言调度</th>
+      <th>自由台词</th><th>均长</th><th>耗时</th>
+    </tr></thead>
+    <tbody><tr><td class="name">离线启发式</td><td class="mono">—</td><td class="mono">hybrid</td><td class="num"><strong>2/2</strong></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num">0%</td><td class="num">12</td><td class="num">0s</td></tr>
+<tr><td class="name">模型·kimi-k2.7-code（启发式规划）</td><td class="mono">kimi-k2.7-code</td><td class="mono">hybrid</td><td class="num"><strong>2/2</strong></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num">50%</td><td class="num">23</td><td class="num">79s</td></tr></tbody>
+  </table>
+
+  <h2>相对首行的差值</h2>
+  <p class="sub" style="margin:0 0 10px">绿色为提升，红色为下降。这张表回答的是"改动到底有没有用"。</p>
+  <table>
+    <thead><tr>
+      <th>配置</th><th>基线</th><th>通过率</th>
+      <th>任务完成</th><th>工具调用</th><th>记忆召回</th><th>人设一致</th><th>安全边界</th><th>发言调度</th>
+      <th>自由台词</th>
+    </tr></thead>
+    <tbody><tr><td class="name">模型·kimi-k2.7-code（启发式规划）</td><td class="muted">离线启发式</td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="up">+0.500</span></td></tr></tbody>
+  </table>
+
+  <h2>台词样本</h2>
+  <p class="sub" style="margin:0 0 10px">
+    <span class="tag t-free">自由</span>＝模型现场组织的语言　
+    <span class="tag t-scripted">脚本</span>＝人设模板或世界知识库原文
+  </p>
+  <div class="sample"><h4>离线启发式<span class="muted">　共 6 句，去重后展示 6 句</span></h4><ul><li><span class="tag t-scripted">脚本</span><span class="line">第一次来吧？我请你一杯，想喝什么？</span></li><li><span class="tag t-scripted">脚本</span><span class="line">……你好。</span></li><li><span class="tag t-scripted">脚本</span><span class="line">这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。</span></li><li><span class="tag t-scripted">脚本</span><span class="line">嗯。</span></li><li><span class="tag t-scripted">脚本</span><span class="line">好，稍等，我这就去弄。</span></li><li><span class="tag t-scripted">脚本</span><span class="line">柠檬水好了，趁热。</span></li></ul></div>
+<div class="sample"><h4>模型·kimi-k2.7-code（启发式规划）<span class="muted">　共 6 句，去重后展示 6 句</span></h4><ul><li><span class="tag t-free">自由</span><span class="line">第一次来？别光站着看热闹，让我请你一杯。</span></li><li><span class="tag t-free">自由</span><span class="line">露台的风把喧嚣拆成散拍，今晚的星星像待填的词。
+来这边坐，风会替我先打招呼。</span></li><li><span class="tag t-scripted">脚本</span><span class="line">这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。</span></li><li><span class="tag t-free">自由</span><span class="line">一首还没定名的歌，阿澈。你刚问我的那句话，刚好落进第四小节了。</span></li><li><span class="tag t-scripted">脚本</span><span class="line">好，稍等，我这就去弄。</span></li><li><span class="tag t-scripted">脚本</span><span class="line">柠檬水好了，趁热。</span></li></ul></div>
+
+  <h2>失败明细</h2>
+  <p class="muted">本次跑批没有失败用例。</p>
+
+  <h2>怎么读这张表</h2>
+  <div class="note">
+    <ul>
+      <li><strong>自由台词</strong>：既不是人设模板、也不是世界知识库原文的台词占比。
+          离线启发式只从固定字符串里取词，所以恒为 0%；真实模型应当显著高于 0 ——
+          这是"接上模型到底值不值"最直接的证据。</li>
+      <li><strong>记忆策略 none</strong>：不向 prompt 注入任何记忆，即「裸模型」基线。
+          它与 <code>hybrid</code> 的差值就是这套记忆系统的净收益。</li>
+      <li><strong>对照的公平性</strong>：同一套用例、同一套指标、同一份场景配置，只换一个变量。
+          温度固定为 0.3，以压低采样带来的波动。</li>
+      <li><strong>诚实声明</strong>：用例集是自建的回归基线，不是 AgentBench / τ-bench 这类
+          公开榜单，分数不能跨项目横向比较。它的用途是"证明我的改动没有把已有能力改坏，
+          并且带来了可测量的提升"。</li>
+    </ul>
+  </div>
+
+  <footer>由 <code>python -m npc_agent.cli compare</code> 生成　·　游戏 AI NPC 智能体框架</footer>
+</div>
+</body>
+</html>

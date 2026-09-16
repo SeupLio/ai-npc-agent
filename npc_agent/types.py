@@ -10,7 +10,10 @@ from typing import Any, Literal, Optional
 
 Role = Literal["npc", "player", "system"]
 MemoryKind = Literal["episodic", "semantic", "reflection"]
-StepStatus = Literal["pending", "running", "done", "failed"]
+# skipped 与 failed 必须分开：多 NPC 场景里"本轮话头给别人了"是一次**让位**，
+# 不是失败。混成 failed 会触发无意义的重规划，还会让 Reflection 记下一条
+# 根本不存在的教训。
+StepStatus = Literal["pending", "running", "done", "failed", "skipped"]
 
 
 # --------------------------------------------------------------------------- #
@@ -93,7 +96,7 @@ class Plan:
 
     @property
     def done(self) -> bool:
-        return all(s.status in ("done", "failed") for s in self.steps)
+        return all(s.status in ("done", "failed", "skipped") for s in self.steps)
 
     @property
     def failed_steps(self) -> list[PlanStep]:
@@ -101,7 +104,7 @@ class Plan:
 
     def render(self) -> str:
         lines = [f"目标: {self.goal}"]
-        marks = {"pending": " ", "running": "~", "done": "x", "failed": "!"}
+        marks = {"pending": " ", "running": "~", "done": "x", "failed": "!", "skipped": "-"}
         for i, step in enumerate(self.steps, 1):
             lines.append(f"  [{marks[step.status]}] {i}. {step.goal} -> {step.tool}({step.args})")
         return "\n".join(lines)

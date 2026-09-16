@@ -16,7 +16,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?~…])")
+# 句末边界。两条容易踩的规则：
+#
+# 1. **「…」不是句末**。省略号表示语气拖长，算成句末的话，
+#    小舟的开场「……你好。」会被切成 ["…", "…", "你好。"] 三段，
+#    sentence_max=2 一裁就只剩「……」，整句台词凭空消失。
+# 2. **连续标点算一个边界**。「真的吗？！」是一个人问了一句话，
+#    不是两句；所以只在前一个标点后面**不是**标点时才切。
+SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?])(?![。！？!?])")
 
 
 @dataclass

@@ -14,19 +14,17 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from ..agent import NPCAgent
-from ..config import RuntimeConfig, load_persona, load_scenario
-from ..env.star_isle import StarIsleEnv
+from ..cast import build_cast
+from ..config import RuntimeConfig, load_scenario
 from ..llm import build_llm
-from ..modules.persona import Persona
 from . import metrics as M
 
 CASES_DIR = Path(__file__).resolve().parent / "cases"
-CATEGORIES = ("task", "memory", "persona", "safety")
+CATEGORIES = ("task", "memory", "persona", "safety", "multi_npc")
 
 
 # --------------------------------------------------------------------------- #
@@ -38,6 +36,11 @@ class CaseResult:
     scenario: str
     metrics: M.CaseMetrics
     transcript: list[str] = field(default_factory=list)
+    # 台词单独存一份，不要靠回头去 transcript 里按前缀捞。
+    # 多 NPC 之后转写行变成了「阿柚: xxx」，靠 "NPC: " 前缀提取会一条都捞不到
+    # —— 而且两个 NPC 的台词必须能分辨是谁说的。
+    speeches: list[str] = field(default_factory=list)
+    speakers: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -55,6 +58,8 @@ class CaseResult:
             "details": self.metrics.details(),
             "notes": self.notes,
             "transcript": self.transcript,
+            "speeches": self.speeches,
+            "speakers": self.speakers,
         }
 
 
@@ -90,7 +95,7 @@ class EvalReport:
         return out
 
     def metric_means(self) -> dict[str, float]:
-        keys = ("task", "tools", "memory", "persona", "safety")
+        keys = ("task", "tools", "memory", "persona", "safety", "turn_taking")
         means = {}
         for key in keys:
             values = [r.metrics.as_dict()[key] for r in self.results]
@@ -152,20 +157,22 @@ class EvalHarness:
     def run_case(self, case: dict[str, Any]) -> CaseResult:
         scenario_id = case.get("scenario", "tutorial")
         scenario = load_scenario(scenario_id)
-        persona = Persona.from_dict(load_persona(scenario.get("npc", "ayou")))
-
-        env = StarIsleEnv(scenario, persona.id, persona.name)
         llm = build_llm(
             self.config.llm_provider,
             model=self.config.model,
             base_url=self.config.base_url,
             api_key=self.config.api_key,
         )
-        agent = NPCAgent(persona, env, scenario, llm, self.config)
+        # 一律走 Cast，哪怕场上只有一个 NPC。
+        # 单 NPC 只是"剧组只有一个人"的特例 —— 两条路径共用一套调度，
+        # 多 NPC 的发言权逻辑每跑一次评测都在被使用，就不可能悄悄腐烂。
+        cast = build_cast(scenario, llm, self.config)
+        env = cast.env
 
         expect = case.get("expect") or {}
         transcript: list[str] = []
         speeches: list[str] = []
+        speakers: list[str] = []
         violations: list[list[str]] = []
         called_tools: list[str] = []
         speeches_by_actor: dict[str, int] = {}
@@ -181,21 +188,22 @@ class EvalHarness:
                         turn_spec.get("player", "player_a"), turn_spec["text"]
                     )
                     transcript.append(f"玩家[{utterance.speaker_name}] {utterance.text}")
-                turn = agent.step(utterance)
 
-                for action, result in zip(turn.actions, turn.results):
-                    called_tools.append(action.tool)
-                    mark = "ok" if result.ok else "!!"
-                    transcript.append(f"  [{mark}] {action.render()}")
-                if turn.say:
-                    speeches.append(turn.say)
-                    speeches_by_actor["npc"] = speeches_by_actor.get("npc", 0) + 1
-                    transcript.append(f"NPC: {turn.say}")
-                if turn.persona_violations:
-                    violations.append(turn.persona_violations)
-                else:
-                    violations.append([])
-                env.advance_tick()
+                # 一轮 = 一个 tick：剧组里所有 NPC 依次行动，最多一个人开口。
+                for turn in cast.step(utterance):
+                    speaker = cast.name_of(turn.actor_id)
+                    for action, result in zip(turn.actions, turn.results):
+                        called_tools.append(action.tool)
+                        mark = "ok" if result.ok else "!!"
+                        transcript.append(f"  [{mark}] {speaker} {action.render()}")
+                    if turn.say:
+                        speeches.append(turn.say)
+                        speakers.append(turn.actor_id)
+                        violations.append(turn.persona_violations or [])
+                        speeches_by_actor[turn.actor_id] = (
+                            speeches_by_actor.get(turn.actor_id, 0) + 1
+                        )
+                        transcript.append(f"{speaker}: {turn.say}")
 
         for utterance in env.utterances:
             if utterance.role == "player":
@@ -204,14 +212,26 @@ class EvalHarness:
                 )
 
         snapshot = env.snapshot()
-        memory_contents = [r.content for r in agent.memory.store.records]
+        # 记忆是每个 NPC 私有的，所以分开取。"谁记住了"本身就是多 Agent 的评测点。
+        memories = cast.memory_contents()
+        memory_score = M.memory_recall(
+            expect, speeches, [c for contents in memories.values() for c in contents]
+        )
+        ownership = M.memory_ownership(expect, memories)
+        if ownership.value < memory_score.value:
+            memory_score = ownership
 
         scores = M.CaseMetrics(
             task=M.task_completion(expect, snapshot, set(snapshot.get("world_flags", []))),
             tools=M.tool_scores(expect, called_tools),
-            memory=M.memory_recall(expect, speeches, memory_contents),
+            memory=memory_score,
             persona=M.persona_consistency(violations, len(speeches)),
             safety=M.safety(expect, speeches, set(snapshot.get("world_flags", []))),
+            turn_taking=M.turn_taking(
+                env.speakers_by_tick(),
+                env.npc_ids,
+                require_all_spoke=bool(expect.get("all_npcs_spoke")),
+            ),
         )
         if expect.get("check_stage_share"):
             scores.safety = M.stage_share(speeches_by_actor)
@@ -230,6 +250,8 @@ class EvalHarness:
             scenario=scenario_id,
             metrics=scores,
             transcript=transcript,
+            speeches=speeches,
+            speakers=speakers,
             notes=notes,
         )
 

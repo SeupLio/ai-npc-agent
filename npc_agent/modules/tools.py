@@ -54,6 +54,10 @@ class ToolContext:
     persona: Persona
     tracker: StateTracker
     npc_share_ceiling: float = 0.62
+    # 多 NPC 场景由 Cast 控制：一轮里已经有别的 NPC 开口了，本轮就让出话头。
+    # 放在工具层而不是对话层，是因为计划步骤里的 speak 也会经过这里 ——
+    # 只在对话层拦截的话，正在执行计划的 NPC 仍然会插话。
+    allow_speech: bool = True
 
 
 class ToolRegistry:
@@ -94,6 +98,10 @@ class ToolRegistry:
         text = str(args.get("text", "")).strip()
         if not text:
             return ActionResult(False, INTERNAL_SPEAK, "没有内容可说")
+        if not ctx.allow_speech:
+            return ActionResult(
+                False, INTERNAL_SPEAK, "本轮已有另一位 NPC 开口，我让出话头"
+            )
         violations = ctx.persona.check(text, ctx.tracker.world_flags)
         if any(v.startswith("出戏词") or v.startswith("剧透") for v in violations):
             return ActionResult(

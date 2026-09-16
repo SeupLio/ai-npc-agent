@@ -116,10 +116,28 @@ class Item:
 class StarIsleEnv(Environment):
     name = "star-isle"
 
-    def __init__(self, scenario: dict[str, Any], npc_id: str, npc_name: str) -> None:
+    def __init__(
+        self,
+        scenario: dict[str, Any],
+        npc_id: str = "",
+        npc_name: str = "",
+        *,
+        cast: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.scenario = scenario
-        self.npc_id = npc_id
-        self.npc_name = npc_name
+        # cast 是多 NPC 场景的演员表：[{id, name, start}, ...]。
+        # 不传时退回单 NPC 路径，已有场景与用例一行都不用改。
+        self.cast: list[dict[str, Any]] = [dict(spec) for spec in (cast or [])]
+        if not self.cast:
+            self.cast = [
+                {
+                    "id": npc_id,
+                    "name": npc_name,
+                    "start": scenario.get("npc_start", DEFAULT_START),
+                }
+            ]
+        self.npc_id = self.cast[0]["id"]
+        self.npc_name = self.cast[0]["name"]
         self._handlers: dict[str, Callable[[str, dict[str, Any]], ActionResult]] = {
             "move_to": self._h_move_to,
             "take_item": self._h_take_item,
@@ -136,6 +154,28 @@ class StarIsleEnv(Environment):
         self.reset()
 
     # ------------------------------------------------------------------ #
+    @property
+    def npc_ids(self) -> list[str]:
+        return [spec["id"] for spec in self.cast]
+
+    @property
+    def is_multi_npc(self) -> bool:
+        return len(self.cast) > 1
+
+    def _mentions(self, text: str, speaker_id: str) -> list[str]:
+        """找出这句话点到了谁。
+
+        玩家发言和 NPC 发言都要走这里 —— 早期只有 `record_player_utterance`
+        计算 mentions，于是 NPC 说"小舟，你来弹一首"时 mentions 恒为空，
+        NPC 之间的点名和交接永远触发不了。
+        """
+        return [
+            a.id
+            for a in self.actors.values()
+            if a.id != speaker_id and a.name and a.name in text
+        ]
+
+    # ------------------------------------------------------------------ #
     # 生命周期
     # ------------------------------------------------------------------ #
     def reset(self) -> dict[str, Any]:
@@ -144,9 +184,14 @@ class StarIsleEnv(Environment):
         self.utterances: list[Utterance] = []
         self.events: list[str] = []
 
-        self.actors: dict[str, Actor] = {
-            self.npc_id: Actor(self.npc_id, self.npc_name, "npc", cfg.get("npc_start", DEFAULT_START))
-        }
+        self.actors: dict[str, Actor] = {}
+        for spec in self.cast:
+            self.actors[spec["id"]] = Actor(
+                spec["id"],
+                spec["name"],
+                "npc",
+                spec.get("start") or cfg.get("npc_start", DEFAULT_START),
+            )
         for spec in cfg.get("players", []):
             self.actors[spec["id"]] = Actor(
                 spec["id"], spec["name"], "player", spec.get("start", "door")
@@ -248,12 +293,23 @@ class StarIsleEnv(Environment):
 
         支持多种条件类型，因为"目标完成"未必等于"某个标记被设置"：
             {flag: X}                     某个世界标记被设置
+            {all_flags: [X, Y]}           多个标记全部达成（多 NPC 联合目标）
+            {any_flags: [X, Y]}           任一标记达成
+            {all_of: [cond, ...]}         多个条件**全部**成立（可嵌套）
+            {any_of: [cond, ...]}         任一条件成立（可嵌套）
             {all_players_spoke: N}        每位玩家都至少说过 N 次话
             {player_has: {pid: [item]}}   某位玩家的背包里真的出现了某样东西
 
         `player_has` 是最重要的一种：它把"目标完成"定义在**世界状态**上，
         而不是"NPC 执行完了自己的步骤"。这样即使玩家自己拿到了那杯咖啡
         （比如另一个流程给的），目标也会正确地判定为完成。
+
+        `all_of` / `any_of` 是 `all_flags` 的推广。多 NPC 的联合目标应该用它们，
+        而不是 `all_flags` —— 因为标记是**记账**，不是**事实**：
+        拿铁真的递到客人手里了、歌声真的起来了，这才是"协作达成"。
+        用标记写的话，换一个规划器（例如让模型自己规划）就可能出现
+        "客人手里已经有咖啡了，但没人去设那个标记"，联合目标就永远不收敛。
+        **评测断言的必须是真实世界状态。**
         """
         for spec in self.objective_specs:
             condition = spec.get("success_when") or {}
@@ -264,8 +320,21 @@ class StarIsleEnv(Environment):
     def _condition_met(self, condition: dict[str, Any]) -> bool:
         if not condition:
             return False
+        if "all_of" in condition:
+            subs = list(condition["all_of"] or [])
+            return bool(subs) and all(self._condition_met(c) for c in subs)
+        if "any_of" in condition:
+            subs = list(condition["any_of"] or [])
+            return bool(subs) and any(self._condition_met(c) for c in subs)
         if "flag" in condition:
             return condition["flag"] in self.world_flags
+        if "all_flags" in condition:
+            # 联合目标：多 NPC 各自完成一部分，全部达成才算完成
+            needed = list(condition["all_flags"] or [])
+            return bool(needed) and all(f in self.world_flags for f in needed)
+        if "any_flags" in condition:
+            needed = list(condition["any_flags"] or [])
+            return bool(needed) and any(f in self.world_flags for f in needed)
         if "all_players_spoke" in condition:
             needed = int(condition["all_players_spoke"])
             players = [a for a in self.actors.values() if a.kind == "player"]
@@ -284,6 +353,26 @@ class StarIsleEnv(Environment):
                     return False
             return True
         return False
+
+    def speakers_by_tick(self) -> dict[int, list[str]]:
+        """每个 tick 里有哪些人说过话。
+
+        多 NPC 场景用它检测"两个 NPC 同时开口"——这是多 Agent 最容易翻车的地方，
+        比单个 NPC 说错话更伤体验。
+        """
+        out: dict[int, list[str]] = {}
+        for utterance in self.utterances:
+            speakers = out.setdefault(utterance.tick, [])
+            if utterance.speaker_id not in speakers:
+                speakers.append(utterance.speaker_id)
+        return out
+
+    def speech_counts(self) -> dict[str, int]:
+        """每个说话人各说了多少句。"""
+        counts: dict[str, int] = {}
+        for utterance in self.utterances:
+            counts[utterance.speaker_id] = counts.get(utterance.speaker_id, 0) + 1
+        return counts
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -322,6 +411,7 @@ class StarIsleEnv(Environment):
                 text=text,
                 tick=self.tick,
                 role="npc" if actor.kind == "npc" else "player",
+                mentions=self._mentions(text, actor.id),
                 is_question=text.rstrip().endswith(("?", "？")),
             )
         )
@@ -329,14 +419,13 @@ class StarIsleEnv(Environment):
     def record_player_utterance(self, player_id: str, text: str) -> Utterance:
         """外部驱动（CLI / 评测用例）注入玩家发言。"""
         actor = self.actors[player_id]
-        mentioned = [a.id for a in self.actors.values() if a.name in text and a.id != player_id]
         utterance = Utterance(
             speaker_id=actor.id,
             speaker_name=actor.name,
             text=text,
             tick=self.tick,
             role="player",
-            mentions=mentioned,
+            mentions=self._mentions(text, player_id),
             is_question=text.rstrip().endswith(("?", "？")),
         )
         self.utterances.append(utterance)
@@ -346,16 +435,42 @@ class StarIsleEnv(Environment):
     # 工具清单
     # ------------------------------------------------------------------ #
     def tool_specs(self, actor_id: str) -> list[ToolSpec]:
+        # 活动是**本场景专有**的，所以例子和合法取值都必须从配置里取。
+        # 这里曾经硬编码 start_activity(star_quiz)：duet 场景只配了 song_request，
+        # 模型照着例子抄，两个 NPC 都去调 start_activity(terrace_night)
+        # （把目标 id 当成了活动 id），白烧两轮。
+        # 把合法取值直接写进描述，是最省事、也最有效的防幻觉手段。
+        activity_ids = list(self.activities)
+        activity_hint = "、".join(activity_ids) or "（本场景没有活动）"
+        # 玩家 id 同理：模型看得到"阿澈"这个名字，但它需要的是 `player_a`。
+        # 不给的话它会老老实实把名字当 id 传进来，然后被护栏挡下。
+        player_ids = [a.id for a in self.actors.values() if a.kind == "player"]
+        player_hint = "、".join(player_ids) or "（本场景没有玩家）"
         specs = [
             ToolSpec("move_to", "移动到某个位置", {"location": "位置 id"}, ["move_to(counter)"]),
             ToolSpec("take_item", "拿起当前所在位置的物品", {"item": "物品 id"}, ["take_item(beans)"]),
             ToolSpec("craft_item", "在正确工位上用材料制作饮品", {"recipe": "配方 id"}, ["craft_item(latte)"]),
-            ToolSpec("give_item", "把手里的物品交给同一位置的玩家", {"item": "物品 id", "player": "玩家 id"}, ["give_item(latte, player_a)"]),
+            ToolSpec(
+                "give_item",
+                f"把手里的物品交给同一位置的玩家。玩家 id 只能是 {player_hint}",
+                {"item": "物品 id", "player": f"玩家 id，只能是 {player_hint}"},
+                [f"give_item(latte, {player_ids[0]})"] if player_ids else ["give_item(latte, ?)"],
+            ),
             ToolSpec("sit_down", "坐下，用于引导玩家入座", {}, ["sit_down()"]),
             ToolSpec("emote", "做一个动作表情", {"name": "动作名"}, ["emote(微笑)"]),
             ToolSpec("tell_fact", "按知识边界透露一个话题（越界会被拒绝）", {"topic": "话题 id"}, ["tell_fact(brewing)"]),
-            ToolSpec("start_activity", "开启一个店内活动", {"activity": "活动 id"}, ["start_activity(star_quiz)"]),
-            ToolSpec("judge_answer", "判定玩家在活动中的回答是否正确", {"player": "玩家 id", "correct": "true/false"}, ["judge_answer(player_a, true)"]),
+            ToolSpec(
+                "start_activity",
+                f"开启一个店内活动。本场景可用: {activity_hint}",
+                {"activity": f"活动 id，只能是 {activity_hint}"},
+                [f"start_activity({activity_ids[0]})"] if activity_ids else ["start_activity(?)"],
+            ),
+            ToolSpec(
+                "judge_answer",
+                f"判定玩家在活动中的回答是否正确。玩家 id 只能是 {player_hint}",
+                {"player": f"玩家 id，只能是 {player_hint}", "correct": "true/false"},
+                [f"judge_answer({player_ids[0]}, true)"] if player_ids else ["judge_answer(?, true)"],
+            ),
             ToolSpec("set_flag", "设置任务标记（仅限白名单，防止乱改状态）", {"key": "标记名", "value": "值"}, ["set_flag(topic_found, 1)"]),
             ToolSpec("wait", "本回合不做任何世界动作", {}, ["wait()"]),
         ]

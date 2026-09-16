@@ -87,6 +87,8 @@ class NPCAgent:
         scenario: dict[str, Any],
         llm: LLM,
         config: RuntimeConfig | None = None,
+        *,
+        reset_env: bool = True,
     ) -> None:
         self.persona = persona
         self.env = env
@@ -94,12 +96,31 @@ class NPCAgent:
         self.llm = llm
         self.config = config or RuntimeConfig()
         self.id = persona.id
-        self.objectives: list[dict[str, Any]] = list(scenario.get("objectives") or [])
-        self.reset()
+        # 目标可以指定 owner。多 NPC 场景里每个 NPC 只领自己的那份，
+        # 共享的联合目标（不写 owner）两边都会去推 —— 这是"协作"的最小机制：
+        # 各干各的活，但完成条件定义在同一个世界状态上。
+        self.objectives: list[dict[str, Any]] = [
+            obj
+            for obj in (scenario.get("objectives") or [])
+            if obj.get("owner") in (None, "", self.id)
+        ]
+        # 自己的目标 id。state.objectives 是**整个世界的**目标表（含同伴那一份），
+        # 主动推进时必须按这个集合过滤 —— 否则阿柚会跑去替小舟弹琴。
+        self._objective_ids: set[str] = {
+            str(obj.get("id")) for obj in self.objectives if obj.get("id")
+        }
+        self.reset(reset_env=reset_env)
 
     # ------------------------------------------------------------------ #
-    def reset(self) -> None:
-        self.env.reset()
+    def reset(self, reset_env: bool = True) -> None:
+        """重置。
+
+        ``reset_env=False`` 是多 NPC 场景必须的：多个 agent 共享同一个世界，
+        如果每个 agent 都 reset 一次环境，后 reset 的会把先 reset 的
+        位置、物品、世界标记全部抹掉。世界由 Cast 统一重置一次。
+        """
+        if reset_env:
+            self.env.reset()
         self.state = StateTracker(self.id, self.persona.name)
         self.memory = MemoryManager(
             MemoryStore(
@@ -122,7 +143,8 @@ class NPCAgent:
             AddresseeSelector(
                 self.persona,
                 DialogueConfig(
-                    idle_ticks_before_proactive=self.config.idle_ticks_before_proactive
+                    idle_ticks_before_proactive=self.config.idle_ticks_before_proactive,
+                    npc_share_ceiling=self.config.npc_share_ceiling,
                 ),
             )
         )
@@ -136,12 +158,48 @@ class NPCAgent:
         self._shared_topics: set[str] = set()
         self._last_share_tick = -99
         self._attempted: set[str] = set()
+        self._observed: set[tuple] = set()
         self.state.update_from_env(self.env.observe(self.id))
 
     # ------------------------------------------------------------------ #
     # 主循环
     # ------------------------------------------------------------------ #
-    def step(self, utterance: Optional[Utterance] = None) -> AgentTurn:
+    # ------------------------------------------------------------------ #
+    def observe_utterance(self, utterance: Utterance) -> bool:
+        """只听不说：把一条发言记进现场状态与记忆，不触发任何回应。
+
+        多 NPC 场景需要区分"听见"和"要回答"：
+        同伴跟玩家聊天时，我也该把内容记下来（这样后面能接得上），
+        但不该跟着一起开口。返回是否是新听到的。
+
+        去重键用 (tick, 说话人, 文本)：同一个 tick 里同一个人不会说两遍同样的话，
+        所以这个键足够唯一；不去重的话，调度器补听 + step 内建监听会记两次。
+        """
+        key = (utterance.tick, utterance.speaker_id, utterance.text)
+        if key in self._observed:
+            return False
+        self._observed.add(key)
+        self.state.note_utterance(utterance)
+        self.memory.observe(utterance, self.id)
+        return True
+
+    def step(
+        self,
+        utterance: Optional[Utterance] = None,
+        *,
+        other_npc_spoke_last: bool = False,
+        allow_speech: bool = True,
+        count_silence: bool = True,
+    ) -> AgentTurn:
+        """推进一轮。
+
+        ``other_npc_spoke_last`` / ``allow_speech`` 由多 NPC 调度器（Cast）传入：
+        前者影响"要不要新建发言计划"，后者在工具层直接挡住 speak ——
+        因为正在执行计划的 NPC 不会因为对话决策而停下，必须两边都拦。
+
+        ``count_silence`` 也是给调度器用的：Cast 一个 tick 里会调用所有 agent，
+        冷场计数必须一个 tick 只加一次，否则"冷场 2 轮后主动开口"会被提前触发。
+        """
         started = time.perf_counter()
         self.turn_index += 1
 
@@ -151,14 +209,16 @@ class NPCAgent:
         self.planner.facts = self.env.world_facts()
 
         if utterance is not None:
-            self.state.note_utterance(utterance)
-            self.memory.observe(utterance, self.id)
-        else:
+            self.observe_utterance(utterance)
+        elif count_silence:
             self.state.tick_silence()
 
         plan_pending = bool(self.active_plan and not self.active_plan.done)
         decision = self.turn_manager.next_decision(
-            self.state, utterance, has_pending_plan=plan_pending
+            self.state,
+            utterance,
+            has_pending_plan=plan_pending,
+            other_npc_spoke_last=other_npc_spoke_last,
         )
 
         memories = self.memory.retrieve(
@@ -187,6 +247,8 @@ class NPCAgent:
             memory=self.memory,
             persona=self.persona,
             tracker=self.state,
+            npc_share_ceiling=self.config.npc_share_ceiling,
+            allow_speech=allow_speech,
         )
 
         if self.active_plan and not self.active_plan.done:
@@ -304,6 +366,15 @@ class NPCAgent:
             if step is None:
                 break
 
+            # 本轮话头已经给同伴了。这一步不是失败，是让位 ——
+            # 所以标 skipped 直接跳过，而不是交给工具去撞一个失败，
+            # 更不该触发重规划（重规划会白烧一次模型调用）。
+            if step.tool == "speak" and not ctx.allow_speech:
+                step.status = "skipped"
+                step.note = "本轮已有另一位 NPC 开口，让出话头"
+                executed += 1
+                continue
+
             call = self._materialize_step(step, ctx, memories, utterance)
             if call is None:
                 step.status = "failed"
@@ -382,10 +453,18 @@ class NPCAgent:
         decision: Any,
     ) -> None:
         if decision.proactive:
-            # 还有没做完的目标 → 推进它
-            pending = [k for k, v in self.state.objectives.items() if v != "done"]
+            # 只推进**自己的**目标。state.objectives 是整个世界的目标表，
+            # 里面还挂着同伴那一份 —— 不过滤的话，冷场时阿柚会去"推进"小舟的
+            # 弹琴目标，做出越俎代庖的动作。
+            pending = [
+                k
+                for k, v in self.state.objectives.items()
+                if v != "done" and k in self._objective_ids
+            ]
             if pending:
-                intent = self.turn_manager.selector.pick_proactive_intent(self.state)
+                intent = self.turn_manager.selector.pick_proactive_intent(
+                    self.state, only=self._objective_ids
+                )
             elif self._proactive_share(turn, ctx):
                 # 目标都做完了 → 主动分享店里的事（主动使用工具，而不是干聊）
                 return

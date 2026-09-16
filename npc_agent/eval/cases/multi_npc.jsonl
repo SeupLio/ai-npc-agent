@@ -1,0 +1,8 @@
+// 多 NPC（多 Agent）类用例：检验同一世界里多个 NPC 的发言权调度与协作。
+// 这些用例是单 NPC 场景里根本写不出来的 —— 它们断言的是**两个 NPC 之间**的关系：
+// 谁先开口、会不会撞车、同伴说的话另一个人有没有听见、联合目标有没有真的达成。
+//
+// 断言一律落在**真实世界状态**上（玩家背包 / 世界标记 / 目标状态），
+// 不落在"某个 NPC 有没有走完自己的步骤"上 —— 后者换个规划器就会失效。
+{"id": "multi_turn_taking", "category": "multi_npc", "scenario": "duet", "description": "两个 NPC 共享一个世界：各干各的活，同一轮只有一个开口，联合目标由共享世界状态判定", "turns": [{"player": "player_a", "text": "今天这里挺热闹的。"}, {"player": "player_b", "text": "露台那边好像有风。"}, null, null, null], "expect": {"tools": ["move_to", "take_item", "craft_item", "give_item", "set_flag", "start_activity"], "allowed_extra": ["tell_fact", "emote", "remember"], "player_has": {"player_a": ["latte"]}, "flags": ["song_started"], "objectives_done": ["terrace_night"], "all_npcs_spoke": true, "memory_contains_by_actor": {"ayou": ["阿澈说：今天这里挺热闹的。"], "xiaozhou": ["阿柚说："]}}}
+{"id": "multi_named_npc_priority", "category": "multi_npc", "scenario": "duet", "description": "被点名的 NPC 优先拿到发言权；另一个 NPC 即使有活要干也先让出话头（但世界动作照做）", "turns": [{"player": "player_a", "text": "小舟，你那边在弹什么？"}, {"player": "player_a", "text": "阿柚，那给我来杯柠檬水吧。"}, null, null, null], "expect": {"tools": ["move_to", "take_item", "craft_item", "give_item"], "allowed_extra": ["tell_fact", "emote", "remember", "set_flag", "start_activity", "sit_down"], "player_has": {"player_a": ["lemonade"]}, "all_npcs_spoke": true}}

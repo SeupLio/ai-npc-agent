@@ -175,6 +175,41 @@ def test_style_trims_long_speech() -> None:
     assert result.detail.count("。") <= 2  # sentence_max = 2
 
 
+def test_style_does_not_eat_a_line_that_starts_with_an_ellipsis() -> None:
+    """省略号不是句末。
+
+    小舟的开场台词是「……你好。」。把「…」当成句子边界的话，
+    这句会被切成 ["…", "…", "你好。"] 三段，sentence_max=2 一裁
+    就只剩「……」—— 整句台词凭空消失，而且不报任何错。
+    """
+    persona = Persona.from_dict(load_persona("xiaozhou"))
+    assert persona.style["sentence_max"] == 2
+    assert persona.apply_style("……你好。") == "……你好。"
+    assert persona.sentence_count("……你好。") == 1
+
+
+def test_consecutive_punctuation_counts_as_one_sentence() -> None:
+    """「真的吗？！」是一个人问了一句话，不是两句。"""
+    persona = Persona.from_dict(load_persona("xiaozhou"))
+    assert persona.sentence_count("真的吗？！") == 1
+    assert persona.sentence_count("好。第一句。第二句。第三句。") == 4
+
+
+def test_replan_goes_to_the_item_not_to_where_i_already_stand() -> None:
+    """重规划必须推断出**目的地**，而不是"原因串里第一个被提到的地点"。
+
+    take_item 失败的原因是「柠檬在后厨，你现在在吧台，需要先 move_to 过去」。
+    取第一个提到的地点会得到「吧台」—— NPC 原地 move_to 到自己已经站着的
+    地方，再试一次还是失败，永远拿不到东西。
+    """
+    agent, env = build("tutorial")
+    # 玩家点柠檬水：柠檬在后厨，而阿柚站在吧台 → 必然触发一次位置纠错
+    drive(agent, env, [("player_a", "阿柚，能给我来杯柠檬水吗？")] + [None] * 6)
+    calls = [a.render() for t in agent.turns for a in t.actions]
+    assert any("move_to" in c and "kitchen" in c for c in calls), calls
+    assert "lemonade" in env.snapshot()["actors"]["player_a"]["inventory"]
+
+
 def test_remember_tool_writes_semantic_memory() -> None:
     agent, env = build("tutorial")
     registry = ToolRegistry(env)

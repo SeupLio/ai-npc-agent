@@ -54,13 +54,19 @@ class AddresseeSelector:
     ) -> Optional[str]:
         """选出这句话应该对谁说。
 
-        优先级：被点名的人 > 最后说话的人 > 最近活跃的人
+        优先级：被点名的人 > 刚说话的人 > 最近活跃的玩家
+
+        被点名的可以是**同伴 NPC** —— 这样"阿柚转头跟小舟说：你来弹一首"
+        才有一个明确的收件人，下一轮小舟才知道该自己接。
         """
         if utterance is not None:
             for pid in utterance.mentions:
-                if pid in tracker.players:
+                if pid in tracker.players or pid in tracker.peers:
                     return pid
             if utterance.speaker_id in tracker.players:
+                return utterance.speaker_id
+            if utterance.speaker_id in tracker.peers:
+                # 同伴刚跟我说话 —— 回他，而不是回某个玩家
                 return utterance.speaker_id
 
         active = tracker.active_players()
@@ -151,9 +157,18 @@ class AddresseeSelector:
         return DialogueDecision(False, None, "没有需要回应的输入", 0.0)
 
     # ------------------------------------------------------------------ #
-    def pick_proactive_intent(self, tracker: StateTracker) -> str:
-        """冷场时该说什么。优先推进未完成的目标。"""
-        pending = [k for k, v in tracker.objectives.items() if v != "done"]
+    def pick_proactive_intent(self, tracker: StateTracker, only: set[str] | None = None) -> str:
+        """冷场时该说什么。优先推进未完成的目标。
+
+        ``only`` 用来把范围收窄到"我自己的目标" ——
+        多 NPC 场景里 tracker.objectives 是整个世界的目标表，
+        不过滤就会替同伴操心（见 NPCAgent._respond 的注释）。
+        """
+        pending = [
+            k
+            for k, v in tracker.objectives.items()
+            if v != "done" and (only is None or k in only)
+        ]
         if pending:
             objective = pending[0]
             mapping = {

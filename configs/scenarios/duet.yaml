@@ -1,0 +1,83 @@
+# 场景四：双 NPC 协作（多 Agent）
+# 对应米哈游公开方案里"多个 NPC 共存于同一个世界"的那部分。
+#
+# 与前面三个场景的根本区别：场上同时站着两个 NPC。
+# 他们各有各的人设、记忆和计划，但**世界只有一份** ——
+# 谁做了什么，另一个都看得见。这是"多 Agent"而不是"一个 Agent 分饰两角"：
+# 阿柚不知道小舟这一轮打算开口，小舟也不知道阿柚手里有没有那杯拿铁。
+#
+# 两条关键约束（也是多 Agent 最容易翻车的地方）：
+#   1. 一个 tick 里只能有一个人开口 —— 发言权由 Cast 统一收放，
+#      而不是靠每个 NPC 自觉。自己管自己的话，两个人都觉得自己该说话。
+#   2. 联合目标的完成条件写在共享的世界状态上（success_when: all_flags），
+#      两个人都干完才算数；它是完成条件，不是某一个 NPC 的计划。
+id: duet
+name: 双 NPC 协作
+description: 阿柚在吧台备饮，小舟在露台留声音；两人各干各的，但共同目标要一起达成
+npcs:
+  - {id: ayou, persona: ayou, start: counter}
+  - {id: xiaozhou, persona: xiaozhou, start: terrace}
+
+players:
+  - {id: player_a, name: 阿澈, start: counter}
+  - {id: player_b, name: 小满, start: terrace}
+
+world:
+  items:
+    beans: {loc: kitchen}
+    milk: {loc: kitchen}
+    lemon: {loc: kitchen}
+    apple: {loc: counter}
+    old_book: {loc: shelf}
+    gramophone: {loc: terrace}
+  knowledge_unlocked: [house_story, brewing, constellation]
+  settable_flags: [welcome_drink_served, song_started, lamp_lit]
+
+activities:
+  - {id: song_request, name: 点一首歌}
+
+objectives:
+  # 阿柚那份：做一杯饮品，亲手递到客人手里
+  - id: serve_guest
+    owner: ayou
+    goal: 给坐在吧台的阿澈做一杯拿铁并亲手递过去
+    priority: 1
+    steps:
+      - {goal: 招呼客人并问想喝什么, tool: speak, args: {intent: greet_new}}
+      - {goal: 去后厨准备, tool: move_to, args: {location: kitchen}}
+      - {goal: 取咖啡豆, tool: take_item, args: {item: beans}}
+      - {goal: 取牛奶, tool: take_item, args: {item: milk}}
+      - {goal: 做一杯拿铁, tool: craft_item, args: {recipe: latte}}
+      - {goal: 回到吧台, tool: move_to, args: {location: counter}}
+      - {goal: 把拿铁递给阿澈, tool: give_item, args: {item: latte, player: player_a}}
+      - {goal: 标记饮品已送出, tool: set_flag, args: {key: welcome_drink_served, value: "1"}}
+    # 完成条件定义在世界状态上，而不是"我把步骤走完了"
+    success_when: {player_has: {player_a: [latte]}}
+
+  # 小舟那份：把露台的声音立起来。她不用去任何地方 —— 人设是"驻店歌手"，
+  # 站在露台上就能开工，所以这份计划短、快，正好和 阿柚 那条长链并行。
+  - id: play_song
+    owner: xiaozhou
+    goal: 在露台起一首歌，给店里留一点声音
+    priority: 1
+    steps:
+      - {goal: 说一句开场的短话, tool: speak, args: {intent: opening}}
+      - {goal: 开启点歌, tool: start_activity, args: {activity: song_request}}
+      - {goal: 标记歌声起来了, tool: set_flag, args: {key: song_started, value: "1"}}
+    success_when: {flag: song_started}
+
+  # 联合目标：**没有 owner，也没有 steps**。
+  # 它不是一个计划，而是一个写在共享世界状态上的完成条件 ——
+  # 两个人各自干完自己那份，这个目标才会翻成 done。
+  #
+  # 完成条件刻意用 all_of 组合**真实世界状态**，而不是 all_flags 查标记：
+  # 标记只是记账，事实才是协作的证据。用标记写的话，一旦换成模型自己规划
+  # （它把咖啡递到了，但没人去设 welcome_drink_served 那个标记），
+  # 联合目标就永远不收敛 —— 评测断言的东西必须是真的发生过的事。
+  - id: terrace_night
+    goal: 和阿柚一起把露台的夜晚办起来：她有饮品，我有声音
+    priority: 9
+    success_when:
+      all_of:
+        - {player_has: {player_a: [latte]}}   # 阿柚那份：客人手里真的有那杯拿铁
+        - {flag: song_started}                # 小舟那份：歌声真的起来了

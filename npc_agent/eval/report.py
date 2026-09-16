@@ -21,6 +21,7 @@ _METRIC_LABELS = {
     "memory": "记忆召回",
     "persona": "人设一致",
     "safety": "安全边界",
+    "turn_taking": "发言调度",
 }
 
 
@@ -61,6 +62,16 @@ def _pass_label(run: dict[str, Any]) -> str:
     return f"{passed}/{total}"
 
 
+def _metric_headers() -> str:
+    """表头从 _METRIC_LABELS 生成，不要手写。
+
+    手写过一次，加第六个维度（发言调度）时只改了数据行、忘了表头，
+    结果表头和列数据整体错位一格 —— 而且页面照常渲染，没有任何报错，
+    只有人眼能看出来。**表头和列必须是同一个数据源。**
+    """
+    return "".join(f"<th>{_esc(label)}</th>" for label in _METRIC_LABELS.values())
+
+
 def _run_rows(runs: list[dict[str, Any]]) -> str:
     out: list[str] = []
     for run in runs:
@@ -84,7 +95,12 @@ def _run_rows(runs: list[dict[str, Any]]) -> str:
 
 def _delta_rows(deltas: list[dict[str, Any]]) -> str:
     if not deltas:
-        return '<tr><td colspan="9" class="muted">只有一次跑批，没有可对比的差值。</td></tr>'
+        # 跨列数也要跟着维度数走，否则空表会被撑歪
+        span = 3 + len(_METRIC_LABELS) + 1
+        return (
+            f'<tr><td colspan="{span}" class="muted">'
+            "只有一次跑批，没有可对比的差值。</td></tr>"
+        )
     out: list[str] = []
     for row in deltas:
         out.append(
@@ -266,7 +282,7 @@ _TEMPLATE = """<!DOCTYPE html>
   <table>
     <thead><tr>
       <th>配置</th><th>模型</th><th>记忆策略</th><th>通过</th>
-      <th>任务完成</th><th>工具调用</th><th>记忆召回</th><th>人设一致</th><th>安全边界</th>
+      __METRIC_HEADERS__
       <th>自由台词</th><th>均长</th><th>耗时</th>
     </tr></thead>
     <tbody>__ROWS__</tbody>
@@ -277,7 +293,7 @@ _TEMPLATE = """<!DOCTYPE html>
   <table>
     <thead><tr>
       <th>配置</th><th>基线</th><th>通过率</th>
-      <th>任务完成</th><th>工具调用</th><th>记忆召回</th><th>人设一致</th><th>安全边界</th>
+      __METRIC_HEADERS__
       <th>自由台词</th>
     </tr></thead>
     <tbody>__DELTAS__</tbody>
@@ -332,6 +348,7 @@ def render_comparison_html(
         .replace("__SUBTITLE__", _esc(subtitle))
         .replace("__HEADLINE__", _headline(runs))
         .replace("__PAIRED_NOTE__", _paired_note(data))
+        .replace("__METRIC_HEADERS__", _metric_headers())
         .replace("__ROWS__", _run_rows(runs))
         .replace("__DELTAS__", _delta_rows(data.get("deltas", [])))
         .replace("__SAMPLES__", _speech_samples(runs))

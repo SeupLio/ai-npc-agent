@@ -297,7 +297,7 @@ class Comparison:
             results = outcome.report.results
         else:
             results = outcome.report.results[: self.paired_count()]
-        keys = ("task", "tools", "memory", "persona", "safety")
+        keys = ("task", "tools", "memory", "persona", "safety", "turn_taking")
         if not results:
             return 0, 0, {k: 0.0 for k in keys}
         means = {
@@ -324,6 +324,7 @@ class Comparison:
                     "memory": means.get("memory", 0.0),
                     "persona": means.get("persona", 0.0),
                     "safety": means.get("safety", 0.0),
+                    "turn_taking": means.get("turn_taking", 0.0),
                     "free": outcome.free_speech_rate,
                     "chars": outcome.avg_speech_chars,
                     "sec": outcome.duration,
@@ -351,6 +352,9 @@ class Comparison:
                     "memory": round(means.get("memory", 0) - base_means.get("memory", 0), 3),
                     "persona": round(means.get("persona", 0) - base_means.get("persona", 0), 3),
                     "safety": round(means.get("safety", 0) - base_means.get("safety", 0), 3),
+                    "turn_taking": round(
+                        means.get("turn_taking", 0) - base_means.get("turn_taking", 0), 3
+                    ),
                     "pass_rate": round(rate - base_rate, 3),
                     "free": round(outcome.free_speech_rate - base.free_speech_rate, 3),
                 }
@@ -390,14 +394,10 @@ class Comparison:
 
 # --------------------------------------------------------------------------- #
 def _collect_speeches(report: EvalReport) -> list[str]:
-    """从 transcript 里把 NPC 台词捞出来。
+    """把每个用例的 NPC 台词汇总起来。
 
-    harness 把台词写成 ``NPC: xxx``，这里按前缀提取；用前缀而不是
-    ``split(": ")`` 是因为台词本身可能带冒号。
+    直接读 ``CaseResult.speeches``，**不要**回头去 transcript 里按 "NPC: "
+    前缀捞 —— 多 NPC 之后转写行是「阿柚: xxx」，按老前缀提取会一条都捞不到，
+    而且捞回来的也分不清是谁说的（自由台词率是按角色算的）。
     """
-    speeches: list[str] = []
-    for result in report.results:
-        for line in result.transcript:
-            if line.startswith("NPC: "):
-                speeches.append(line[5:].strip())
-    return speeches
+    return [line for result in report.results for line in result.speeches]

@@ -166,3 +166,55 @@ def test_write_comparison_html_roundtrip(tmp_path):
     out = write_comparison_html(src, tmp_path / "nested" / "cmp.html")
     assert out.exists()
     assert "10/10" in out.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+def test_table_headers_line_up_with_the_data_columns():
+    """表头必须和列数据来自同一个源。
+
+    手写过一次表头，加第六个维度（发言调度）时只改了数据行、忘了表头，
+    于是表头和列数据整体错位一格 —— 页面照常渲染、不报任何错，
+    只有人眼能看出来。
+    """
+    from npc_agent.eval.report import _METRIC_LABELS, _run_rows
+
+    html = render_comparison_html(SAMPLE)
+    for label in _METRIC_LABELS.values():
+        assert f"<th>{label}</th>" in html, f"表头缺少维度 {label}"
+
+    # 绝对值表：4 个前置列 + 各维度 + 3 个尾部列
+    header = html.split("<tbody>")[0]
+    th_count = header.count("<th>")
+    row = _run_rows(SAMPLE["runs"]).split("<tr>")[1]
+    td_count = row.count("<td")
+    assert th_count == td_count, f"表头 {th_count} 列 vs 数据 {td_count} 列"
+    assert th_count == 4 + len(_METRIC_LABELS) + 3
+
+
+def test_empty_delta_table_span_follows_the_dimension_count():
+    """空表的跨列数也要跟着维度数走，否则加一维就撑歪。"""
+    from npc_agent.eval.report import _METRIC_LABELS, _delta_rows
+
+    assert f'colspan="{3 + len(_METRIC_LABELS) + 1}"' in _delta_rows([])
+
+
+def test_tool_catalog_lists_the_scenarios_own_activities():
+    """活动是本场景专有的，工具清单里必须列出真实可用的 id。
+
+    曾经硬编码 start_activity(star_quiz)，duet 场景只有 song_request，
+    模型照着例子抄，两个 NPC 都去调 start_activity(terrace_night)
+    （把目标 id 当成活动 id），白烧两轮。
+    """
+    from npc_agent.cast import build_cast
+    from npc_agent.config import RuntimeConfig, load_scenario
+    from npc_agent.llm import build_llm
+
+    for scenario_id, expected in (("duet", "song_request"), ("hosting", "star_quiz")):
+        cast = build_cast(load_scenario(scenario_id), build_llm("null"), RuntimeConfig())
+        spec = next(
+            s for s in cast.lead.registry.specs(cast.lead.id) if s.name == "start_activity"
+        )
+        rendered = spec.render()
+        assert expected in rendered
+        # 别的场景的活动名不该泄漏进来
+        assert "star_quiz" not in rendered or expected == "star_quiz"

@@ -49,6 +49,10 @@ class RuntimeConfig:
 
     # --- Dialogue ---
     idle_ticks_before_proactive: int = 2  # 冷场多少轮后主动发起话题
+    # 发言占比上限：超过且没被点名就让出话头。
+    # 之前 dialogue.py 和 tools.py 各自硬编码了一份 0.62，改一处漏一处，
+    # 现在收拢成一个配置项。
+    npc_share_ceiling: float = 0.62
 
     verbose: bool = False
 
