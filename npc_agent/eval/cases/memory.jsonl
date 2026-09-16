@@ -1,0 +1,3 @@
+// 记忆类用例：检验长期记忆的写入、巩固、检索与主动引用
+{"id": "memory_preference_recall", "category": "memory", "scenario": "icebreaker", "description": "玩家说出偏好后，NPC 应记住并在后续主动引用，而不是转头就忘", "turns": [{"player": "player_a", "text": "我特别喜欢偏酸的咖啡，越酸越好。"}, null, {"player": "player_b", "text": "我也常来这种小店。"}, null, {"player": "player_a", "text": "阿柚，你还记得我的口味吗？"}, null, null], "expect": {"memory_contains": ["偏酸"], "recall_in_speech": ["偏酸"]}}
+{"id": "memory_survives_consolidation", "category": "memory", "scenario": "icebreaker", "description": "长对话触发记忆巩固后，早期信息不能丢（巩固 ≠ 遗忘）", "turns": [{"player": "player_a", "text": "我特别喜欢偏酸的咖啡，越酸越好。"}, {"player": "player_b", "text": "今天天气不错。", "repeat": 30}, null], "expect": {"memory_contains": ["偏酸"]}}

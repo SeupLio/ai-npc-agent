@@ -1,0 +1,7 @@
+# 核心依赖只有两个：配置解析 + 终端美化
+# LLM 调用走 stdlib urllib，不引入 HTTP 库，保证零配置可跑
+pyyaml>=6.0
+rich>=13.0
+
+# 开发依赖
+pytest>=8.0

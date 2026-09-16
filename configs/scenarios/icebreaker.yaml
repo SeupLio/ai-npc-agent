@@ -1,0 +1,46 @@
+# 场景一：多人破冰
+# 对应米哈游公开的「社交破冰」场景。三个互不相识的玩家同时在场，
+# NPC 要同时处理三路发言，还得主动把话头递出去。
+id: icebreaker
+name: 多人破冰
+description: 三位互不相识的玩家第一次进店，NPC 需要让他们互相认识并找到共同话题
+npc: ayou
+npc_start: counter
+
+players:
+  - {id: player_a, name: 阿澈, start: door}
+  - {id: player_b, name: 小满, start: door}
+  - {id: player_c, name: 阿岚, start: door}
+
+world:
+  items:
+    beans: {loc: kitchen}
+    milk: {loc: kitchen}
+    lemon: {loc: kitchen}
+    apple: {loc: counter}
+    old_book: {loc: shelf}
+    gramophone: {loc: terrace}
+  knowledge_unlocked: [house_story, brewing, constellation]
+  settable_flags: [intro_all, topic_found, activity_started]
+
+activities:
+  - {id: star_quiz, name: 猜星座}
+
+objectives:
+  - id: greet_all
+    goal: 让三位玩家都完成自我介绍
+    priority: 1
+    steps:
+      - {goal: 开场问候并说明今天的小规矩, tool: speak, args: {intent: opening}}
+      - {goal: 邀请大家依次自我介绍, tool: speak, args: {intent: invite_intro}}
+    # 完成条件不是"我说完了"，而是"每位玩家都真的开口了" —— 目标由世界状态判定
+    success_when: {all_players_spoke: 1}
+
+  - id: find_topic
+    goal: 帮三位客人找到一个共同话题
+    priority: 2
+    steps:
+      - {goal: 就每个人的介绍追问一个细节, tool: speak, args: {intent: probe}}
+      - {goal: 记下共同点, tool: remember, args: {about: common_topic, importance: 0.8}}
+      - {goal: 确认话题成立, tool: set_flag, args: {key: topic_found, value: "1"}}
+    success_when: {flag: topic_found}

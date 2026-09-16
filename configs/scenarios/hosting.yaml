@@ -1,0 +1,39 @@
+# 场景三：游戏主持
+# 对应米哈游公开的「游戏主持」场景。
+# 关键约束：NPC 要推动活动，但不能抢走玩家的决定权 —— 所以流程里有明确的
+# "交还舞台"步骤（wrap_up），评测里也会检查 NPC 的发言占比是否过高。
+id: hosting
+name: 游戏主持
+description: NPC 主持一轮「猜星座」小游戏，需要发题、判定、收尾，并把舞台还给玩家
+npc: ayou
+npc_start: terrace
+
+players:
+  - {id: player_a, name: 阿澈, start: terrace}
+  - {id: player_b, name: 小满, start: terrace}
+
+world:
+  items:
+    gramophone: {loc: terrace}
+    lemon: {loc: kitchen}
+    apple: {loc: counter}
+  knowledge_unlocked: [constellation, house_story]
+  settable_flags: [round_started, question_asked, round_finished]
+
+activities:
+  - {id: star_quiz, name: 猜星座}
+
+objectives:
+  - id: host_round
+    goal: 主持一轮猜星座，让玩家参与进来而不是自己讲完
+    priority: 1
+    steps:
+      - {goal: 宣布规则, tool: speak, args: {intent: announce_rules}}
+      - {goal: 开启活动, tool: start_activity, args: {activity: star_quiz}}
+      - {goal: 标记回合开始, tool: set_flag, args: {key: round_started, value: "1"}}
+      - {goal: 出题, tool: speak, args: {intent: ask_question}}
+      - {goal: 标记已出题, tool: set_flag, args: {key: question_asked, value: "1"}}
+      - {goal: 判定玩家答案, tool: judge_answer, args: {player: player_a, correct: true}}
+      - {goal: 收尾并把舞台交还给玩家, tool: speak, args: {intent: wrap_up}}
+      - {goal: 标记回合结束, tool: set_flag, args: {key: round_finished, value: "1"}}
+    success_when: {flag: round_finished}

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "game-npc-agent"
+version = "0.1.0"
+description = "面向游戏场景的可控 AI NPC 智能体框架（Planning / Memory / Tool Use / Reflection / Persona / State Tracking）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["agent", "llm", "game-ai", "npc", "memory", "multi-agent"]
+
+dependencies = [
+    "pyyaml>=6.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+npc-agent = "npc_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["npc_agent*"]
+
+[tool.setuptools.package-data]
+npc_agent = ["eval/cases/*.jsonl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

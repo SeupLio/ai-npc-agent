@@ -1,0 +1,47 @@
+# 场景二：新手指引
+# 对应米哈游公开的「新手引导」场景。
+# 关键约束：引导要结合现场，而不是背一遍固定教程 —— 所以步骤里既有
+# 世界动作（去后厨、做拿铁、递给客人），也有语言动作，两者必须都对上。
+id: tutorial
+name: 新手指引
+description: 一位新客第一次到店，NPC 用真实动作完成四步引导
+npc: ayou
+npc_start: counter
+
+players:
+  - {id: player_a, name: 小鹿, start: door}
+
+world:
+  items:
+    beans: {loc: kitchen}
+    milk: {loc: kitchen}
+    lemon: {loc: kitchen}
+    apple: {loc: counter}
+    old_book: {loc: shelf}
+  knowledge_unlocked: [house_story, brewing]
+  settable_flags: [welcome_drink_served, guest_seated, learned_order, tutorial_done]
+
+objectives:
+  - id: welcome_drink
+    goal: 给新客做一杯欢迎饮品并亲手递过去
+    priority: 1
+    steps:
+      - {goal: 打招呼并问想喝什么, tool: speak, args: {intent: greet_new}}
+      - {goal: 去后厨准备, tool: move_to, args: {location: kitchen}}
+      - {goal: 取咖啡豆, tool: take_item, args: {item: beans}}
+      - {goal: 取牛奶, tool: take_item, args: {item: milk}}
+      - {goal: 做一杯拿铁, tool: craft_item, args: {recipe: latte}}
+      - {goal: 回到吧台, tool: move_to, args: {location: counter}}
+      - {goal: 把饮品交给客人, tool: give_item, args: {item: latte, player: player_a}}
+      - {goal: 标记欢迎饮品已送出, tool: set_flag, args: {key: welcome_drink_served, value: "1"}}
+    # 完成条件定义在**世界状态**上：客人手里真的有那杯拿铁了。
+    # 而不是"NPC 把自己的步骤执行完了" —— 否则玩家通过别的路径拿到饮品时目标不会收敛。
+    success_when: {player_has: {player_a: [latte]}}
+
+  - id: teach_order
+    goal: 教会新客这里的点单方式
+    priority: 2
+    steps:
+      - {goal: 解释点单方式, tool: speak, args: {intent: teach_order}}
+      - {goal: 标记已完成教学, tool: set_flag, args: {key: learned_order, value: "1"}}
+    success_when: {flag: learned_order}
