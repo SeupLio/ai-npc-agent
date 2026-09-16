@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from ..types import ActionCall, ActionResult, Utterance
 from .base import Environment, ToolSpec
+from .conditions import ConditionContext
 
 # --------------------------------------------------------------------------- #
 # 世界常量（策划配置的等价物）
@@ -288,19 +289,25 @@ class StarIsleEnv(Environment):
             allowed.append(topic)
         return allowed
 
+    def condition_context(self) -> ConditionContext:
+        """把咖啡屋的现状摊成一份事实清单，交给共享判定器。
+
+        注意这里**不判断**任何东西 —— 只陈述事实。判定逻辑住在 env/conditions.py，
+        两个环境共用一份，避免"同一个 all_flags 在两个世界里含义不同"这种
+        不会报错、只会让评测数字失去可比性的问题。
+        """
+        return ConditionContext(
+            flags=self.world_flags,
+            inventories={a.id: a.inventory for a in self.actors.values()},
+            speech_counts=self.speech_counts(),
+            player_ids=[a.id for a in self.actors.values() if a.kind == "player"],
+        )
+
     def objectives_status(self) -> dict[str, str]:
         """根据 success_when 条件刷新目标完成情况。
 
-        支持多种条件类型，因为"目标完成"未必等于"某个标记被设置"：
-            {flag: X}                     某个世界标记被设置
-            {all_flags: [X, Y]}           多个标记全部达成（多 NPC 联合目标）
-            {any_flags: [X, Y]}           任一标记达成
-            {all_of: [cond, ...]}         多个条件**全部**成立（可嵌套）
-            {any_of: [cond, ...]}         任一条件成立（可嵌套）
-            {all_players_spoke: N}        每位玩家都至少说过 N 次话
-            {player_has: {pid: [item]}}   某位玩家的背包里真的出现了某样东西
-
-        `player_has` 是最重要的一种：它把"目标完成"定义在**世界状态**上，
+        条件词汇表与判定语义见 env/conditions.py。这里只说一件事：
+        `player_has` 是最重要的一种条件 —— 它把"目标完成"定义在**世界状态**上，
         而不是"NPC 执行完了自己的步骤"。这样即使玩家自己拿到了那杯咖啡
         （比如另一个流程给的），目标也会正确地判定为完成。
 
@@ -311,48 +318,7 @@ class StarIsleEnv(Environment):
         "客人手里已经有咖啡了，但没人去设那个标记"，联合目标就永远不收敛。
         **评测断言的必须是真实世界状态。**
         """
-        for spec in self.objective_specs:
-            condition = spec.get("success_when") or {}
-            if self._condition_met(condition):
-                self.objective_state[spec["id"]] = "done"
-        return dict(self.objective_state)
-
-    def _condition_met(self, condition: dict[str, Any]) -> bool:
-        if not condition:
-            return False
-        if "all_of" in condition:
-            subs = list(condition["all_of"] or [])
-            return bool(subs) and all(self._condition_met(c) for c in subs)
-        if "any_of" in condition:
-            subs = list(condition["any_of"] or [])
-            return bool(subs) and any(self._condition_met(c) for c in subs)
-        if "flag" in condition:
-            return condition["flag"] in self.world_flags
-        if "all_flags" in condition:
-            # 联合目标：多 NPC 各自完成一部分，全部达成才算完成
-            needed = list(condition["all_flags"] or [])
-            return bool(needed) and all(f in self.world_flags for f in needed)
-        if "any_flags" in condition:
-            needed = list(condition["any_flags"] or [])
-            return bool(needed) and any(f in self.world_flags for f in needed)
-        if "all_players_spoke" in condition:
-            needed = int(condition["all_players_spoke"])
-            players = [a for a in self.actors.values() if a.kind == "player"]
-            if not players:
-                return False
-            return all(
-                sum(1 for u in self.utterances if u.speaker_id == p.id) >= needed
-                for p in players
-            )
-        if "player_has" in condition:
-            for player_id, items in (condition["player_has"] or {}).items():
-                actor = self.actors.get(player_id)
-                if actor is None:
-                    return False
-                if any(item not in actor.inventory for item in items):
-                    return False
-            return True
-        return False
+        return super().objectives_status()
 
     def speakers_by_tick(self) -> dict[int, list[str]]:
         """每个 tick 里有哪些人说过话。

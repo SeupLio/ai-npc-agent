@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..types import ActionCall, ActionResult
+from .conditions import ConditionContext, condition_met, refresh_objectives
 
 
 @dataclass
@@ -43,7 +44,13 @@ class ToolSpec:
 
 
 class Environment(ABC):
-    """世界接口。所有环境实现这 5 个方法 + 2 个可选钩子。"""
+    """世界接口。所有环境实现这 5 个方法 + 若干可选钩子。
+
+    约定：环境把目标定义放在 `self.objective_specs`（`[{id, goal, success_when, ...}]`），
+    完成情况放在 `self.objective_state`（`{id: "pending"|"done"}`）。
+    判定本身由基类完成 —— 环境只负责**提供事实**（`condition_context()`），
+    不负责判断"算不算完成"。见 env/conditions.py 里的说明。
+    """
 
     name: str = "env"
 
@@ -73,6 +80,32 @@ class Environment(ABC):
     # ------------------------------------------------------------------ #
     # 可选钩子（有默认实现）
     # ------------------------------------------------------------------ #
+    def condition_context(self) -> ConditionContext:
+        """提供判定目标完成所需的事实。
+
+        环境只负责说清楚"世界现在是什么样"：有哪些标记、谁手里有什么、谁说了几句。
+        "算不算完成"由 env/conditions.py 统一判定 —— 所以新增环境不需要再写一遍
+        条件求值，也不会和别的环境产生语义分歧。
+        """
+        return ConditionContext()
+
+    def objectives_status(self) -> dict[str, str]:
+        """刷新并返回目标完成情况。默认实现走共享判定器。
+
+        注意用 getattr 而不是类属性默认值：类级别的可变默认值会被所有实例共享，
+        一个环境的完成状态会渗进另一个环境。这里宁可多写一层。
+        """
+        specs = getattr(self, "objective_specs", ())
+        state = getattr(self, "objective_state", None)
+        if state is None:
+            state = {}
+            self.objective_state = state
+        return dict(refresh_objectives(specs, state, self.condition_context()))
+
+    def _condition_met(self, condition: dict[str, Any] | None) -> bool:
+        """判定单个条件。保留这个方法名，因为已有环境与测试都在用它。"""
+        return condition_met(condition, self.condition_context())
+
     def broadcast(self, actor_id: str, text: str) -> None:
         """把一次发言广播进世界，让其他 Agent / 玩家能观察到。"""
 
