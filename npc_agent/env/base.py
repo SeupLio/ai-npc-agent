@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..types import ActionCall, ActionResult
+from ..types import ActionCall, ActionResult, Utterance
 from .conditions import ConditionContext, condition_met, refresh_objectives
 
 
@@ -46,10 +46,15 @@ class ToolSpec:
 class Environment(ABC):
     """世界接口。所有环境实现这 5 个方法 + 若干可选钩子。
 
-    约定：环境把目标定义放在 `self.objective_specs`（`[{id, goal, success_when, ...}]`），
-    完成情况放在 `self.objective_state`（`{id: "pending"|"done"}`）。
-    判定本身由基类完成 —— 环境只负责**提供事实**（`condition_context()`），
-    不负责判断"算不算完成"。见 env/conditions.py 里的说明。
+    两条约定：
+
+    1. 目标定义放在 `self.objective_specs`（`[{id, goal, success_when, ...}]`），
+       完成情况放在 `self.objective_state`（`{id: "pending"|"done"}`）。
+       判定本身由基类完成 —— 环境只负责**提供事实**（`condition_context()`），
+       不负责判断"算不算完成"。见 env/conditions.py。
+
+    2. 演员表放在 `self.cast`（`[{id, name, start}]`）。
+       `npc_ids` / `is_multi_npc` 由它派生，导演与评测 harness 都读这两个。
     """
 
     name: str = "env"
@@ -80,6 +85,22 @@ class Environment(ABC):
     # ------------------------------------------------------------------ #
     # 可选钩子（有默认实现）
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # 演员表（由 self.cast 派生）
+    # ------------------------------------------------------------------ #
+    @property
+    def npc_ids(self) -> list[str]:
+        """世界里所有 NPC 的 id。
+
+        导演用它排发言权，评测用它算"有没有两个 NPC 抢话"。
+        派生自 `cast`，所以任何环境只要按约定填了演员表就自动拥有它。
+        """
+        return [spec["id"] for spec in getattr(self, "cast", [])]
+
+    @property
+    def is_multi_npc(self) -> bool:
+        return len(getattr(self, "cast", [])) > 1
+
     def condition_context(self) -> ConditionContext:
         """提供判定目标完成所需的事实。
 
@@ -108,6 +129,69 @@ class Environment(ABC):
 
     def broadcast(self, actor_id: str, text: str) -> None:
         """把一次发言广播进世界，让其他 Agent / 玩家能观察到。"""
+
+    # ------------------------------------------------------------------ #
+    # 发言记录 —— 多 Agent 协作依赖的公共契约
+    # ------------------------------------------------------------------ #
+    @property
+    def utterances(self) -> list[Utterance]:
+        """世界里的发言记录，按时间顺序。
+
+        这不是"某个环境的内部字段"，而是**导演需要的事实**：
+        多 NPC 调度要判断"本轮是不是已经有人开过口了"，靠的就是它。
+        所以它属于 Environment 契约 —— 否则导演就得知道
+        "星屿咖啡屋的发言存在 self.utterances、Minecraft 的存在世界后端里"，
+        抽象立刻漏了。
+
+        默认实现是懒初始化的列表，环境可以直接 append。
+        """
+        if not hasattr(self, "_utterances"):
+            self._utterances: list[Utterance] = []
+        return self._utterances
+
+    def record_player_utterance(self, player_id: str, text: str) -> Utterance:
+        """外部驱动（CLI / 评测用例）注入一句玩家发言。
+
+        默认只记进发言日志；需要世界本身也知道这句话的环境
+        （例如 Minecraft 要把聊天发进服务器）可以覆盖它。
+        """
+        utterance = Utterance(
+            speaker_id=player_id,
+            speaker_name=self.speaker_name(player_id),
+            text=text,
+            tick=self.tick,
+            role="player",
+            is_question=text.rstrip().endswith(("?", "？")),
+        )
+        self.utterances.append(utterance)
+        return utterance
+
+    def speaker_name(self, actor_id: str) -> str:
+        """actor id → 显示名。默认直接用 id，环境可以覆盖成游戏内名字。"""
+        return actor_id
+
+    def speakers_by_tick(self) -> dict[int, list[str]]:
+        """每个 tick 里有哪些人说过话。
+
+        多 NPC 场景用它检测"两个 NPC 同时开口"——这是多 Agent 最容易翻车的地方，
+        比单个 NPC 说错话更伤体验。
+
+        由 `utterances` 派生，所以任何实现了发言记录的环境都自动拥有它。
+        这就是把 `utterances` 提到契约里的收益：派生视图不必各写一份。
+        """
+        out: dict[int, list[str]] = {}
+        for utterance in self.utterances:
+            speakers = out.setdefault(utterance.tick, [])
+            if utterance.speaker_id not in speakers:
+                speakers.append(utterance.speaker_id)
+        return out
+
+    def speech_counts(self) -> dict[str, int]:
+        """每个说话人各说了多少句。同样由 `utterances` 派生。"""
+        counts: dict[str, int] = {}
+        for utterance in self.utterances:
+            counts[utterance.speaker_id] = counts.get(utterance.speaker_id, 0) + 1
+        return counts
 
     def advance_tick(self) -> None:
         """时间推进一格。"""

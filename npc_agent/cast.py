@@ -24,8 +24,10 @@ from typing import Any, Optional
 
 from .agent import NPCAgent
 from .config import RuntimeConfig, load_persona
+from .env import build_env
 from .env.base import Environment
-from .env.star_isle import DEFAULT_START, StarIsleEnv
+from .env.mc_client import WorldClient
+from .env.star_isle import DEFAULT_START
 from .llm.base import LLM
 from .modules.persona import Persona
 from .types import AgentTurn, Utterance
@@ -90,19 +92,26 @@ def build_cast(
     scenario: dict[str, Any],
     llm: LLM,
     config: RuntimeConfig | None = None,
+    *,
+    client: WorldClient | None = None,
 ) -> "Cast":
     """从场景配置造出一个能直接跑的剧组（含世界）。
 
     CLI、评测 harness、单元测试都走这一个入口 ——
     三处各写一遍构造顺序，早晚会有一处忘了把 cast 传给环境，
     结果就是"场景里配了两个 NPC，环境里只造出一个"。
+
+    `client` 只在 minecraft 环境有意义：传了就接真实世界，
+    不传就用进程内体素世界。测试与离线评测永远不传。
     """
     personas = load_cast(scenario)
     if not personas:
         raise ValueError(
             f"场景 {scenario.get('id')} 没有配置 NPC（需要 npc: 或 npcs:）"
         )
-    env = StarIsleEnv(scenario, cast=env_cast(scenario, personas))
+    # 走环境注册表，而不是直接 new StarIsleEnv：
+    # 场景 YAML 里写 env: minecraft 就能换到体素世界，这里一行都不用改。
+    env = build_env(scenario, cast=env_cast(scenario, personas), client=client)
     return Cast(scenario, env, personas, llm, config)
 
 

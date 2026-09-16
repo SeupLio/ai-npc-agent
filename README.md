@@ -7,6 +7,10 @@
 
 `Planning` · `Memory` · `Tool Use` · `Action` · `Reflection` · `Persona` · `State Tracking`
 
+**同一个 `NPCAgent`，跑在两个结构完全不同的世界里**：一个是内置的确定性文字世界
+（星屿咖啡屋），一个是 Minecraft 体素世界（有坐标、有物品数量、有昼夜循环）。
+Agent 代码一行没改 —— 这条主张有可执行的测试兜着，不是文档里的一句话。
+
 ---
 
 ## 为什么做这个
@@ -21,6 +25,7 @@
 | 多人同时说话就乱 | 抢戏、冷场 | 发言权与收件人判定（多玩家并发 + 主动发起话题） |
 | 同一个错误反复犯 | 稳定性差 | Reflection 把失败原因变成教训，重规划时插入补救动作 |
 | 场上两个 NPC 同时开口 | 两行字挤在一起，比单个 NPC 说错话更伤体验 | Cast 导演层统一收发发言权，一个 tick 只放一个人说话 |
+| 换一个游戏就要重写 Agent | 架构不可复用，每个项目重复造轮子 | Environment 抽象 + WorldClient 契约，换世界只写适配器 |
 
 > 一句话：**这个项目的价值不在于 NPC 说了什么，而在于它说完之后，世界真的变了。**
 
@@ -61,7 +66,7 @@
 
 **两个关键的架构决策：**
 
-1. **环境无关**。Agent 完全不知道自己在咖啡屋、Minecraft 还是引擎里，只面对 `observe()` 和 `dispatch()`。换世界 = 写一个新的 `Environment` 子类，Agent 一行不改。
+1. **环境无关**。Agent 完全不知道自己在咖啡屋、Minecraft 还是引擎里，只面对 `observe()` 和 `dispatch()`。换世界 = 写一个新的 `Environment` 子类，Agent 一行不改 —— 这句话现在有两个世界可以对照验证。
 2. **模型可选**。没有 API key 时自动回退到内置启发式策略，仓库 clone 下来零配置就能端到端跑通。这让评测可复现，也让"换模型"变成一行配置。
 
 ### 多 NPC：一个世界，多个 Agent
@@ -121,6 +126,76 @@
   *玩家*发言，不额外补一步，"阿柚转头跟小舟说：你来弹一首"就断在半路 ——
   小舟的现场状态和记忆里根本没有这句话。
 
+### 第二个世界：Minecraft 适配器
+
+上面那句"换世界 = 写一个新的 `Environment` 子类，Agent 一行不改"，
+在只有一种世界的时候是**主张**，不是**证据**。所以有了 `village` 场景：
+同一个 `NPCAgent`，跑在一个结构上完全不同的世界里。
+
+| | 星屿咖啡屋 | Minecraft 体素世界 |
+|---|---|---|
+| 位置 | 离散的几个房间 | 三维坐标 + 命名地点（POI） |
+| 背包 | 物品列表（有没有） | `{物品: 数量}`（有几个） |
+| 拿东西 | `take_item` | `mine`（挖）/ `craft`（合成） |
+| 工位 | 隐式（配方自带 station） | 显式工作台，且配方有**产出数量** |
+| 时间 | 没有 | 昼夜循环，夜里没光源就干不了活 |
+| 交付 | `give_item` | `transfer` |
+
+任务本身是一条真实的 Minecraft 制作链：
+
+```
+forest      mine(oak_log)
+workshop    craft(planks)    1 原木 → 4 木板
+workshop    craft(stick)     2 木板 → 4 木棍
+cave_mouth  mine(coal)       必须天亮时采，或附近有火把
+workshop    craft(torch)     1 煤炭 + 1 木棍 → 4 火把
+cave_mouth  place(torch)     ← 这一步才是目标
+```
+
+**Agent 侧感知到的差别只有一个：背包里的东西后面多了「×3」。**
+它照样规划、照样调工具、照样在被拒绝时重规划 —— 因为护栏给的理由
+仍然是一句人话（"天黑了，看不清矿脉。需要先做个火把放在附近，或者等天亮"）。
+
+#### 加了一层 `WorldClient`，而不是让 `Environment` 兼任传输层
+
+```
+    MinecraftEnv                     ← 翻译层：观测 schema / 工具映射 / 护栏
+         │
+         ▼
+    WorldClient（契约：JSON 可序列化的 op）  ← 只实现 call() 这一个方法
+         ├── LocalWorldClient   进程内体素世界（零依赖，离线可跑）
+         └── MineflayerClient   stdio JSON 行 → Node 桥 → 真实服务端
+```
+
+两个理由：
+
+1. **可测性**。`MinecraftEnv` 的全部逻辑都能在没有 Minecraft 服务端的情况下单测。
+   跑一次真实服务端要几十秒，跑一次 `LocalWorldClient` 只要几毫秒。
+2. **同一个契约，两种传输**。这不是文档里的一句承诺，而是代码结构：
+   两个后端都只实现 `call()`，所有类型化方法（`move` / `mine` / `craft` …）
+   都写在基类上，**物理上只存在一份**。
+
+失败被分成两类，这个区分比它看起来重要：
+
+| | 处理方式 | 为什么 |
+|---|---|---|
+| 游戏内失败（挖不到矿） | 返回 `ok=False` + 一句人话 | 这是给 Reflection 学的素材 |
+| 传输层故障（桥进程死了） | 抛 `WorldClientError` | 伪装成"NPC 没做到"，会让一次工程事故看起来像一次模型失败 |
+
+`Environment` 抽象本身**没有为 Minecraft 改动**：`observe()` / `dispatch()` /
+`tool_specs()` / `snapshot()` / `world_facts()` / `available_topics()` 全都没变。
+Minecraft 的不同之处全部被适配器吸收了。
+
+顺带被抽出来共用的东西（第二个环境不该把逻辑抄一遍）：
+
+- `env/conditions.py` —— 目标完成条件判定（`flag` / `all_flags` / `all_of` /
+  `any_of` / `player_has` / **`player_has_count`**）。环境只提供**事实**，判定只写一遍。
+- `Environment.utterances` / `speakers_by_tick()` / `speech_counts()` ——
+  多 Agent 导演依赖的公共契约。它们曾经是 `StarIsleEnv` 的私有字段，
+  于是导演得知道"咖啡屋的发言存在哪"——抽象就漏了。
+- 知识边界（`requires` 未满足就不许讲）在两个世界里是**同一套语义**：
+  "不剧透"是任务设计的保证，不该因为换了世界就失效。
+
 ---
 
 ## 快速开始
@@ -149,7 +224,22 @@ python -m npc_agent.cli ablate
 # 看工具清单 / 场景与人设
 python -m npc_agent.cli tools
 python -m npc_agent.cli info
+
+# 同一个 Agent 跑在 Minecraft 体素世界里（零依赖，不需要装 Minecraft）
+python -m npc_agent.cli demo --scenario village
+
+# 跨世界覆盖报告：同一套 Agent 在两个世界上的成绩
+python -m npc_agent.cli worlds --html docs/worlds.html
 ```
+
+> `village` 场景默认走**进程内**的体素世界（`LocalWorldClient`），
+> clone 下来就能跑。要接真实服务端：
+>
+> ```bash
+> npm i mineflayer mineflayer-pathfinder
+> ```
+> 然后在代码里把 `MineflayerClient` 传给 `build_cast(scenario, llm, client=...)`。
+> 桥脚本 `scripts/mineflayer_bridge.js` 支持 `--dry-run`，可以在没有服务端时验证协议。
 
 ### 接入真实模型
 
@@ -251,6 +341,43 @@ python -m npc_agent.cli demo --scenario tutorial \
     [OK ] set_flag(welcome_drink_served)
 ```
 
+**体素世界里跑的是同一条链路，只是动词换了：**
+
+```
+── 第 3 轮 ──
+  （阿岩：冷场 2 轮，主动把话头捡起来）
+  ▸ 阿岩 move_to(location=forest)
+  ▸ 阿岩 mine(block=oak_log)
+  阿岩：行，我这就去。
+
+── 第 4 轮 ──
+  （阿岩：继续执行未完成的计划）
+  ▸ 阿岩 move_to(location=workshop)
+  ▸ 阿岩 craft(item=planks)            1 原木 → 4 木板
+  ▸ 阿岩 craft(item=stick)             2 木板 → 4 木棍
+
+── 第 5 轮 ──
+  ▸ 阿岩 move_to(location=cave_mouth)
+  ▸ 阿岩 mine(block=coal)              采煤（必须天亮时做）
+  ▸ 阿岩 move_to(location=workshop)
+
+── 第 6 轮 ──
+  ▸ 阿岩 craft(item=torch)             1 煤炭 + 1 木棍 → 4 火把
+  ▸ 阿岩 move_to(location=cave_mouth)
+  ▸ 阿岩 place(block=torch, target=cave_mouth)   ← 目标达成
+
+── 第 7 轮 ──
+  ▸ 阿岩 set_flag(key=cave_lit, value=1)
+
+结束时世界状态
+  世界标记  cave_lit
+  目标      light_the_cave=done
+  阿岩背包  木板×2 木棍×3 火把×3          ← 数量语义真的用上了
+```
+
+注意最后一行：**火把是 4 支里插掉 1 支剩下的 3 支。**
+如果背包退化成"有没有"，这些数字就对不上 —— 所以数量不是装饰。
+
 ---
 
 ## 评测
@@ -277,14 +404,23 @@ python -m npc_agent.cli eval --json reports/baseline.json
 - **都有机会**（用例显式声明 `all_npcs_spoke` 才查）：短对话里让安静的角色
   一直不开口未必是错（小舟本来就是话少的歌手），所以不能默认当成缺陷。
 
-**当前基线（离线启发式模式，12 条自建用例）：**
+**当前基线（离线启发式模式，15 条自建用例）：**
 
 ```
-通过率 12/12（100%）　各维度均值 task=1.000 tools=1.000 memory=1.000
+通过率 15/15（100%）　各维度均值 task=1.000 tools=1.000 memory=1.000
 persona=1.000 safety=1.000 turn_taking=1.000
 ```
 
-> ⚠️ **诚实说明**：这是 12 条**自建**用例的回归基线，用来验证框架本身没坏、以及做消融对比。
+15 条里包含 3 条 `minecraft` 类用例，跑在体素世界上。
+它们和咖啡屋的用例**走同一套 `expect` 词汇表** —— 这是"环境无关"在评测层的体现：
+加一个世界不需要加一套新的断言语言。体素世界特有的断言只有两个新的：
+
+| 断言 | 含义 |
+|---|---|
+| `placed: [{block, poi}]` | 方块真的放在了指定地点（火把要在**洞口**，不是随便哪儿） |
+| `has_count: {actor: {item: n}}` | 背包里有几个（3 支火把 ≠ 1 支火把） |
+
+> ⚠️ **诚实说明**：这是 15 条**自建**用例的回归基线，用来验证框架本身没坏、以及做消融对比。
 > 它**不代表** NPC 的通用能力，也不能和外部的 AgentBench / τ-bench 分数横向比较。
 > 下一步是把它扩到 200+ 条，并加入人类偏好评估（LLM-as-judge）。
 
@@ -406,9 +542,34 @@ python -m npc_agent.cli compare --models kimi-k2.7-code --no-planner \
 （`test_peer_speech_reaches_the_other_npc_memory` 钉的就是这条）。
 
 > 50% 而不是更高，是因为其中两次台词落回了模板：一次是 `tell_fact` 吐出的
-> 世界知识库原文（**本来就该算脚本**，它是设定文本不是台词），一次是推理模型
+> 世界知识库原文（**本来就该是脚本**，它是设定文本不是台词），一次是推理模型
 > 偶发的一次调用失败，按设计回退到了模板。**降级路径本身也是被测过的**：
 > 它保证"模型挂了"不会变成"NPC 不说话"。
+
+### 跨世界覆盖报告（不是对照实验）
+
+```bash
+python -m npc_agent.cli worlds --html docs/worlds.html
+```
+
+```
+                        跨世界覆盖报告（不是对照实验）
+┌────────────────────┬───────────┬───────┬────────┬──────┬──────┬──────┬──────┬──────┬──────┐
+│ 世界               │ 环境      │  通过 │ 通过率 │ 任务 │ 工具 │ 记忆 │ 人设 │ 安全 │ 调度 │
+├────────────────────┼───────────┼───────┼────────┼──────┼──────┼──────┼──────┼──────┼──────┤
+│ 星屿咖啡屋（文字） │ star-isle │ 12/12 │   100% │ 1.00 │ 1.00 │ 1.00 │ 1.00 │ 1.00 │ 1.00 │
+│ Minecraft 体素世界 │ minecraft │   3/3 │   100% │ 1.00 │ 1.00 │ 1.00 │ 1.00 │ 1.00 │ 1.00 │
+└────────────────────┴───────────┴───────┴────────┴──────┴──────┴──────┴──────┴──────┴──────┘
+```
+
+**这份报告刻意不叫 `compare`，也刻意没有差值表。** 两个世界跑的是**不同的用例集**
+（12 条 vs 3 条），相减没有意义 —— 它回答的是"覆盖面"，不是"哪个更好"。
+
+把这两种报告混在一起，是"看起来专业、其实在拿苹果比橘子"最典型的来源。
+所以报告里直接印了这句话，并且有一条测试钉住它
+（`test_report_declares_it_is_not_a_controlled_experiment`）。
+
+受控对照见 `compare` 与 `ablate` —— 那两份才是同一套用例、只换一个自变量的。
 
 ### 已知限制：LLM 规划仍然不如启发式规划
 
@@ -473,8 +634,12 @@ game-npc-agent/
 │   │   ├── openai_compat.py    OpenAI 兼容端点 + SSE 流式
 │   │   └── scripted.py         测试桩
 │   ├── env/                环境抽象层
-│   │   ├── base.py             Environment 接口（5 个方法）
-│   │   └── star_isle.py        星屿咖啡屋（位置/物品/配方/知识/护栏）
+│   │   ├── base.py             Environment 接口（5 个方法 + 若干可选钩子）
+│   │   ├── conditions.py       目标完成条件判定（两个世界共用一份）
+│   │   ├── star_isle.py        星屿咖啡屋（位置/物品/配方/知识/护栏）
+│   │   ├── mc_client.py        WorldClient 契约 + 进程内体素世界 + Mineflayer 桥
+│   │   ├── minecraft.py        MinecraftEnv 适配器（翻译层）
+│   │   └── __init__.py         环境注册表：场景 YAML 里写 env: 就能换世界
 │   ├── modules/            七大模块，与 JD 第 2 条一一对应
 │   │   ├── persona.py          人设与三层边界控制
 │   │   ├── state.py            现场状态跟踪（区分玩家与同伴 NPC）
@@ -489,11 +654,13 @@ game-npc-agent/
 │       ├── harness.py          跑批与报告
 │       ├── compare.py          多配置对照（离线 vs 模型、记忆消融）
 │       ├── report.py           自包含 HTML 报告渲染
-│       └── cases/              用例集（task / memory / persona / safety / multi_npc）
+│       └── cases/              用例集（task / memory / persona / safety / multi_npc / minecraft）
 ├── configs/
-│   ├── personas/           人设卡（YAML，策划可改）—— 阿柚、小舟
-│   └── scenarios/          场景配置（YAML，目标/物品/白名单）—— 含双 NPC 的 duet
-└── tests/                  140 个单元与端到端测试
+│   ├── personas/           人设卡（YAML，策划可改）—— 阿柚、小舟、阿岩
+│   └── scenarios/          场景配置（YAML，目标/物品/白名单）—— 含 duet（双 NPC）与 village（体素世界）
+├── scripts/
+│   └── mineflayer_bridge.js    Node 桥：把世界操作契约翻成真实 Minecraft 动作
+└── tests/                  252 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -503,9 +670,19 @@ game-npc-agent/
 
 ## 设计取舍（面试常问）
 
-**1. 为什么用文字世界而不是直接上 Minecraft？**
+**1. 为什么主环境是文字世界，而不是直接上 Minecraft？**
 评测需要确定性。文字世界是纯函数式的，同一份输入必然得到同一份世界状态，才能做回归和消融。
-Minecraft 作为第二个 `Environment` 实现是路线图上的事，接口已经为它留好了。
+
+但"所以就不做 Minecraft"是错的 —— 那会让"环境无关"永远只是一句主张。
+现在的做法是**两个都要，但分工明确**：
+
+| | 用途 | 为什么 |
+|---|---|---|
+| 星屿咖啡屋 | 回归基线、消融实验 | 确定性、毫秒级、零依赖 |
+| Minecraft 体素世界 | 证明架构主张、演示 | 结构不同的世界，同一套 Agent |
+
+体素世界那条路径默认也走**进程内**实现（`LocalWorldClient`），所以它同样确定性、零依赖、
+能进 CI；`MineflayerClient` 是另一条传输，接真实服务端时才用。
 
 **2. 为什么 `speak` 是一个工具？**
 因为"说话"和"移动"在架构上应该同构——都是 Agent 的行动，都要过护栏，失败了都要能被 Reflection 处理。
@@ -542,19 +719,53 @@ Minecraft 作为第二个 `Environment` 实现是路线图上的事，接口已�
 还可能生成一个同样会被挡住的计划），Reflection 还会记下一条根本不存在的教训 ——
 下一轮 NPC 就带着"我说话会失败"的错误认知去做决策。
 
+**9. 为什么给 Minecraft 单独加一层 `WorldClient`，而不是让 `Environment` 兼任传输层？**
+因为那样 `MinecraftEnv` 就没法脱离 Minecraft 单测了。有了这一层，
+适配器的全部逻辑（观测怎么组装、工具怎么映射、护栏怎么给理由）
+都能在几毫秒内跑完，跑 CI 也不用起服务端。
+
+而且两个后端**只实现 `call()` 一个方法**，类型化方法全在基类上 ——
+所以"同一个契约、两种传输"是代码结构保证的，不是靠人工比对维持的。
+测试里有一条 `ContractClient` 会把所有操作强制过一遍 JSON 往返，
+专门用来抓"某一边偷偷依赖了 Python 对象"。
+
+**10. 桥的失败为什么不能算成 NPC 的失败？**
+因为这是两类完全不同的事：
+
+| | 例子 | 正确处理 |
+|---|---|---|
+| 游戏内失败 | 挖不到矿、材料不够 | `ok=False` + 一句人话，交给 Reflection |
+| 传输层故障 | 桥进程死了、响应 id 串了 | 抛 `WorldClientError`，立刻炸出来 |
+
+把后者伪装成"NPC 没做到"，会让一次工程事故看起来像一次模型失败 ——
+那是最难查的一类问题。反过来，把前者当异常抛，一次跑了 20 分钟的真实模型对照
+会因为"某一步被护栏挡住"而整个白跑。
+
+**11. 目标完成的判定为什么抽成共享模块？**
+因为它是**任务设计**的一部分，不是**世界实现**的一部分。
+咖啡屋的 `player_has` 和 Minecraft 的 `player_has_count` 问的是同一件事。
+
+如果每个环境各抄一份，第二个环境就会长出自己的方言：A 环境里 `all_flags` 是
+"全部达成"，B 环境写成"任一达成"。这种不一致不会报错，只会让评测数字悄悄失去可比性。
+
+抽出来之后还顺手修掉了两个同类的静默 bug：`player_has: {}` 空循环返回 True、
+`all_players_spoke` 写成列表会抛异常把整场跑挂 —— 两者都是"不表达任何约束的条件
+被算成已达成"，而且都不报错。
+
 ---
 
 ## 路线图
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 145 个测试
+- [x] 六维评测 harness + 252 个测试
 - [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
 - [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [x] **多 NPC 协作**：Cast 导演层 + 双 NPC 场景 + 发言调度评测维度
+- [x] **Minecraft 适配器**：WorldClient 契约 + 进程内体素世界 + Mineflayer 桥 + 环境注册表
 - [ ] 用例集扩到 200+，加入 LLM-as-judge 人类偏好评估
 - [ ] 全模型跑批（含 LLM 规划）—— 需先并行化，当前串行约 2 小时
-- [ ] Minecraft 环境适配器（Mineflayer bridge）
+- [ ] 接真实 Minecraft 服务端跑通端到端（桥脚本已就绪，`--dry-run` 已验证协议）
 - [ ] 小模型蒸馏 + vLLM 部署，测端到端延迟
 
 ---
@@ -563,23 +774,40 @@ Minecraft 作为第二个 `Environment` 实现是路线图上的事，接口已�
 
 ```bash
 python -m pytest tests -q
-# 140 passed
+# 252 passed
 ```
 
 覆盖：环境护栏、记忆检索与巩固、**五种检索策略的语义差异**、多人发言权判定、
 **多 NPC 的发言权调度与协作**（同轮不撞车 / 被点名者优先 / 安静 NPC 不被饿死 /
 同伴发言进对方记忆 / 记忆不串台 / 共享世界只重置一次 / 联合目标需要双方贡献）、
 端到端闭环、重规划自愈、人设与剧透拦截、**推理模型截断响应的处理**、
-**跑批检查点与未跑完时的配对保护**，
+**跑批检查点与未跑完时的配对保护**、
 **以及"同一输入跑两次结果必须一致"的确定性断言**。
 
-两条回归测试专门钉住了开发中踩到的真实缺陷：
+Minecraft 适配器另有 54 条，其中三条是结构性断言：
+
+- `test_the_same_agent_class_runs_on_both_worlds` ——
+  **同一份人设、同一个 `NPCAgent` 类、同一句输入，在两个世界里给出同一个决策；
+  而它们读到的世界确实不同。** 两件事缺一不可：只证明"决策相同"可能两边都没读世界，
+  只证明"世界不同"又没证明 Agent 能适应。
+- `test_contract_is_transport_independent` ——
+  同一套操作序列，分别走进程内和 JSON 往返两种传输，得到同一个世界状态。
+- `test_real_bridge_speaks_the_protocol` ——
+  真的起一个 Node 进程、走真的 stdio、跑真的 JSON。前面那些 Python 替身验证的是
+  "适配器不依赖 Python 对象"，这一条验证的是"协议在真正的进程边界上成立"。
+
+另有四条回归测试专门钉住了开发中踩到的真实缺陷：
 
 - `test_style_does_not_eat_a_line_that_starts_with_an_ellipsis` ——
   省略号被当成句末，导致小舟的开场「……你好。」被 `sentence_max=2` 裁成只剩「……」。
 - `test_replan_goes_to_the_item_not_to_where_i_already_stand` ——
   重规划取"原因串里第一个被提到的地点"，于是 `take_item` 失败后
   NPC 原地 `move_to` 到自己已经站着的地方，永远拿不到东西。
+- `test_empty_flag_list_is_not_a_free_pass` / `test_malformed_condition_value_is_false_not_a_crash` ——
+  空条件与类型写错的条件以前会被算成"已达成"或直接抛异常把整场跑挂。
+- `test_snapshot_uses_the_same_keys_as_the_coffee_shop` ——
+  体素世界的快照曾经把世界标记叫 `flags`，而 harness 读的是 `world_flags`，
+  于是那三条用例里"未达成标记"永远为真、静默通过。
 
 ---
 

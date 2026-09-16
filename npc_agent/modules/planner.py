@@ -45,6 +45,27 @@ SCENARIO_INTENTS = re.compile(
 )
 
 
+def recipe_needs(recipe: dict[str, Any]) -> dict[str, int]:
+    """把配方的材料表统一成 {材料: 数量}。
+
+    两种写法都要支持，因为它们表达的是两种不同的世界：
+
+        needs: [beans, milk]             咖啡屋 —— 只要"有没有"，不问几个
+        needs: {planks: 2, coal: 1}      Minecraft —— "2 块木板"和"1 块木板"不同
+
+    咖啡屋的配方是策划手写的，写成列表更直观；Minecraft 的配方照抄原版，
+    必须带数量（1 原木出 4 木板，2 木板出 4 木棍）。
+
+    归一化放在这里而不是让每个调用点各判一次：`_plan_serve` 和 `_world_block`
+    都要读这张表，两处各写一遍判断，迟早有一处漏掉 dict 分支 ——
+    而漏掉的表现是"NPC 计划里少取了材料"，跑到世界那边才失败，很难查。
+    """
+    needs = recipe.get("needs") or {}
+    if isinstance(needs, dict):
+        return {str(k): int(v) for k, v in needs.items()}
+    return {str(name): 1 for name in needs}
+
+
 class Planner:
     def __init__(
         self,
@@ -150,7 +171,7 @@ class Planner:
 
         if station:
             steps.append(PlanStep(f"去{station_name}准备", "move_to", {"location": station}))
-        for ingredient in recipe.get("needs", []):
+        for ingredient in recipe_needs(recipe):
             steps.append(PlanStep(f"取{ingredient}", "take_item", {"item": ingredient}))
         steps.append(PlanStep(f"制作{recipe.get('name', item_id)}", "craft_item", {"recipe": item_id}))
         if player_loc:
@@ -374,10 +395,17 @@ class Planner:
         items = self.facts.get("items") or {}
         lines = ["制作配方（必须先备齐材料，并站到对应工位上）："]
         for recipe_id, spec in recipes.items():
-            needs = "、".join(f"{items.get(n, n)}({n})" for n in spec.get("needs", []))
+            needs = "、".join(
+                f"{items.get(name, name)}({name})×{count}"
+                if count > 1
+                else f"{items.get(name, name)}({name})"
+                for name, count in recipe_needs(spec).items()
+            )
             station = spec.get("station")
+            yields = int(spec.get("yields") or 1)
+            made = f"，产出 {yields} 个" if yields > 1 else ""
             lines.append(
                 f"  - {spec.get('name', recipe_id)}({recipe_id})"
-                f" ← 材料 {needs}，工位 {station}"
+                f" ← 材料 {needs}，工位 {station}{made}"
             )
         return "\n".join(lines)

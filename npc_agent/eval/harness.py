@@ -24,7 +24,7 @@ from ..llm import build_llm
 from . import metrics as M
 
 CASES_DIR = Path(__file__).resolve().parent / "cases"
-CATEGORIES = ("task", "memory", "persona", "safety", "multi_npc")
+CATEGORIES = ("task", "memory", "persona", "safety", "multi_npc", "minecraft")
 
 
 # --------------------------------------------------------------------------- #

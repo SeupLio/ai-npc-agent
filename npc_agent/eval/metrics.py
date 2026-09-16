@@ -30,6 +30,28 @@ class Score:
 # --------------------------------------------------------------------------- #
 # 1) 任务完成
 # --------------------------------------------------------------------------- #
+def _held(actor: dict[str, Any]) -> tuple[set[str], dict[str, int]]:
+    """把背包读成 (有哪些, 各几个)。
+
+    两种世界给的背包形状不同，必须都支持：
+        咖啡屋   inventory = ["latte"]           列表，只问有没有
+        Minecraft inventory = {"torch": 3}      字典，还问有几个
+
+    以前这里直接 `i not in inventory`。字典的 `in` 判的是键，
+    所以它在 Minecraft 上"碰巧"是对的 —— 但那是巧合，不是设计：
+    哪天有人给背包加个包装类，它会静默地全部判为"有"。
+    """
+    raw = actor.get("inventory")
+    if isinstance(raw, dict):
+        counts = {str(k): int(v) for k, v in raw.items()}
+        return {k for k, v in counts.items() if v > 0}, counts
+    listed = [str(i) for i in (raw or [])]
+    counts = {}
+    for item in listed:
+        counts[item] = counts.get(item, 0) + 1
+    return set(listed), counts
+
+
 def task_completion(
     expect: dict[str, Any], snapshot: dict[str, Any], flags_seen: set[str]
 ) -> Score:
@@ -38,10 +60,31 @@ def task_completion(
 
     for player_id, items in (expect.get("player_has") or {}).items():
         actor = (snapshot.get("actors") or {}).get(player_id) or {}
-        inventory = actor.get("inventory") or []
-        missing = [i for i in items if i not in inventory]
+        held, _counts = _held(actor)
+        missing = [i for i in items if i not in held]
         if missing:
             problems.append(f"{player_id} 缺少 {missing}")
+
+    # 数量版：Minecraft 里"3 块木头"和"1 块木头"不是一回事
+    for actor_id, wanted in (expect.get("has_count") or {}).items():
+        actor = (snapshot.get("actors") or {}).get(actor_id) or {}
+        _held_set, counts = _held(actor)
+        for item, amount in (wanted or {}).items():
+            if counts.get(str(item), 0) < int(amount):
+                problems.append(f"{actor_id} 的 {item} 只有 {counts.get(str(item), 0)} 个，需要 {amount}")
+
+    # 世界里的方块：Minecraft 的目标是"洞口真的有个火把"
+    for entry in expect.get("placed") or []:
+        block = entry.get("block")
+        at = entry.get("poi")
+        found = [
+            e
+            for e in (snapshot.get("placed") or [])
+            if e.get("block") == block and (at is None or _poi_of(snapshot, e.get("pos")) == at)
+        ]
+        if not found:
+            where = f"在 {at}" if at else ""
+            problems.append(f"没有把 {block} 放在{where or '世界上'}")
 
     for flag in expect.get("flags") or []:
         if flag not in snapshot.get("world_flags", []):
@@ -61,6 +104,16 @@ def task_completion(
     if problems:
         return Score(0.0, "；".join(problems))
     return Score(1.0, "世界状态符合预期")
+
+
+def _poi_of(snapshot: dict[str, Any], pos: Any) -> str | None:
+    """坐标 → 地点 id。快照里没带地点表时返回 None（这时只比方块种类）。"""
+    if not pos:
+        return None
+    for poi_id, entry in (snapshot.get("pois") or {}).items():
+        if list(entry.get("pos") or []) == list(pos):
+            return poi_id
+    return None
 
 
 # --------------------------------------------------------------------------- #

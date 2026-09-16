@@ -155,14 +155,6 @@ class StarIsleEnv(Environment):
         self.reset()
 
     # ------------------------------------------------------------------ #
-    @property
-    def npc_ids(self) -> list[str]:
-        return [spec["id"] for spec in self.cast]
-
-    @property
-    def is_multi_npc(self) -> bool:
-        return len(self.cast) > 1
-
     def _mentions(self, text: str, speaker_id: str) -> list[str]:
         """找出这句话点到了谁。
 
@@ -182,7 +174,7 @@ class StarIsleEnv(Environment):
     def reset(self) -> dict[str, Any]:
         cfg = self.scenario
         self.tick = 0
-        self.utterances: list[Utterance] = []
+        self._utterances: list[Utterance] = []
         self.events: list[str] = []
 
         self.actors: dict[str, Actor] = {}
@@ -258,7 +250,7 @@ class StarIsleEnv(Environment):
             "present_actors": present,
             "visible_actors": visible,
             "visible_items": visible_items,
-            "recent_utterances": [u.render() for u in self.utterances[-MAX_TRANSCRIPT:]],
+            "recent_utterances": [u.render() for u in self._utterances[-MAX_TRANSCRIPT:]],
             "world_flags": sorted(self.world_flags),
             "objectives": self.objectives_status(),
             "activities": dict(self.activities),
@@ -320,26 +312,6 @@ class StarIsleEnv(Environment):
         """
         return super().objectives_status()
 
-    def speakers_by_tick(self) -> dict[int, list[str]]:
-        """每个 tick 里有哪些人说过话。
-
-        多 NPC 场景用它检测"两个 NPC 同时开口"——这是多 Agent 最容易翻车的地方，
-        比单个 NPC 说错话更伤体验。
-        """
-        out: dict[int, list[str]] = {}
-        for utterance in self.utterances:
-            speakers = out.setdefault(utterance.tick, [])
-            if utterance.speaker_id not in speakers:
-                speakers.append(utterance.speaker_id)
-        return out
-
-    def speech_counts(self) -> dict[str, int]:
-        """每个说话人各说了多少句。"""
-        counts: dict[str, int] = {}
-        for utterance in self.utterances:
-            counts[utterance.speaker_id] = counts.get(utterance.speaker_id, 0) + 1
-        return counts
-
     def snapshot(self) -> dict[str, Any]:
         return {
             "tick": self.tick,
@@ -361,16 +333,20 @@ class StarIsleEnv(Environment):
             },
             "world_flags": sorted(self.world_flags),
             "objectives": dict(self.objective_state),
-            "utterance_count": len(self.utterances),
+            "utterance_count": len(self._utterances),
             "events": list(self.events[-20:]),
         }
 
     # ------------------------------------------------------------------ #
     # 发言广播
     # ------------------------------------------------------------------ #
+    def speaker_name(self, actor_id: str) -> str:
+        actor = self.actors.get(actor_id)
+        return actor.name if actor else actor_id
+
     def broadcast(self, actor_id: str, text: str) -> None:
         actor = self.actors[actor_id]
-        self.utterances.append(
+        self._utterances.append(
             Utterance(
                 speaker_id=actor.id,
                 speaker_name=actor.name,
@@ -394,7 +370,7 @@ class StarIsleEnv(Environment):
             mentions=self._mentions(text, player_id),
             is_question=text.rstrip().endswith(("?", "？")),
         )
-        self.utterances.append(utterance)
+        self._utterances.append(utterance)
         return utterance
 
     # ------------------------------------------------------------------ #

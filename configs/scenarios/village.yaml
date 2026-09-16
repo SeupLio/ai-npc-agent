@@ -1,0 +1,104 @@
+# 场景五：村口点灯（Minecraft 体素世界）
+#
+# ## 这个场景是干什么的
+#
+# 它是"环境无关"这个架构主张的**证据**。
+#
+# 同一个 NPCAgent，不改一行代码，跑在一个结构上完全不同的世界里：
+#   位置 → 三维坐标 + 命名地点；背包 → 带数量；拿东西 → 挖矿 / 合成；
+#   多了一个昼夜循环，而且夜里没光源就干不了活。
+#
+# ## 任务本身
+#
+# 玩家让阿岩在入夜前把洞口照亮。要走到那一步，得走完整条真实的
+# Minecraft 制作链：
+#
+#     forest   → mine(oak_log)
+#     workshop → craft(planks)   1 原木 → 4 木板
+#     workshop → craft(stick)    2 木板 → 4 木棍
+#     cave_mouth → mine(coal)    必须在天亮时采，或者附近有火把
+#     workshop → craft(torch)    1 煤炭 + 1 木棍 → 4 火把
+#     cave_mouth → place(torch)  ← 这一步才是目标
+#
+# 昼夜循环让"什么时候去做火把"变成真的决策，而不是清单上的第三步：
+# 天亮时采矿没问题；一旦拖到夜里，没有火把就采不动煤炭，
+# 只能 wait 等天亮 —— 而这个代价是 Agent 自己造成的。
+#
+# ## 为什么用 objectives.steps 而不是只写 success_when
+#
+# 离线（无模型）路径靠配置里的 steps 执行，模型路径自己规划。
+# 两条路径共用同一份 success_when —— 而 success_when 定义在
+# **世界状态**上（洞口真的有一个火把），不是"NPC 执行完了步骤"。
+# 所以哪怕模型走出完全不同的步骤顺序，判定依然成立。
+id: village
+name: 村口点灯
+description: 阿岩要在入夜前采料做火把，把洞口照亮
+env: minecraft
+npc: ayan
+npc_start: village_square
+
+players:
+  - {id: player_a, name: 小鹿, start: village_square}
+
+# 世界地理。这份配置同时喂给进程内体素世界和真实 Minecraft 桥：
+# 桥那边只需要把 id 映射到游戏内坐标，任务设计本身不用改。
+pois:
+  village_square: {name: 村口广场, pos: [0, 0, 0]}
+  forest: {name: 北边林子, pos: [6, 0, 2]}
+  workshop: {name: 木工台, pos: [2, 0, -3]}
+  cave_mouth: {name: 洞口, pos: [10, 0, -6]}
+
+# 采集点有多少东西。资源是有限的 —— 这让"先把木头砍够"有意义。
+resources:
+  forest: {oak_log: 8}
+  cave_mouth: {coal: 4, cobblestone: 12}
+
+world:
+  flags: []
+  # 只有白名单里的标记可以被 set_flag 设置，防止 NPC 乱改世界状态
+  settable_flags: [torch_placed, cave_lit, dawn_waited]
+
+  # 世界知识。结构和咖啡屋那份完全一样（title / text / requires）。
+  # 干完活之后 NPC 靠这些起话头，现场才不会空掉；
+  # requires 那条是**知识边界**：洞口点灯之前不许提洞底有什么，否则剧透。
+  knowledge:
+    stonemasonry:
+      title: 石头的手感
+      text: 这村的墙都是河石砌的，缝要错开，不然冬天一冻就裂。
+      requires: null
+    torch_light:
+      title: 火把的门道
+      text: 火把别插太密，一支照八格，插密了反而看不清远处。
+      requires: null
+    cave_danger:
+      title: 洞口的事
+      text: 天黑了洞口那片就没人去，黑得伸手不见五指。
+      requires: null
+    cave_secret:
+      title: 洞底有什么
+      text: 灯点起来之后才敢说 —— 洞底那道矿脉，是村子这些年最好的运气。
+      requires: cave_lit
+  knowledge_unlocked: [stonemasonry, torch_light, cave_danger]
+
+objectives:
+  - id: light_the_cave
+    goal: 做一个火把，插在洞口，让村子夜里也有光
+    priority: 1
+    steps:
+      - {goal: 应下这件事, tool: speak, args: {intent: accept_order}}
+      - {goal: 去北边林子, tool: move_to, args: {location: forest}}
+      - {goal: 砍一根原木, tool: mine, args: {block: oak_log}}
+      - {goal: 回木工台, tool: move_to, args: {location: workshop}}
+      - {goal: 把原木劈成木板, tool: craft, args: {item: planks}}
+      - {goal: 把木板削成木棍, tool: craft, args: {item: stick}}
+      - {goal: 去洞口采煤, tool: move_to, args: {location: cave_mouth}}
+      - {goal: 采一块煤, tool: mine, args: {block: coal}}
+      - {goal: 回木工台, tool: move_to, args: {location: workshop}}
+      - {goal: 扎一支火把, tool: craft, args: {item: torch}}
+      - {goal: 走到洞口, tool: move_to, args: {location: cave_mouth}}
+      - {goal: 把火把插在洞口, tool: place, args: {block: torch, target: cave_mouth}}
+      - {goal: 标记洞口已点亮, tool: set_flag, args: {key: cave_lit, value: "1"}}
+    # 完成条件定义在**世界状态**上：洞口那个坐标上真的有一个火把。
+    # 数量条件在这里也用得上：火把是 1 原木 + 1 煤炭做出来的 4 支中的一支，
+    # 只要背包里还剩（或者洞口已经有）就算数。
+    success_when: {flag: cave_lit}

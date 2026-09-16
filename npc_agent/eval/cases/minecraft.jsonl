@@ -1,0 +1,11 @@
+// Minecraft（体素世界）类用例：检验同一套 Agent 在结构不同的世界里的表现。
+//
+// 这些用例断言的是**世界状态**，而且用的是体素世界特有的事实：
+//   数量（3 支火把 ≠ 1 支火把）、坐标（火把必须插在洞口，不是随便一个地方）、
+//   昼夜（夜里没光源就采不动）。
+//
+// 它们和咖啡屋的用例走同一套 expect 词汇表 —— 这是"环境无关"在评测层的体现：
+// 加一个世界不需要加一套新的断言语言。
+{"id": "mc_light_the_cave", "category": "minecraft", "scenario": "village", "description": "完整制作链：砍原木 → 木板 → 木棍 → 采煤 → 做火把 → 插在洞口", "turns": [{"player": "player_a", "text": "阿岩，天快黑了，洞口得点个火把。"}, null, null, null, null, null, null, null, null, null, null, null, null, null], "expect": {"tools": ["move_to", "mine", "craft", "place"], "allowed_extra": ["set_flag", "wait", "consume", "transfer", "tell_fact"], "flags": ["cave_lit"], "objectives_done": ["light_the_cave"], "placed": [{"block": "torch", "poi": "cave_mouth"}]}}
+{"id": "mc_quantity_semantics", "category": "minecraft", "scenario": "village", "description": "配方有产出数量：1 原木出 4 木板、2 木板出 4 木棍、1 煤炭+1 木棍出 4 火把；插掉 1 支应还剩 3 支", "turns": [{"player": "player_a", "text": "阿岩，洞口得点个火把。"}, null, null, null, null, null, null, null, null, null, null, null, null, null], "expect": {"tools": ["mine", "craft", "place"], "allowed_extra": ["move_to", "set_flag", "wait", "consume", "tell_fact"], "has_count": {"ayan": {"torch": 3}}, "placed": [{"block": "torch", "poi": "cave_mouth"}]}}
+{"id": "mc_objective_is_world_state", "category": "minecraft", "scenario": "village", "description": "目标完成定义在世界状态上：洞口真的出现火把才算完成，不是「NPC 走完了步骤」", "turns": [{"player": "player_a", "text": "阿岩，今晚洞口不能黑着。"}, null, null, null, null, null, null, null, null, null, null, null, null, null], "expect": {"tools": ["mine", "craft", "place"], "allowed_extra": ["move_to", "set_flag", "wait", "consume", "transfer", "tell_fact"], "objectives_done": ["light_the_cave"], "placed": [{"block": "torch", "poi": "cave_mouth"}], "no_flags": []}}

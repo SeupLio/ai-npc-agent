@@ -19,6 +19,7 @@ from typing import Optional
 
 from .cast import Cast, build_cast, load_cast
 from .config import RuntimeConfig, list_scenarios, load_scenario
+from .env import env_label, env_name_of
 from .llm import build_llm
 
 # 每个场景配一段固定的演示脚本，保证 Demo 可复现（录屏/截图用）
@@ -61,6 +62,12 @@ DEMO_SCRIPTS: dict[str, list[Optional[tuple[str, str]]]] = {
         None,
         None,
         None,
+    ],
+    # 体素世界：同一条制作链（砍木头 → 木板 → 木棍 → 采煤 → 火把 → 插在洞口）
+    # 需要 11 个世界动作，所以留足空轮。开头那句是任务触发点。
+    "village": [
+        ("player_a", "阿岩，天快黑了，洞口得点个火把。"),
+        None, None, None, None, None, None, None, None, None, None, None, None,
     ],
 }
 
@@ -111,9 +118,10 @@ def cmd_demo(args: argparse.Namespace) -> int:
     console.print(
         Panel.fit(
             f"[bold]{scenario.get('name')}[/bold] · {scenario.get('description','')}\n"
+            f"世界：{env_label(env.name)}\n"
             f"NPC：{_roster(scenario, cast)}\n"
             f"推理模式：{mode}",
-            title="星屿咖啡屋",
+            title=env_label(env.name),
             border_style="blue",
         )
     )
@@ -559,6 +567,63 @@ def cmd_ablate(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+def cmd_worlds(args: argparse.Namespace) -> int:
+    """跨世界覆盖报告：同一套 Agent 跑在几个世界上。
+
+    刻意**不叫** compare —— 它不是对照实验。两个世界的用例集不同，
+    分数不可相减；它回答的是"覆盖面"，不是"哪个更好"。
+    把这两种报告混在一起，是"看起来专业、其实在拿苹果比橘子"最常见的来源。
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    from .eval.worlds import METRIC_LABELS, run_worlds, save_worlds_json, write_worlds_html
+
+    console = Console()
+    cfg = RuntimeConfig.from_env()
+    if getattr(args, "provider", None):
+        cfg.llm_provider = args.provider
+    if getattr(args, "model", None):
+        cfg.model = args.model
+    if getattr(args, "base_url", None):
+        cfg.base_url = args.base_url
+    if getattr(args, "api_key", None):
+        cfg.api_key = args.api_key
+
+    runs = run_worlds(cfg, progress=lambda m: console.print(f"[dim]{m}[/dim]"))
+
+    table = Table(title="跨世界覆盖报告（不是对照实验）", header_style="bold")
+    table.add_column("世界")
+    table.add_column("环境", style="dim")
+    table.add_column("通过", justify="right")
+    table.add_column("通过率", justify="right")
+    for label in METRIC_LABELS.values():
+        table.add_column(label, justify="right")
+    for run in runs:
+        means = run.means
+        table.add_row(
+            run.spec.label,
+            run.spec.env,
+            f"{run.report.passed}/{run.report.total}",
+            f"{run.pass_rate:.0%}",
+            *[f"{means.get(k, 0.0):.2f}" for k in METRIC_LABELS],
+        )
+    console.print()
+    console.print(table)
+    console.print(
+        "\n[dim]两个世界跑的用例集不同，所以没有差值表、分数也不该相减。[/dim]"
+        "\n[dim]受控对照见 compare / ablate。[/dim]"
+    )
+
+    if args.json:
+        path = save_worlds_json(runs, args.json)
+        console.print(f"\n覆盖报告已写入 {path}")
+    if getattr(args, "html", ""):
+        page = write_worlds_html(runs, args.html)
+        console.print(f"HTML 报告已写入 {page}")
+    return 0
+
+
 def cmd_tools(args: argparse.Namespace) -> int:
     from rich.console import Console
     from rich.table import Table
@@ -594,7 +659,8 @@ def cmd_info(args: argparse.Namespace) -> int:
         cast = load_cast(scenario)
         roster = "、".join(f"{p.name}（{p.role}）" for p in cast) or "（未配置）"
         console.print(
-            f"\n[bold]{scenario_id}[/bold]　{scenario.get('name')}\n"
+            f"\n[bold]{scenario_id}[/bold]　{scenario.get('name')}"
+            f"　[dim]世界：{env_label(env_name_of(scenario))}[/dim]\n"
             f"  说明：{scenario.get('description')}\n"
             f"  NPC：{roster}{'　[dim]（多 NPC）[/dim]' if len(cast) > 1 else ''}\n"
             f"  玩家：{'、'.join(p['name'] for p in scenario.get('players', []))}\n"
@@ -661,6 +727,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_abl.add_argument("--json", default="reports/ablation.json", help="报告输出路径")
     p_abl.add_argument("--html", default="reports/ablation.html", help="HTML 报告路径，空串则不生成")
     p_abl.set_defaults(func=cmd_ablate)
+
+    p_worlds = sub.add_parser("worlds", help="跨世界覆盖报告：同一套 Agent 跑在几个世界上")
+    p_worlds.add_argument("--json", default="reports/worlds.json", help="报告输出路径")
+    p_worlds.add_argument("--html", default="reports/worlds.html", help="HTML 报告路径，空串则不生成")
+    p_worlds.set_defaults(func=cmd_worlds)
 
     p_tools = sub.add_parser("tools", help="列出当前场景的工具清单")
     p_tools.add_argument("--scenario", default="tutorial", choices=list_scenarios())
