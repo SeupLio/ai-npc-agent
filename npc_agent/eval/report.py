@@ -132,6 +132,19 @@ def _headline(runs: list[dict[str, Any]]) -> str:
     return "　·　".join(parts)
 
 
+def _paired_note(data: dict[str, Any]) -> str:
+    """跑批覆盖不一致时给出明确警告 —— 否则读者会把两张不同的卷子当成同一张。"""
+    if data.get("paired", True):
+        return ""
+    n = data.get("paired_cases", 0)
+    return (
+        '<div class="warn"><strong>注意：本次跑批未跑完。</strong>'
+        "各行的用例覆盖数不一致，报告中的指标已统一截取到"
+        f"<strong>所有行都完成的 {n} 条用例</strong>上重算，"
+        "以保证是同一张卷子。未被覆盖的用例不计入任何一行。</div>"
+    )
+
+
 def _speech_samples(runs: list[dict[str, Any]], per_run: int = 12) -> str:
     """把真实台词摊出来，并标出哪些是脚本、哪些是模型自己组织的。
 
@@ -236,6 +249,9 @@ _TEMPLATE = """<!DOCTYPE html>
   .note { background: var(--soft); border: 1px solid var(--line); border-radius: 8px;
           padding: 14px 18px; font-size: 13.5px; color: #374151; }
   .note li { margin-bottom: 5px; }
+  .warn { background: #fffbf0; border: 1px solid #f0dfb8; border-left: 4px solid #e8a33d;
+          border-radius: 8px; padding: 12px 16px; margin-top: 12px; font-size: 13.5px;
+          color: #6b5320; }
   footer { margin-top: 36px; color: var(--muted); font-size: 12.5px; }
 </style>
 </head>
@@ -244,6 +260,7 @@ _TEMPLATE = """<!DOCTYPE html>
   <h1>__TITLE__</h1>
   <div class="sub">__SUBTITLE__</div>
   <div class="headline">__HEADLINE__</div>
+  __PAIRED_NOTE__
 
   <h2>绝对值</h2>
   <table>
@@ -314,6 +331,7 @@ def render_comparison_html(
         _TEMPLATE.replace("__TITLE__", _esc(title))
         .replace("__SUBTITLE__", _esc(subtitle))
         .replace("__HEADLINE__", _headline(runs))
+        .replace("__PAIRED_NOTE__", _paired_note(data))
         .replace("__ROWS__", _run_rows(runs))
         .replace("__DELTAS__", _delta_rows(data.get("deltas", [])))
         .replace("__SAMPLES__", _speech_samples(runs))

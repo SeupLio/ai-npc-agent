@@ -370,13 +370,21 @@ def cmd_compare(args: argparse.Namespace) -> int:
     if not models and cfg.model:
         models = [cfg.model]
     for model in models:
+        roles = []
+        if args.no_planner:
+            roles.append("启发式规划")
+        if args.no_speech:
+            roles.append("模板台词")
+        suffix = f"（{'+'.join(roles)}）" if roles else ""
         specs.append(
             RunSpec(
-                label=f"模型·{model}",
+                label=f"模型·{model}{suffix}",
                 provider=provider,
                 model=model,
                 memory_strategy=cfg.memory_strategy,
                 temperature=args.temperature,
+                use_llm_planner=not args.no_planner,
+                use_llm_speech=not args.no_speech,
             )
         )
 
@@ -581,6 +589,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.add_argument("--temperature", type=float, default=0.3, help="评测建议低温以保证可复现")
     p_cmp.add_argument("--category", action="append", help="只跑某类用例，可重复")
     p_cmp.add_argument("--limit", type=int, default=0, help="只跑前 N 条用例（冒烟用）")
+    p_cmp.add_argument(
+        "--no-planner",
+        action="store_true",
+        help="让模型只负责台词，规划仍走启发式（每次调用省 ~35s，且只变一个变量）",
+    )
+    p_cmp.add_argument(
+        "--no-speech", action="store_true", help="只用模型规划，台词仍走模板"
+    )
     p_cmp.add_argument("--json", default="reports/comparison.json", help="报告输出路径")
     p_cmp.add_argument("--html", default="reports/comparison.html", help="HTML 报告路径，空串则不生成")
     p_cmp.set_defaults(func=cmd_compare)

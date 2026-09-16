@@ -133,6 +133,20 @@ def test_render_without_deltas_says_so():
     assert "没有可对比的差值" in html
 
 
+def test_unpaired_report_shows_warning():
+    """跑批没跑完时必须明说，否则读者会把两张不同的卷子当成同一张。"""
+    html = render_comparison_html({**SAMPLE, "paired": False, "paired_cases": 4})
+    assert "本次跑批未跑完" in html
+    assert "4 条用例" in html
+
+
+def test_paired_report_has_no_warning():
+    html = render_comparison_html({**SAMPLE, "paired": True})
+    assert "本次跑批未跑完" not in html
+    # 老报告里没有 paired 字段，应当默认视为已配对，不误报警告
+    assert "本次跑批未跑完" not in render_comparison_html(SAMPLE)
+
+
 def test_render_is_self_contained():
     """不能有外部依赖，否则离线打开会白屏。"""
     html = render_comparison_html(SAMPLE)

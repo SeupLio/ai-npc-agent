@@ -280,18 +280,45 @@ class Comparison:
         )
 
     # ------------------------------------------------------------------ #
+    # 配对：真实模型的跑批可能跑很久，中途被打断是常态。
+    # 如果各行的用例覆盖数不一致，直接比均值就是拿苹果比橘子 ——
+    # 所以一律截到"所有行都跑完的那一段"再算指标。
+    def paired_count(self) -> int:
+        if not self.outcomes:
+            return 0
+        return min(len(o.report.results) for o in self.outcomes)
+
+    def is_paired(self) -> bool:
+        return len({len(o.report.results) for o in self.outcomes}) <= 1
+
+    def _metrics_for(self, outcome: RunOutcome) -> tuple[int, int, dict[str, float]]:
+        """取该行在"共同覆盖区间"内的通过数与各维均值。"""
+        if self.is_paired():
+            results = outcome.report.results
+        else:
+            results = outcome.report.results[: self.paired_count()]
+        keys = ("task", "tools", "memory", "persona", "safety")
+        if not results:
+            return 0, 0, {k: 0.0 for k in keys}
+        means = {
+            k: round(sum(r.metrics.as_dict()[k] for r in results) / len(results), 3)
+            for k in keys
+        }
+        return sum(1 for r in results if r.passed), len(results), means
+
+    # ------------------------------------------------------------------ #
     def rows(self) -> list[dict[str, Any]]:
         """给渲染层用的行数据。"""
         rows = []
         for outcome in self.outcomes:
-            means = outcome.means
+            passed, total, means = self._metrics_for(outcome)
             rows.append(
                 {
                     "label": outcome.spec.label,
                     "model": outcome.spec.model or "—",
                     "strategy": outcome.spec.memory_strategy,
-                    "pass": f"{outcome.report.passed}/{outcome.report.total}",
-                    "pass_rate": outcome.pass_rate,
+                    "pass": f"{passed}/{total}",
+                    "pass_rate": round(passed / total, 3) if total else 0.0,
                     "task": means.get("task", 0.0),
                     "tools": means.get("tools", 0.0),
                     "memory": means.get("memory", 0.0),
@@ -309,10 +336,12 @@ class Comparison:
         if len(self.outcomes) < 2:
             return []
         base = self.outcomes[0]
-        base_means = base.means
+        _, _, base_means = self._metrics_for(base)
+        base_rate = self.rows()[0]["pass_rate"]
         out = []
-        for outcome in self.outcomes[1:]:
-            means = outcome.means
+        for index, outcome in enumerate(self.outcomes[1:], 1):
+            _, _, means = self._metrics_for(outcome)
+            rate = self.rows()[index]["pass_rate"]
             out.append(
                 {
                     "label": outcome.spec.label,
@@ -322,7 +351,7 @@ class Comparison:
                     "memory": round(means.get("memory", 0) - base_means.get("memory", 0), 3),
                     "persona": round(means.get("persona", 0) - base_means.get("persona", 0), 3),
                     "safety": round(means.get("safety", 0) - base_means.get("safety", 0), 3),
-                    "pass_rate": round(outcome.pass_rate - base.pass_rate, 3),
+                    "pass_rate": round(rate - base_rate, 3),
                     "free": round(outcome.free_speech_rate - base.free_speech_rate, 3),
                 }
             )
@@ -330,10 +359,23 @@ class Comparison:
 
     # ------------------------------------------------------------------ #
     def to_dict(self) -> dict[str, Any]:
+        paired = self.is_paired()
+        runs: list[dict[str, Any]] = []
+        for outcome in self.outcomes:
+            data = outcome.to_dict()
+            if not paired:
+                passed, total, means = self._metrics_for(outcome)
+                data["passed"] = passed
+                data["total"] = total
+                data["pass_rate"] = round(passed / total, 3) if total else 0.0
+                data["metric_means"] = means
+            runs.append(data)
         return {
             "categories": self.categories or "all",
             "limit": self.limit,
-            "runs": [o.to_dict() for o in self.outcomes],
+            "paired": paired,
+            "paired_cases": self.paired_count(),
+            "runs": runs,
             "deltas": self.deltas(),
         }
 

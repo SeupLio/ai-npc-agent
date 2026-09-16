@@ -174,3 +174,51 @@ def test_comparison_records_outcome_before_finishing():
     )
     assert len(comparison.outcomes) == 1
     assert comparison.outcomes[0].report.total == 1
+
+
+# --------------------------------------------------------------------------- #
+# 配对：覆盖数不一致时必须截到共同区间
+
+
+def _uneven_comparison():
+    """构造一个"第二行只跑了一半"的对照 —— 真实模型跑批被打断就是这样。"""
+    from npc_agent.eval.compare import Comparison
+
+    comparison = Comparison(base_config=RuntimeConfig(), limit=4).run(
+        [
+            RunSpec(label="A", provider="null"),
+            RunSpec(label="B", provider="null"),
+        ]
+    )
+    comparison.outcomes[1].report.results = comparison.outcomes[1].report.results[:2]
+    return comparison
+
+
+def test_paired_count_and_flag():
+    comparison = _uneven_comparison()
+    assert comparison.paired_count() == 2
+    assert comparison.is_paired() is False
+
+
+def test_rows_trim_to_common_prefix():
+    """不截齐就是拿苹果比橘子：A 跑 4 条、B 跑 2 条，均值不可比。"""
+    rows = _uneven_comparison().rows()
+    assert rows[0]["pass"] == "2/2"   # 被截到 2 条
+    assert rows[1]["pass"] == "2/2"
+
+
+def test_to_dict_marks_unpaired():
+    data = _uneven_comparison().to_dict()
+    assert data["paired"] is False
+    assert data["paired_cases"] == 2
+    assert all(run["total"] == 2 for run in data["runs"])
+
+
+def test_even_comparison_is_paired():
+    from npc_agent.eval.compare import Comparison
+
+    comparison = Comparison(base_config=RuntimeConfig(), limit=3).run(
+        [RunSpec(label="A", provider="null")]
+    )
+    assert comparison.is_paired() is True
+    assert comparison.paired_count() == 3
