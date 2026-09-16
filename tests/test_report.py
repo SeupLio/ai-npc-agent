@@ -33,6 +33,7 @@ SAMPLE = {
             },
             "free_speech_rate": 0.0,
             "avg_speech_chars": 18.0,
+            "speeches": ["拿铁好了，趁热", "欢迎，随便坐。今天想喝点什么"],
             "failures": [],
         },
         {
@@ -48,6 +49,10 @@ SAMPLE = {
             },
             "free_speech_rate": 0.815,
             "avg_speech_chars": 25.0,
+            "speeches": [
+                "拿铁好了，趁热",                       # 模板槽位渲染 → 脚本
+                "外头的风把招牌吹得咣当响，要变天了。",   # 模型自由组织 → 自由
+            ],
             "failures": [
                 {"case_id": "memory_preference_recall", "notes": ["memory: 没引用偏好"]}
             ],
@@ -102,6 +107,24 @@ def test_render_lists_failures():
     html = render_comparison_html(SAMPLE)
     assert "memory_preference_recall" in html
     assert "没引用偏好" in html
+
+
+def test_render_tags_scripted_vs_free_speech():
+    """台词样本必须区分脚本与自由 —— 这是整份报告最有说服力的部分。"""
+    html = render_comparison_html(SAMPLE)
+    assert "外头的风把招牌吹得咣当响，要变天了。" in html
+    assert 'class="tag t-free"' in html      # 模型自由组织
+    assert 'class="tag t-scripted"' in html  # 模板槽位渲染
+
+
+def test_speech_samples_dedupes_and_handles_missing():
+    from npc_agent.eval.report import _speech_samples
+
+    runs = [{"label": "x", "speeches": ["同一句", "同一句", "另一句"]}]
+    html = _speech_samples(runs)
+    assert html.count("同一句") == 1  # 去重
+
+    assert "没有台词记录" in _speech_samples([{"label": "x", "speeches": []}])
 
 
 def test_render_without_deltas_says_so():

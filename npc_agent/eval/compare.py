@@ -67,6 +67,7 @@ class RunOutcome:
     free_speech_rate: float = 0.0
     avg_speech_chars: float = 0.0
     speech_count: int = 0
+    speeches: list[str] = field(default_factory=list)
 
     @property
     def means(self) -> dict[str, float]:
@@ -88,6 +89,7 @@ class RunOutcome:
             "free_speech_rate": round(self.free_speech_rate, 3),
             "avg_speech_chars": round(self.avg_speech_chars, 1),
             "speech_count": self.speech_count,
+            "speeches": self.speeches,
             "by_category": self.report.by_category(),
             "failures": [
                 {"case_id": r.case_id, "notes": r.notes}
@@ -242,6 +244,7 @@ class Comparison:
                 free_speech_rate=free_speech_rate(speeches, patterns),
                 avg_speech_chars=(sum(len(s) for s in speeches) / len(speeches)) if speeches else 0.0,
                 speech_count=len(speeches),
+                speeches=speeches,
             )
             self.outcomes.append(outcome)
             if progress:

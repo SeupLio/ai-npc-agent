@@ -132,6 +132,50 @@ def _headline(runs: list[dict[str, Any]]) -> str:
     return "　·　".join(parts)
 
 
+def _speech_samples(runs: list[dict[str, Any]], per_run: int = 12) -> str:
+    """把真实台词摊出来，并标出哪些是脚本、哪些是模型自己组织的。
+
+    这是整份报告最有说服力的部分 —— 数字能证明"比例变了"，
+    但只有把台词摆出来，人才会相信"它真的在说话"。
+    """
+    from .compare import _norm, is_scripted, scripted_patterns
+
+    patterns = scripted_patterns()
+    blocks: list[str] = []
+    for run in runs:
+        speeches = run.get("speeches") or []
+        if not speeches:
+            continue
+
+        seen: set[str] = set()
+        picked: list[str] = []
+        for speech in speeches:
+            key = _norm(speech)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            picked.append(speech)
+            if len(picked) >= per_run:
+                break
+
+        items: list[str] = []
+        for speech in picked:
+            scripted = is_scripted(speech, patterns)
+            tag_cls = "t-scripted" if scripted else "t-free"
+            tag_txt = "脚本" if scripted else "自由"
+            items.append(
+                f'<li><span class="tag {tag_cls}">{tag_txt}</span>'
+                f'<span class="line">{_esc(speech)}</span></li>'
+            )
+
+        blocks.append(
+            f'<div class="sample"><h4>{_esc(run.get("label"))}'
+            f'<span class="muted">　共 {len(speeches)} 句，去重后展示 {len(picked)} 句</span></h4>'
+            f'<ul>{"".join(items)}</ul></div>'
+        )
+    return "\n".join(blocks) or '<p class="muted">没有台词记录。</p>'
+
+
 # --------------------------------------------------------------------------- #
 _TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -178,6 +222,16 @@ _TEMPLATE = """<!DOCTYPE html>
           padding: 12px 16px; margin-bottom: 10px; }
   .fail ul { margin: 4px 0 0; padding-left: 20px; }
   .fail li { font-size: 13px; }
+  .sample { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px;
+            margin-bottom: 10px; background: #fcfcfd; }
+  .sample ul { margin: 4px 0 0; padding: 0; list-style: none; }
+  .sample li { padding: 4px 0; border-bottom: 1px dashed #eef0f3; font-size: 13.5px; }
+  .sample li:last-child { border-bottom: none; }
+  .tag { display: inline-block; min-width: 34px; text-align: center; font-size: 11px;
+         padding: 1px 6px; border-radius: 4px; margin-right: 9px; vertical-align: 1px; }
+  .t-free { background: #e6f4ea; color: #137333; border: 1px solid #c6e7d0; }
+  .t-scripted { background: #f1f3f4; color: #5f6368; border: 1px solid #e0e3e6; }
+  .line { color: #1f2430; }
   code { background: #eef0f4; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
   .note { background: var(--soft); border: 1px solid var(--line); border-radius: 8px;
           padding: 14px 18px; font-size: 13.5px; color: #374151; }
@@ -211,6 +265,13 @@ _TEMPLATE = """<!DOCTYPE html>
     </tr></thead>
     <tbody>__DELTAS__</tbody>
   </table>
+
+  <h2>台词样本</h2>
+  <p class="sub" style="margin:0 0 10px">
+    <span class="tag t-free">自由</span>＝模型现场组织的语言　
+    <span class="tag t-scripted">脚本</span>＝人设模板或世界知识库原文
+  </p>
+  __SAMPLES__
 
   <h2>失败明细</h2>
   __FAILURES__
@@ -255,6 +316,7 @@ def render_comparison_html(
         .replace("__HEADLINE__", _headline(runs))
         .replace("__ROWS__", _run_rows(runs))
         .replace("__DELTAS__", _delta_rows(data.get("deltas", [])))
+        .replace("__SAMPLES__", _speech_samples(runs))
         .replace("__FAILURES__", _failure_blocks(runs))
         .replace("__TEMPERATURE__", _esc(temperature))
         .replace(
