@@ -47,6 +47,20 @@ def _delta(value: float) -> str:
     return f'<span class="{cls}">{value:+.3f}</span>'
 
 
+def _pass_label(run: dict[str, Any]) -> str:
+    """``RunOutcome.to_dict`` 落的是 passed/total，这里统一成 "n/m" 展示。
+
+    别直接读 ``run["pass"]`` —— 那个键只存在于终端表格用的 ``Comparison.rows()`` 里，
+    HTML 走的是 JSON 结构，读错会渲染出一个 "None"。
+    """
+    if "pass" in run:
+        return str(run["pass"])
+    passed, total = run.get("passed"), run.get("total")
+    if passed is None or total is None:
+        return "—"
+    return f"{passed}/{total}"
+
+
 def _run_rows(runs: list[dict[str, Any]]) -> str:
     out: list[str] = []
     for run in runs:
@@ -58,7 +72,7 @@ def _run_rows(runs: list[dict[str, Any]]) -> str:
             f'<td class="name">{_esc(run.get("label"))}</td>'
             f'<td class="mono">{_esc(model)}</td>'
             f'<td class="mono">{_esc(spec.get("memory_strategy", "—"))}</td>'
-            f'<td class="num"><strong>{_esc(run.get("pass"))}</strong></td>'
+            f'<td class="num"><strong>{_esc(_pass_label(run))}</strong></td>'
             + "".join(f'<td class="num">{_bar(means.get(k, 0.0))}</td>' for k in _METRIC_LABELS)
             + f'<td class="num">{float(run.get("free_speech_rate", 0)):.0%}</td>'
             f'<td class="num">{float(run.get("avg_speech_chars", 0)):.0f}</td>'
@@ -109,18 +123,12 @@ def _headline(runs: list[dict[str, Any]]) -> str:
     """一句话结论：把最关键的两个数拎到最前面。"""
     if not runs:
         return "没有数据。"
-    base = runs[0]
     parts = [
-        f'<strong>{_esc(base.get("label"))}</strong> 通过 '
-        f'<strong>{_esc(base.get("pass"))}</strong>，'
-        f'自由台词 <strong>{float(base.get("free_speech_rate", 0)):.0%}</strong>'
+        f'<strong>{_esc(run.get("label"))}</strong> 通过 '
+        f'<strong>{_esc(_pass_label(run))}</strong>，'
+        f'自由台词 <strong>{float(run.get("free_speech_rate", 0)):.0%}</strong>'
+        for run in runs
     ]
-    for run in runs[1:]:
-        parts.append(
-            f'<strong>{_esc(run.get("label"))}</strong> 通过 '
-            f'<strong>{_esc(run.get("pass"))}</strong>，'
-            f'自由台词 <strong>{float(run.get("free_speech_rate", 0)):.0%}</strong>'
-        )
     return "　·　".join(parts)
 
 

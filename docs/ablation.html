@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>记忆策略消融实验</title>
+<style>
+  :root {
+    --ink: #1f2430; --muted: #6b7280; --line: #e5e7eb;
+    --bg: #ffffff; --soft: #f7f8fa; --accent: #2f6fd0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 28px 64px; background: var(--bg); color: var(--ink);
+    font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 2px solid var(--line); }
+  h4 { font-size: 14px; margin: 0 0 6px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 22px; }
+  .headline {
+    background: var(--soft); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    border-radius: 8px; padding: 14px 18px; font-size: 14.5px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+  th { background: var(--soft); font-weight: 600; font-size: 12.5px; color: #374151; white-space: nowrap; }
+  td.num { text-align: right; white-space: nowrap; }
+  td.name { font-weight: 600; white-space: nowrap; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  tbody tr:hover { background: #fbfcfe; }
+  .bar { display: inline-block; width: 64px; height: 7px; background: #eceef2; border-radius: 4px;
+         overflow: hidden; vertical-align: middle; margin-right: 7px; }
+  .bar-fill { display: block; height: 100%; }
+  .bar-num { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #374151; }
+  .up { color: #0f9d58; font-weight: 600; }
+  .down { color: #d93025; font-weight: 600; }
+  .flat { color: #9aa1ab; }
+  .muted { color: var(--muted); }
+  .fail { background: #fff8f7; border: 1px solid #f3d3cf; border-radius: 8px;
+          padding: 12px 16px; margin-bottom: 10px; }
+  .fail ul { margin: 4px 0 0; padding-left: 20px; }
+  .fail li { font-size: 13px; }
+  code { background: #eef0f4; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .note { background: var(--soft); border: 1px solid var(--line); border-radius: 8px;
+          padding: 14px 18px; font-size: 13.5px; color: #374151; }
+  .note li { margin-bottom: 5px; }
+  footer { margin-top: 36px; color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>记忆策略消融实验</h1>
+  <div class="sub">五种检索策略在同一批用例上的表现。none 是「裸模型」基线，它与 hybrid 的差值就是记忆系统的净收益。</div>
+  <div class="headline"><strong>记忆·hybrid</strong> 通过 <strong>10/10</strong>，自由台词 <strong>0%</strong>　·　<strong>记忆·recency</strong> 通过 <strong>9/10</strong>，自由台词 <strong>0%</strong>　·　<strong>记忆·lexical</strong> 通过 <strong>10/10</strong>，自由台词 <strong>0%</strong>　·　<strong>记忆·importance</strong> 通过 <strong>9/10</strong>，自由台词 <strong>0%</strong>　·　<strong>记忆·none</strong> 通过 <strong>9/10</strong>，自由台词 <strong>0%</strong></div>
+
+  <h2>绝对值</h2>
+  <table>
+    <thead><tr>
+      <th>配置</th><th>模型</th><th>记忆策略</th><th>通过</th>
+      <th>任务完成</th><th>工具调用</th><th>记忆召回</th><th>人设一致</th><th>安全边界</th>
+      <th>自由台词</th><th>均长</th><th>耗时</th>
+    </tr></thead>
+    <tbody><tr><td class="name">记忆·hybrid</td><td class="mono">—</td><td class="mono">hybrid</td><td class="num"><strong>10/10</strong></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num">0%</td><td class="num">18</td><td class="num">0s</td></tr>
+<tr><td class="name">记忆·recency</td><td class="mono">—</td><td class="mono">recency</td><td class="num"><strong>9/10</strong></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:61px;background:#e8a33d"></span></span><span class="bar-num">0.950</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num">0%</td><td class="num">17</td><td class="num">0s</td></tr>
+<tr><td class="name">记忆·lexical</td><td class="mono">—</td><td class="mono">lexical</td><td class="num"><strong>10/10</strong></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num">0%</td><td class="num">18</td><td class="num">0s</td></tr>
+<tr><td class="name">记忆·importance</td><td class="mono">—</td><td class="mono">importance</td><td class="num"><strong>9/10</strong></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:61px;background:#e8a33d"></span></span><span class="bar-num">0.950</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num">0%</td><td class="num">25</td><td class="num">0s</td></tr>
+<tr><td class="name">记忆·none</td><td class="mono">—</td><td class="mono">none</td><td class="num"><strong>9/10</strong></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:61px;background:#e8a33d"></span></span><span class="bar-num">0.950</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num"><span class="bar"><span class="bar-fill" style="width:64px;background:#0f9d58"></span></span><span class="bar-num">1.000</span></td><td class="num">0%</td><td class="num">14</td><td class="num">0s</td></tr></tbody>
+  </table>
+
+  <h2>相对首行的差值</h2>
+  <p class="sub" style="margin:0 0 10px">绿色为提升，红色为下降。这张表回答的是"改动到底有没有用"。</p>
+  <table>
+    <thead><tr>
+      <th>配置</th><th>基线</th><th>通过率</th>
+      <th>任务完成</th><th>工具调用</th><th>记忆召回</th><th>人设一致</th><th>安全边界</th>
+      <th>自由台词</th>
+    </tr></thead>
+    <tbody><tr><td class="name">记忆·recency</td><td class="muted">记忆·hybrid</td><td class="num"><span class="down">-0.100</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="down">-0.050</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td></tr>
+<tr><td class="name">记忆·lexical</td><td class="muted">记忆·hybrid</td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td></tr>
+<tr><td class="name">记忆·importance</td><td class="muted">记忆·hybrid</td><td class="num"><span class="down">-0.100</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="down">-0.050</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td></tr>
+<tr><td class="name">记忆·none</td><td class="muted">记忆·hybrid</td><td class="num"><span class="down">-0.100</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="down">-0.050</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td><td class="num"><span class="flat">0.000</span></td></tr></tbody>
+  </table>
+
+  <h2>失败明细</h2>
+  <div class="fail"><h4>记忆·recency</h4><ul><li><code>memory_preference_recall</code><ul><li>memory: 已记住 [&#x27;偏酸&#x27;]，但后续没主动引用 [&#x27;偏酸&#x27;]</li></ul></li></ul></div>
+<div class="fail"><h4>记忆·importance</h4><ul><li><code>memory_preference_recall</code><ul><li>memory: 已记住 [&#x27;偏酸&#x27;]，但后续没主动引用 [&#x27;偏酸&#x27;]</li></ul></li></ul></div>
+<div class="fail"><h4>记忆·none</h4><ul><li><code>memory_preference_recall</code><ul><li>memory: 已记住 [&#x27;偏酸&#x27;]，但后续没主动引用 [&#x27;偏酸&#x27;]</li></ul></li></ul></div>
+
+  <h2>怎么读这张表</h2>
+  <div class="note">
+    <ul>
+      <li><strong>自由台词</strong>：既不是人设模板、也不是世界知识库原文的台词占比。
+          离线启发式只从固定字符串里取词，所以恒为 0%；真实模型应当显著高于 0 ——
+          这是"接上模型到底值不值"最直接的证据。</li>
+      <li><strong>记忆策略 none</strong>：不向 prompt 注入任何记忆，即「裸模型」基线。
+          它与 <code>hybrid</code> 的差值就是这套记忆系统的净收益。</li>
+      <li><strong>对照的公平性</strong>：同一套用例、同一套指标、同一份场景配置，只换一个变量。
+          温度固定为 0.3，以压低采样带来的波动。</li>
+      <li><strong>诚实声明</strong>：用例集是自建的回归基线，不是 AgentBench / τ-bench 这类
+          公开榜单，分数不能跨项目横向比较。它的用途是"证明我的改动没有把已有能力改坏，
+          并且带来了可测量的提升"。</li>
+    </ul>
+  </div>
+
+  <footer>由 <code>python -m npc_agent.cli compare</code> 生成　·　游戏 AI NPC 智能体框架</footer>
+</div>
+</body>
+</html>
