@@ -95,13 +95,23 @@ class OpenAICompatLLM(LLM):
             raise LLMUnavailable(f"响应结构异常: {body}") from exc
 
         content = (message.get("content") or "").strip()
+        finish = choice.get("finish_reason")
+
+        # 被 max_tokens 截断的**半句话**比模板台词更糟：
+        # 玩家会看到"是啊，阳光都"这种说到一半就没了的台词。
+        # 宁可显式报错让上层退回完整模板，也不要把残句播出去。
+        if content and finish == "length":
+            raise LLMUnavailable(
+                f"模型输出被 max_tokens 截断（已生成 {len(content)} 字，"
+                f"可能是思维链吃掉了预算）：{content[:40]!r}"
+            )
+
         if content:
             return content
 
         # 推理模型（Qwen3.x / Kimi / DeepSeek-V4 等）会先输出 reasoning_content，
         # 如果 max_tokens 给小了，思维链会把预算吃光，content 返回空字符串。
         # 这时必须显式报错让上层回退，而不是把空台词当成"模型说了空话"。
-        finish = choice.get("finish_reason")
         reasoning = message.get("reasoning_content") or ""
         raise LLMUnavailable(
             f"模型返回空内容（finish_reason={finish}，思维链 {len(reasoning)} 字）。"

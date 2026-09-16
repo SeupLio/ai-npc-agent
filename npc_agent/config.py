@@ -27,7 +27,10 @@ class RuntimeConfig:
     model: str = ""
     temperature: float = 0.7
     max_tokens: int = 2048            # 推理模型会先输出思维链，预算要给够
-    speech_max_tokens: int = 512      # 单句台词的预算
+    # 单句台词的预算。别按"一句话 90 字"去估 —— 推理模型的思维链和正式回答
+    # 共用这个预算，思维链通常就要 300~500 token。给 512 会让台词在说到
+    # 一半时被截断（"是啊，阳光都"），所以这里按"思维链 + 完整台词"来给。
+    speech_max_tokens: int = 1024
     use_llm_planner: bool = True      # 关掉可做消融：只用启发式规划
     use_llm_speech: bool = True       # 关掉可做消融：只用模板台词
 
