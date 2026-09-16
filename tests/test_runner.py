@@ -594,3 +594,83 @@ def test_empty_batch_is_handled() -> None:
     assert stats.cases == 0
     assert stats.speedup == 0.0
     assert R.degraded_summary([])["verdict"] == "没有用例"
+
+
+def test_the_cli_checkpoint_is_actually_populated_during_the_run(tmp_path, monkeypatch) -> None:
+    """`eval --checkpoint` 写出来的文件必须有内容，而且是**边跑边长**的。
+
+    这条测试针对一个真实的接线 bug：`run_cases` 的检查点本身是好的
+    （上面几条测试都在测它），但 CLI 侧等 `run_cases` 返回之后才把结果
+    喂给检查点，于是整个跑批期间写出来的始终是 `{"done": 0, "runs": []}`。
+    跑三小时被杀，打开检查点发现什么都没存。
+
+    `run_cases` 的单测发现不了这个 —— 它测的是"检查点被调用了"，
+    而不是"喂进去的东西是真的"。所以必须从 CLI 入口跑一遍。
+    """
+    from npc_agent import cli as C
+
+    ckpt = tmp_path / "ckpt.json"
+    report = tmp_path / "report.json"
+    monkeypatch.setenv("NPC_AGENT_PROVIDER", "null")
+    code = C.main(
+        [
+            "eval",
+            "--limit",
+            "4",
+            "--concurrency",
+            "2",
+            "--checkpoint",
+            str(ckpt),
+            "--json",
+            str(report),
+        ]
+    )
+    assert code == 0, "离线跑批应该干净通过"
+
+    assert ckpt.exists(), "检查点文件根本没生成"
+    data = json.loads(ckpt.read_text(encoding="utf-8"))
+    assert data["total"] == 4
+    assert data["done"] == 4, f"检查点只记了 {data['done']}/4 条 —— 接线漏了"
+    assert len(data["runs"]) == 4, "检查点里没有逐条结果，被杀之后什么都恢复不了"
+    assert all(r["case_id"] for r in data["runs"])
+    assert not ckpt.with_suffix(ckpt.suffix + ".tmp").exists()
+
+
+def test_the_cli_checkpoint_is_actually_populated_during_the_run(tmp_path, monkeypatch) -> None:
+    """`eval --checkpoint` 写出来的文件必须有内容，而且是**边跑边长**的。
+
+    这条测试针对一个真实的接线 bug：`run_cases` 的检查点本身是好的
+    （上面几条测试都在测它），但 CLI 侧等 `run_cases` 返回之后才把结果
+    喂给检查点，于是整个跑批期间写出来的始终是 `{"done": 0, "runs": []}`。
+    跑三小时被杀，打开检查点发现什么都没存。
+
+    `run_cases` 的单测发现不了这个 —— 它测的是"检查点被调用了"，
+    而不是"喂进去的东西是真的"。所以必须从 CLI 入口跑一遍。
+    """
+    from npc_agent import cli as C
+
+    ckpt = tmp_path / "ckpt.json"
+    report = tmp_path / "report.json"
+    monkeypatch.setenv("NPC_AGENT_PROVIDER", "null")
+    code = C.main(
+        [
+            "eval",
+            "--limit",
+            "4",
+            "--concurrency",
+            "2",
+            "--checkpoint",
+            str(ckpt),
+            "--json",
+            str(report),
+        ]
+    )
+    assert code == 0, "离线跑批应该干净通过"
+
+    assert ckpt.exists(), "检查点文件根本没生成"
+    data = json.loads(ckpt.read_text(encoding="utf-8"))
+    assert data["total"] == 4
+    assert data["done"] == 4, f"检查点只记了 {data['done']}/4 条 —— 接线漏了"
+    assert len(data["runs"]) == 4, "检查点里没有逐条结果，被杀之后什么都恢复不了"
+    assert all(r["case_id"] for r in data["runs"])
+    assert not ckpt.with_suffix(ckpt.suffix + ".tmp").exists()

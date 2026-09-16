@@ -302,15 +302,6 @@ def cmd_eval(args: argparse.Namespace) -> int:
         }
     )
 
-    # 进度回调：并发下完成顺序是乱的，所以只报"完成了几条"，不报"第几条"。
-    def on_done(run, done: int, total: int) -> None:
-        flag = ""
-        if run.degraded:
-            flag = " [yellow](降级)[/yellow]"
-        elif not run.ok:
-            flag = " [red](故障)[/red]"
-        console.print(f"  [{done}/{total}] {run.case_id}{flag}", highlight=False)
-
     checkpoint = None
     ckpt_path = getattr(args, "checkpoint", "") or ""
     runs_holder: list = []
@@ -324,6 +315,23 @@ def cmd_eval(args: argparse.Namespace) -> int:
             },
         )
 
+    # 进度回调同时负责**把已完成的结果喂给检查点**。
+    #
+    # 这里踩过一个坑：第一版是等 `run_cases` 返回之后才 `runs_holder.extend(runs)`，
+    # 于是整个跑批期间 `runs_holder` 一直是空的 —— 检查点每完成一条就写一次，
+    # 写出来的却始终是 `{"done": 0, "runs": []}`。跑三小时被杀，
+    # 打开检查点发现什么都没存。检查点这种东西，只有真的被用过才知道它坏没坏，
+    # 所以这里必须边跑边喂，而且和 `--progress` 解耦（不打印也要写）。
+    def on_done(run, done: int, total: int) -> None:
+        runs_holder.append(run)
+        if getattr(args, "progress", False):
+            flag = ""
+            if run.degraded:
+                flag = " [yellow](降级)[/yellow]"
+            elif not run.ok:
+                flag = " [red](故障)[/red]"
+            console.print(f"  [{done}/{total}] {run.case_id}{flag}", highlight=False)
+
     runs, stats = run_cases(
         cases,
         cfg,
@@ -331,10 +339,9 @@ def cmd_eval(args: argparse.Namespace) -> int:
         max_retries=getattr(args, "retries", DEFAULT_MAX_RETRIES),
         backoff=getattr(args, "backoff", DEFAULT_BACKOFF),
         cases_dir=harness.cases_dir,
-        on_done=on_done if getattr(args, "progress", False) else None,
+        on_done=on_done,
         checkpoint=checkpoint,
     )
-    runs_holder.extend(runs)
 
     for run in runs:
         if run.result is not None:
