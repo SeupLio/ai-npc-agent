@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ..cast import build_cast
 from ..config import RuntimeConfig, load_scenario
@@ -67,6 +67,10 @@ class CaseResult:
 class EvalReport:
     results: list[CaseResult] = field(default_factory=list)
     config: dict[str, Any] = field(default_factory=dict)
+    #: 跑批的实测数字（墙钟、加速比、降级条数）。
+    #: 刻意写进报告本体而不是只打在终端上：读 `eval.json` 的人（包括三个月后的
+    #: 自己）必须能仅凭文件判断"这份分数可不可信"，而不是靠记得当时的终端输出。
+    batch: dict[str, Any] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ #
     @property
@@ -103,7 +107,7 @@ class EvalReport:
         return means
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "config": self.config,
             "summary": {
                 "total": self.total,
@@ -114,6 +118,9 @@ class EvalReport:
             },
             "results": [r.to_dict() for r in self.results],
         }
+        if self.batch:
+            payload["batch"] = self.batch
+        return payload
 
     def save(self, path: str | Path) -> Path:
         target = Path(path)
@@ -130,9 +137,14 @@ class EvalHarness:
         self,
         config: RuntimeConfig | None = None,
         cases_dir: str | Path | None = None,
+        llm_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.config = config or RuntimeConfig()
         self.cases_dir = Path(cases_dir) if cases_dir else CASES_DIR
+        # 允许注入 LLM 构造器。存在的理由只有一个：并行跑批需要给**每条用例**
+        # 套一层计数器，用来发现"模型调用失败、框架静默回退到模板"这种
+        # 在报告里和"模型答得不错"长得一模一样的失败。
+        self._llm_factory = llm_factory
 
     # ------------------------------------------------------------------ #
     def load_cases(self, categories: Optional[list[str]] = None) -> list[dict[str, Any]]:
@@ -157,11 +169,15 @@ class EvalHarness:
     def run_case(self, case: dict[str, Any]) -> CaseResult:
         scenario_id = case.get("scenario", "tutorial")
         scenario = load_scenario(scenario_id)
-        llm = build_llm(
-            self.config.llm_provider,
-            model=self.config.model,
-            base_url=self.config.base_url,
-            api_key=self.config.api_key,
+        llm = (
+            self._llm_factory()
+            if self._llm_factory is not None
+            else build_llm(
+                self.config.llm_provider,
+                model=self.config.model,
+                base_url=self.config.base_url,
+                api_key=self.config.api_key,
+            )
         )
         # 一律走 Cast，哪怕场上只有一个 NPC。
         # 单 NPC 只是"剧组只有一个人"的特例 —— 两条路径共用一套调度，

@@ -22,6 +22,8 @@ from .cast import Cast, build_cast, load_cast
 from .config import RuntimeConfig, list_scenarios, load_scenario
 from .env import env_label, env_name_of
 from .eval.harness import CASES_DIR
+from .eval.judge import DEFAULT_RUBRICS as DEFAULT_RUBRIC_KEYS
+from .eval.runner import DEFAULT_BACKOFF, DEFAULT_CONCURRENCY, DEFAULT_MAX_RETRIES
 from .llm import build_llm
 
 # 每个场景配一段固定的演示脚本，保证 Demo 可复现（录屏/截图用）
@@ -262,6 +264,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     from rich.table import Table
 
     from .eval import EvalHarness, EvalReport
+    from .eval.runner import Checkpoint, degraded_summary, render_batch_stats, run_cases
 
     console = Console()
     cfg = RuntimeConfig.from_env()
@@ -281,6 +284,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if limit:
         cases = cases[:limit]
 
+    concurrency = max(1, getattr(args, "concurrency", DEFAULT_CONCURRENCY) or 1)
     report = EvalReport(
         config={
             "provider": cfg.llm_provider,
@@ -288,8 +292,50 @@ def cmd_eval(args: argparse.Namespace) -> int:
             "memory_strategy": cfg.memory_strategy,
         }
     )
-    for case in cases:
-        report.results.append(harness.run_case(case))
+
+    # 进度回调：并发下完成顺序是乱的，所以只报"完成了几条"，不报"第几条"。
+    def on_done(run, done: int, total: int) -> None:
+        flag = ""
+        if run.degraded:
+            flag = " [yellow](降级)[/yellow]"
+        elif not run.ok:
+            flag = " [red](故障)[/red]"
+        console.print(f"  [{done}/{total}] {run.case_id}{flag}", highlight=False)
+
+    checkpoint = None
+    ckpt_path = getattr(args, "checkpoint", "") or ""
+    runs_holder: list = []
+    if ckpt_path:
+        checkpoint = Checkpoint(
+            ckpt_path,
+            lambda: {
+                "done": len(runs_holder),
+                "total": len(cases),
+                "runs": [r.to_dict() for r in runs_holder],
+            },
+        )
+
+    runs, stats = run_cases(
+        cases,
+        cfg,
+        concurrency=concurrency,
+        max_retries=getattr(args, "retries", DEFAULT_MAX_RETRIES),
+        backoff=getattr(args, "backoff", DEFAULT_BACKOFF),
+        cases_dir=harness.cases_dir,
+        on_done=on_done if getattr(args, "progress", False) else None,
+        checkpoint=checkpoint,
+    )
+    runs_holder.extend(runs)
+
+    for run in runs:
+        if run.result is not None:
+            report.results.append(run.result)
+        else:
+            # 基础设施故障的用例没有 CaseResult，不能混进通过率 ——
+            # 把它算成"用例失败"会让评测报告替代码 bug 背锅。
+            console.print(f"[red]{run.case_id} 没跑完[/red]：{run.error}")
+
+    report.batch = {"stats": stats.to_dict(), "degraded": degraded_summary(runs)}
 
     table = Table(title="评测结果", header_style="bold")
     for column in ("用例", "场景", "任务", "工具", "记忆", "人设", "安全", "调度", "结论"):
@@ -310,13 +356,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
         )
     console.print(table)
 
-    means = report.metric_means()
-    console.print(
-        f"\n[bold]通过率[/bold] {report.passed}/{report.total} "
-        f"（{report.passed / report.total:.0%}）　"
-        f"[bold]各维度均值[/bold] "
-        + "　".join(f"{k}={v:.3f}" for k, v in means.items())
-    )
+    if report.total:
+        means = report.metric_means()
+        console.print(
+            f"\n[bold]通过率[/bold] {report.passed}/{report.total} "
+            f"（{report.passed / report.total:.0%}）　"
+            f"[bold]各维度均值[/bold] "
+            + "　".join(f"{k}={v:.3f}" for k, v in means.items())
+        )
 
     for result in report.results:
         if not result.passed:
@@ -324,10 +371,23 @@ def cmd_eval(args: argparse.Namespace) -> int:
             for note in result.notes:
                 console.print(f"  - {note}")
 
+    # 跑批口径单独说清楚 —— 这一段的重点是让"降级"无法伪装成"答得好"。
+    console.print(f"\n[bold]{render_batch_stats(stats)}[/bold]")
+    console.print(report.batch["degraded"]["verdict"])
+
     if args.json:
         path = report.save(args.json)
         console.print(f"\n报告已写入 {path}")
-    return 0 if report.passed == report.total else 1
+
+    # 退出码：有故障或降级超 10% 都不算干净通过。
+    # 只按通过率给退出码，CI 就会在"端点挂了但用例全绿"时放行。
+    if stats.failed:
+        return 2
+    if report.total and report.passed != report.total:
+        return 1
+    if report.batch["degraded"]["degraded"] > report.batch["degraded"]["total"] * 0.10:
+        return 3
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -619,6 +679,202 @@ def cmd_gencases(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+def cmd_judge(args: argparse.Namespace) -> int:
+    """LLM-as-judge：先校准裁判，再（可选）用它判一份跑批报告。
+
+    顺序不能反。**没校准就判分，得到的只是"另一个模型的意见"** ——
+    把它写进结论是拿权威感代替证据。所以 `--calibrate` 是默认动作，
+    而且校准结果（一致率 / kappa）会先打出来。
+    """
+    import json as _json
+
+    from rich.console import Console
+    from rich.table import Table
+
+    from .eval.judge import (
+        DEFAULT_RUBRICS,
+        RUBRICS,
+        LLMJudge,
+        calibrate,
+        dialogue_pairs,
+        load_calibration,
+        render_calibration,
+    )
+
+    console = Console()
+    cfg = RuntimeConfig.from_env()
+    if getattr(args, "provider", None):
+        cfg.llm_provider = args.provider
+    if getattr(args, "model", None):
+        cfg.model = args.model
+    if getattr(args, "base_url", None):
+        cfg.base_url = args.base_url
+    if getattr(args, "api_key", None):
+        cfg.api_key = args.api_key
+
+    llm = build_llm(cfg.llm_provider, model=cfg.model, base_url=cfg.base_url, api_key=cfg.api_key)
+    rubrics = [r.strip() for r in (args.rubrics or "").split(",") if r.strip()] or list(DEFAULT_RUBRICS)
+    unknown = [r for r in rubrics if r not in RUBRICS]
+    if unknown:
+        console.print(f"[red]未知的评判标准 {unknown}，可选：{sorted(RUBRICS)}[/red]")
+        return 2
+
+    judge = LLMJudge(llm, rubrics=rubrics, max_tokens=cfg.speech_max_tokens, name=cfg.model or "judge")
+
+    if not judge.available:
+        console.print(
+            "[yellow]模型不可用 —— 裁判不会给出任何分数。[/yellow]\n"
+            "这不是「判了 0 分」：未判就是未判，它不会混进任何均值。\n"
+            "指定模型后重跑：--provider openai-compat --base-url ... --model ..."
+        )
+        return 1
+
+    payload: dict[str, object] = {"judge_model": cfg.model or cfg.llm_provider}
+
+    # ---- 1) 校准（永远先做） ----
+    items = load_calibration()
+    console.print(f"用 {len(items)} 条人工标注样本校准裁判 …")
+    report = calibrate(judge, items, progress=lambda m: console.print(f"[dim]{m}[/dim]"))
+    console.print(render_calibration(report))
+
+    table = Table(title="裁判校准", header_style="bold")
+    table.add_column("评判标准")
+    table.add_column("样本", justify="right")
+    table.add_column("一致率", justify="right")
+    table.add_column("kappa", justify="right")
+    table.add_column("结论")
+    for key, stats in sorted(report.per_rubric.items()):
+        table.add_row(
+            f"{RUBRICS[key].name}",
+            str(stats["n"]),
+            f"{stats['agreement']:.0%}",
+            f"{stats['kappa']:.2f}",
+            stats["reading"],
+        )
+    console.print(table)
+    payload["calibration"] = report.to_dict()
+
+    # ---- 2) 可选：判一份跑批报告 ----
+    if args.report:
+        report_path = Path(args.report)
+        data = _json.loads(report_path.read_text(encoding="utf-8"))
+        results = data.get("results") or []
+        console.print(f"\n对 {len(results)} 条用例的台词判分（{report_path}）…")
+
+        # 事后判分能拿到的东西是有限的：转写里有完整对话，但**现场状态已经过去了**。
+        # 所以默认只跑不依赖现场的两条标准。
+        if "grounded" in rubrics:
+            console.print(
+                "[yellow]注意：「事实一致」需要当时的现场状态，"
+                "事后判分只能拿到场景的初始配置。[/yellow]\n"
+                "        这一项的结果只能当参考信号，不能当结论。"
+            )
+
+        per_case: list[dict] = []
+        for index, result in enumerate(results, 1):
+            scenario_id = result.get("scenario") or "tutorial"
+            scenario = load_scenario(scenario_id)
+            persona = _persona_block(scenario)
+            pairs = dialogue_pairs(result.get("transcript") or [])
+            if not pairs:
+                continue
+            verdicts = judge.judge_pairs(
+                pairs, persona=persona, scene=_scene_block(scenario, scenario_id)
+            )
+            per_case.append(
+                {
+                    "case_id": result.get("case_id"),
+                    "category": result.get("category"),
+                    "scenario": scenario_id,
+                    "verdicts": verdicts,
+                }
+            )
+            if index % 10 == 0:
+                console.print(f"[dim]  用例 {index}/{len(results)} …[/dim]")
+
+        summary = _summarise_judgements(per_case, rubrics)
+        payload["report"] = report_path.name
+        payload["cases"] = per_case
+        payload["summary"] = summary
+
+        console.print(
+            f"\n判出 {summary['judged']} 条｜未判 {summary['unjudged']}"
+            f"（未判不会被当成 0 分）"
+        )
+        for key, stats in sorted(summary["by_rubric"].items()):
+            console.print(
+                f"  {RUBRICS[key].name}: 通过率 {stats['pass_rate']:.0%}"
+                f"（{stats['passed']}/{stats['n']}）"
+            )
+
+    if args.json:
+        out = Path(args.json)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"\n报告 → {out}")
+    return 0
+
+
+def _persona_block(scenario: dict) -> str:
+    """从场景配置里取 NPC 的人设卡，渲染成裁判能读的一段话。"""
+    from .config import load_persona
+    from .modules.persona import Persona
+
+    npc = scenario.get("npc")
+    if not npc:
+        cast = scenario.get("npcs") or []
+        npc = cast[0].get("persona") if cast else None
+    if not npc:
+        return ""
+    try:
+        return Persona.from_dict(load_persona(npc)).system_block()
+    except FileNotFoundError:
+        return ""
+
+
+def _scene_block(scenario: dict, scenario_id: str) -> str:
+    """场景的**静态**配置（物品在哪、有哪些地点）。
+
+    刻意在函数名和注释里说清楚这是"初始配置"：事后判分拿不到当时的现场，
+    用它去判「事实一致」会把"世界已经变了"误判成"NPC 在编造"。
+    """
+    world = scenario.get("world") or {}
+    items = world.get("items") or {}
+    where: dict[str, list[str]] = {}
+    for item, spec in items.items():
+        where.setdefault((spec or {}).get("loc", "?"), []).append(item)
+    parts = [f"场景「{scenario.get('name', scenario_id)}」（这是**初始**配置，不是当时的状态）"]
+    for loc, names in sorted(where.items()):
+        parts.append(f"  {loc}: {'、'.join(sorted(names))}")
+    pois = scenario.get("pois") or {}
+    if pois:
+        parts.append("  地点: " + "、".join(f"{k}({v.get('name', k)})" for k, v in sorted(pois.items())))
+    return "\n".join(parts)
+
+
+def _summarise_judgements(per_case: list[dict], rubrics: list[str]) -> dict:
+    """汇总判决。**未判的条目单独计数，绝不并进通过率的分母。**"""
+    by_rubric: dict[str, dict[str, int]] = {key: {"n": 0, "passed": 0} for key in rubrics}
+    judged = unjudged = 0
+    for case in per_case:
+        for entry in case["verdicts"]:
+            for verdict in entry["verdicts"]:
+                bucket = by_rubric.setdefault(
+                    verdict["rubric"], {"n": 0, "passed": 0}
+                )
+                if not verdict["judged"]:
+                    unjudged += 1
+                    continue
+                judged += 1
+                bucket["n"] += 1
+                if verdict["score"] >= 0.99:
+                    bucket["passed"] += 1
+    for stats in by_rubric.values():
+        stats["pass_rate"] = round(stats["passed"] / stats["n"], 3) if stats["n"] else 0.0
+    return {"judged": judged, "unjudged": unjudged, "by_rubric": by_rubric}
+
+
+# --------------------------------------------------------------------------- #
 def cmd_worlds(args: argparse.Namespace) -> int:
     """跨世界覆盖报告：同一套 Agent 跑在几个世界上。
 
@@ -722,6 +978,45 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+def _add_llm_args(p: argparse.ArgumentParser) -> None:
+    """把模型相关参数挂到子命令上。
+
+    用 `default=argparse.SUPPRESS` 而不是 `None` / `""`：argparse 的子解析器
+    会把**自己所有参数**的默认值写回命名空间，所以 `default=None` 会覆盖掉
+    用户在顶层写的 `--provider X` —— 变成"顶层明明写了却没生效"这种最难查的 bug。
+    SUPPRESS 的语义正是"没写就别动它"。
+    """
+    p.add_argument("--provider", default=argparse.SUPPRESS, help="LLM provider: null | openai-compat")
+    p.add_argument("--model", default=argparse.SUPPRESS, help="模型名，例如 kimi-k2.7-code")
+    p.add_argument("--base-url", dest="base_url", default=argparse.SUPPRESS, help="OpenAI 兼容端点")
+    p.add_argument("--api-key", dest="api_key", default=argparse.SUPPRESS, help="API key")
+
+
+def _add_batch_args(p: argparse.ArgumentParser) -> None:
+    """跑批相关的参数（并发 / 重试 / 检查点）。
+
+    默认值故意保守：端点通常有并发上限，调太高会变成重试风暴，
+    总耗时反而更长，而且降级比例会上升。
+    """
+    p.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help=f"并发数（默认 {DEFAULT_CONCURRENCY}；1 = 串行，用于给并行结果做基线）",
+    )
+    p.add_argument(
+        "--retries", type=int, default=DEFAULT_MAX_RETRIES, help="单条用例的重试次数（不含首发）"
+    )
+    p.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF, help="退避基数（秒），指数增长")
+    p.add_argument(
+        "--checkpoint",
+        default="",
+        help="边跑边把进度写到这个文件；长跑（真实模型）建议打开。空串 = 不写",
+    )
+    p.add_argument("--progress", action="store_true", help="逐条打印进度")
+
+
+# --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="npc_agent", description="游戏 AI NPC 智能体框架"
@@ -747,6 +1042,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--category", action="append", help="只跑某类用例，可重复")
     p_eval.add_argument("--limit", type=int, default=0, help="只跑前 N 条用例（冒烟用）")
     p_eval.add_argument("--json", help="把报告写入指定路径")
+    _add_llm_args(p_eval)
+    _add_batch_args(p_eval)
     p_eval.set_defaults(func=cmd_eval)
 
     p_cmp = sub.add_parser("compare", help="离线启发式 vs 真实模型 对照跑批")
@@ -791,6 +1088,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--reports-dir", default="reports", help="门禁报告与盲区文件的目录")
     p_gen.add_argument("--quiet", action="store_true", help="不打印门禁进度")
     p_gen.set_defaults(func=cmd_gencases)
+
+    p_judge = sub.add_parser("judge", help="LLM-as-judge：先校准裁判，再判跑批报告")
+    p_judge.add_argument("--report", default="", help="要判分的跑批报告 JSON（eval --json 的产物）")
+    p_judge.add_argument("--rubrics", default="", help=f"逗号分隔，可选：{','.join(sorted(DEFAULT_RUBRIC_KEYS))}")
+    p_judge.add_argument("--json", default="reports/judge.json", help="裁判报告输出路径，空串则不写")
+    _add_llm_args(p_judge)
+    p_judge.set_defaults(func=cmd_judge)
 
     p_tools = sub.add_parser("tools", help="列出当前场景的工具清单")
     p_tools.add_argument("--scenario", default="tutorial", choices=list_scenarios())
