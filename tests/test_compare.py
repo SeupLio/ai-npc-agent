@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from npc_agent.config import RuntimeConfig
@@ -123,3 +125,52 @@ def test_run_spec_apply_does_not_mutate_base():
     base = RuntimeConfig(memory_strategy="hybrid")
     RunSpec(label="x", memory_strategy="none").apply(base)
     assert base.memory_strategy == "hybrid"
+
+
+# --------------------------------------------------------------------------- #
+# 跑批与检查点
+
+
+def test_checkpoint_is_written_during_run(tmp_path):
+    """长跑批必须边跑边落盘，否则中途崩溃会丢掉全部结果。"""
+    from npc_agent.eval.compare import Comparison
+
+    checkpoint = tmp_path / "ckpt.json"
+    comparison = Comparison(base_config=RuntimeConfig(), limit=2).run(
+        [RunSpec(label="离线", provider="null")], checkpoint=checkpoint
+    )
+
+    assert checkpoint.exists()
+    data = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert len(data["runs"]) == 1
+    assert data["runs"][0]["passed"] == 2      # 已完成 2 条
+    assert data["runs"][0]["total"] == 2
+    # 派生指标在检查点里也要是算好的，而不是 0
+    assert data["runs"][0]["free_speech_rate"] == 0.0
+    assert data["runs"][0]["speeches"]
+
+
+def test_on_case_callback_fires_per_case():
+    from npc_agent.eval.compare import Comparison
+
+    seen: list[tuple[str, int, int]] = []
+    Comparison(base_config=RuntimeConfig(), limit=3).run(
+        [RunSpec(label="离线", provider="null")],
+        on_case=lambda spec, case, i, total, outcome: seen.append(
+            (case.get("id"), i, total)
+        ),
+    )
+    assert len(seen) == 3
+    assert [i for _, i, _ in seen] == [1, 2, 3]
+    assert all(total == 3 for _, _, total in seen)
+
+
+def test_comparison_records_outcome_before_finishing():
+    """outcome 必须先挂进列表，这样检查点里才有"部分完成"的报告。"""
+    from npc_agent.eval.compare import Comparison
+
+    comparison = Comparison(base_config=RuntimeConfig(), limit=1).run(
+        [RunSpec(label="离线", provider="null")]
+    )
+    assert len(comparison.outcomes) == 1
+    assert comparison.outcomes[0].report.total == 1

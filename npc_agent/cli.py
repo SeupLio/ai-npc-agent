@@ -388,11 +388,22 @@ def cmd_compare(args: argparse.Namespace) -> int:
     if not cfg.api_key and len(specs) > 1:
         console.print("[red]缺少 API key（NPC_AGENT_API_KEY 或 --api-key），真实模型这一列会全部失败。[/red]")
 
+    def _on_case(spec, case, index, total, outcome):
+        console.print(
+            f"[dim]    · [{index}/{total}] {case.get('id')} "
+            f"→ {outcome.report.passed}/{outcome.report.total} 通过[/dim]"
+        )
+
     comparison = Comparison(
         base_config=cfg,
         categories=args.category or None,
         limit=args.limit or 0,
-    ).run(specs, progress=lambda msg: console.print(f"[dim]{msg}[/dim]"))
+    ).run(
+        specs,
+        progress=lambda msg: console.print(f"[dim]{msg}[/dim]"),
+        checkpoint=args.json or None,
+        on_case=_on_case,
+    )
 
     _render_comparison(console, comparison)
 
@@ -467,7 +478,11 @@ def cmd_ablate(args: argparse.Namespace) -> int:
         base_config=cfg,
         categories=args.category or None,
         limit=args.limit or 0,
-    ).run(specs, progress=lambda msg: console.print(f"[dim]{msg}[/dim]"))
+    ).run(
+        specs,
+        progress=lambda msg: console.print(f"[dim]{msg}[/dim]"),
+        checkpoint=args.json or None,
+    )
 
     _render_comparison(console, comparison)
 

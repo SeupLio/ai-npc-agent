@@ -208,8 +208,22 @@ class Comparison:
     limit: int = 0
 
     # ------------------------------------------------------------------ #
-    def run(self, specs: list[RunSpec], progress=None) -> "Comparison":
-        """逐个规格跑批。逐个而不是并行，是因为真实模型端点通常有并发限制。"""
+    def run(
+        self,
+        specs: list[RunSpec],
+        progress=None,
+        checkpoint: str | Path | None = None,
+        on_case=None,
+    ) -> "Comparison":
+        """逐个规格跑批。逐个而不是并行，是因为真实模型端点通常有并发限制。
+
+        ``checkpoint`` 指定一个路径，每跑完一条用例就把当前结果落盘。
+        这不是过度设计：真实模型的跑批动辄半小时（单次推理 ~9s × 几十轮），
+        如果只在最后写一次文件，中途任何一次崩溃都会让几十分钟白跑。
+
+        ``on_case`` 是每条用例结束后的回调，用来打进度 ——
+        跑批过程中最怕的就是"看起来卡住了"，其实只是在慢慢跑。
+        """
         patterns = scripted_patterns()
         for index, spec in enumerate(specs, 1):
             if progress:
@@ -232,27 +246,38 @@ class Comparison:
                     "use_llm_speech": cfg.use_llm_speech,
                 }
             )
-            for case in cases:
-                report.results.append(harness.run_case(case))
-            duration = time.time() - started
-
-            speeches = _collect_speeches(report)
-            outcome = RunOutcome(
-                spec=spec,
-                report=report,
-                duration=duration,
-                free_speech_rate=free_speech_rate(speeches, patterns),
-                avg_speech_chars=(sum(len(s) for s in speeches) / len(speeches)) if speeches else 0.0,
-                speech_count=len(speeches),
-                speeches=speeches,
-            )
+            # 先把 outcome 挂进列表，之后每跑一条用例就刷新它，
+            # 这样 checkpoint 里始终是一份"已完成部分"的完整报告。
+            outcome = RunOutcome(spec=spec, report=report)
             self.outcomes.append(outcome)
+
+            for case_index, case in enumerate(cases, 1):
+                report.results.append(harness.run_case(case))
+                self._refresh(outcome, patterns, started)
+                if checkpoint:
+                    self.save(checkpoint)
+                if on_case:
+                    on_case(spec, case, case_index, len(cases), outcome)
+
             if progress:
                 progress(
-                    f"    完成：{outcome.report.passed}/{outcome.report.total} 通过，"
-                    f"耗时 {duration:.1f}s，自由台词 {outcome.free_speech_rate:.0%}"
+                    f"    完成：{report.passed}/{report.total} 通过，"
+                    f"耗时 {outcome.duration:.1f}s，自由台词 {outcome.free_speech_rate:.0%}"
                 )
         return self
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _refresh(outcome: RunOutcome, patterns: list, started: float) -> None:
+        """按当前已完成的用例重算派生指标。"""
+        speeches = _collect_speeches(outcome.report)
+        outcome.duration = time.time() - started
+        outcome.speeches = speeches
+        outcome.speech_count = len(speeches)
+        outcome.free_speech_rate = free_speech_rate(speeches, patterns)
+        outcome.avg_speech_chars = (
+            sum(len(s) for s in speeches) / len(speeches) if speeches else 0.0
+        )
 
     # ------------------------------------------------------------------ #
     def rows(self) -> list[dict[str, Any]]:
