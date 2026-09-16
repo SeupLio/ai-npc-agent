@@ -26,12 +26,16 @@ class RuntimeConfig:
     api_key: str = ""
     model: str = ""
     temperature: float = 0.7
-    max_tokens: int = 512
+    max_tokens: int = 2048            # 推理模型会先输出思维链，预算要给够
+    speech_max_tokens: int = 512      # 单句台词的预算
+    use_llm_planner: bool = True      # 关掉可做消融：只用启发式规划
+    use_llm_speech: bool = True       # 关掉可做消融：只用模板台词
 
     # --- Memory ---
     memory_top_k: int = 6               # 每轮注入 prompt 的记忆条数
     memory_consolidate_at: int = 24     # episodic 超过多少条触发巩固
     memory_half_life: float = 40.0      # 时间衰减半衰期（tick）
+    memory_strategy: str = "hybrid"     # hybrid | recency | lexical | importance | none
 
     # --- Planning ---
     max_steps_per_turn: int = 3         # 单轮最多执行几个工具，防止失控
@@ -54,6 +58,7 @@ class RuntimeConfig:
             api_key=os.getenv("NPC_AGENT_API_KEY", ""),
             model=os.getenv("NPC_AGENT_MODEL", ""),
             temperature=float(os.getenv("NPC_AGENT_TEMPERATURE", "0.7")),
+            memory_strategy=os.getenv("NPC_AGENT_MEMORY_STRATEGY", "hybrid"),
             verbose=os.getenv("NPC_AGENT_VERBOSE", "").lower() in ("1", "true", "yes"),
         )
 

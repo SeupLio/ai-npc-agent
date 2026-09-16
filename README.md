@@ -79,6 +79,12 @@ python -m npc_agent.cli chat --scenario tutorial
 # 跑评测，出数字
 python -m npc_agent.cli eval
 
+# 对照实验：离线启发式 vs 真实模型
+python -m npc_agent.cli compare --models kimi-k2.7-code
+
+# 消融实验：五种记忆检索策略
+python -m npc_agent.cli ablate
+
 # 看工具清单 / 场景与人设
 python -m npc_agent.cli tools
 python -m npc_agent.cli info
@@ -102,6 +108,14 @@ python -m npc_agent.cli demo --scenario tutorial \
     --provider openai-compat --base-url https://api.deepseek.com/v1 \
     --model deepseek-chat --api-key sk-xxx
 ```
+
+> **推理模型的坑**：Qwen3.x / Kimi / DeepSeek-V4 这类模型会先输出 `reasoning_content`，
+> 思维链会先吃掉 token 预算。`max_tokens` 给小了，`content` 会返回空字符串
+> （`finish_reason=length`），看起来像"模型没反应"。
+> 本项目默认 `max_tokens=2048`、单句台词 `speech_max_tokens=512`，并在拿到空内容时
+> 抛出带诊断信息的异常，而不是静默返回空串。
+>
+> 调试单个模型是否可用：`python scripts/probe_model.py <model-name>`。
 
 ---
 
@@ -163,6 +177,51 @@ python -m npc_agent.cli eval --json reports/baseline.json
 > 它**不代表** NPC 的通用能力，也不能和外部的 AgentBench / τ-bench 分数横向比较。
 > 下一步是把它扩到 200+ 条，并加入人类偏好评估（LLM-as-judge）。
 
+### 对照实验一：离线启发式 vs 真实模型
+
+```bash
+export NPC_AGENT_BASE_URL=https://your-endpoint/v1
+export NPC_AGENT_API_KEY=sk-xxx
+python -m npc_agent.cli compare --models kimi-k2.7-code --json reports/comparison.json
+```
+
+离线启发式模式和真实模型模式**通过率往往都是 100%**，只看通过率说明不了任何问题。
+所以这里多了一个指标：
+
+| 指标 | 含义 |
+|---|---|
+| **自由台词率** | 既不是人设模板、也不是世界知识库原文的台词占比 |
+
+离线模式只从固定字符串里取词，这个值恒为 **0%**；接上模型后台词由模型现场组织，这个值会显著升高。
+它回答的是"接上模型到底值不值"——而不是"能不能跑通"。
+
+> 指标实现有个坑值得记一笔：模板里带槽位（`{item_name}好了，趁热。`），
+> 渲染后文本就变了，字面比对会把它误判成"模型自由发挥"，离线模式的自由台词率虚高到 78%。
+> 正确做法是把槽位通配掉；而且**去标点只能作用在原始字面块上**，
+> 对拼好的正则整串 `strip` 会把开头的 `.+` 削成 `+` 直接抛异常（`tests/test_compare.py` 里有回归测试）。
+
+### 对照实验二：记忆策略消融
+
+```bash
+python -m npc_agent.cli ablate
+```
+
+五种可替换的检索策略，`none` 是「裸模型」基线：
+
+| 策略 | 打分方式 |
+|---|---|
+| `hybrid` | `0.35×词面 + 0.25×时间衰减 + 0.25×重要度 + 0.15×访问频次`（默认） |
+| `recency` | 只按时间衰减 |
+| `lexical` | 只按词面相关（近似纯向量相似度） |
+| `importance` | 只按重要度 |
+| `none` | 完全不检索 —— 裸模型基线 |
+
+`none` 与 `hybrid` 的差值，就是这套记忆系统的净收益。**没有对照就没有说服力**，
+这也是把打分公式抽成 `modules/retrieval.py` 的唯一理由。
+
+两个命令都可以加 `--html` 生成自包含的 HTML 报告（无外部依赖、离线可开），
+适合直接截图放进作品集。
+
 ---
 
 ## 项目结构
@@ -173,7 +232,7 @@ game-npc-agent/
 │   ├── types.py            核心数据类（纯数据，无依赖）
 │   ├── config.py           运行时配置 + YAML 加载
 │   ├── agent.py            主循环：把七大模块串成一条决策链
-│   ├── cli.py              demo / chat / eval / tools / info
+│   ├── cli.py              demo / chat / eval / compare / ablate / tools / info
 │   ├── llm/                模型抽象层
 │   │   ├── base.py             基类 + 容错 JSON 解析
 │   │   ├── null.py             离线占位（显式声明模型不可用）
@@ -186,15 +245,20 @@ game-npc-agent/
 │   │   ├── persona.py          人设与三层边界控制
 │   │   ├── state.py            现场状态跟踪
 │   │   ├── memory.py           分层记忆 + 混合检索 + 巩固
+│   │   ├── retrieval.py        可替换的检索策略（消融实验的支点）
 │   │   ├── planner.py          任务分解 + 重规划
 │   │   ├── tools.py            工具注册与执行
 │   │   ├── dialogue.py         多人发言权与收件人判定
 │   │   └── reflection.py       失败归因与教训沉淀
 │   └── eval/               评测 harness + 五维指标 + 用例集
+│       ├── metrics.py          五维指标
+│       ├── harness.py          跑批与报告
+│       ├── compare.py          多配置对照（离线 vs 模型、记忆消融）
+│       └── report.py           自包含 HTML 报告渲染
 ├── configs/
 │   ├── personas/           人设卡（YAML，策划可改）
 │   └── scenarios/          场景配置（YAML，目标/物品/白名单）
-└── tests/                  43 个单元与端到端测试
+└── tests/                  72 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -231,11 +295,12 @@ Minecraft 作为第二个 `Environment` 实现是路线图上的事，接口已�
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 五维评测 harness + 43 个测试
+- [x] 五维评测 harness + 72 个测试
+- [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
+- [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [ ] 用例集扩到 200+，加入 LLM-as-judge 人类偏好评估
 - [ ] Minecraft 环境适配器（Mineflayer bridge）
 - [ ] 多 NPC 协作（第二个 NPC 小舟的人设已就绪）
-- [ ] 记忆消融实验：混合检索 vs 纯向量 vs 朴素上下文
 - [ ] 小模型蒸馏 + vLLM 部署，测端到端延迟
 
 ---
@@ -244,11 +309,12 @@ Minecraft 作为第二个 `Environment` 实现是路线图上的事，接口已�
 
 ```bash
 python -m pytest tests -q
-# 43 passed
+# 72 passed
 ```
 
-覆盖：环境护栏、记忆检索与巩固、多人发言权判定、端到端闭环、
-重规划自愈、人设与剧透拦截、**以及"同一输入跑两次结果必须一致"的确定性断言**。
+覆盖：环境护栏、记忆检索与巩固、**五种检索策略的语义差异**、多人发言权判定、
+端到端闭环、重规划自愈、人设与剧透拦截、
+**以及"同一输入跑两次结果必须一致"的确定性断言**。
 
 ---
 

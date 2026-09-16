@@ -52,11 +52,13 @@ class Planner:
         llm: LLM,
         world_facts: dict[str, Any] | None = None,
         max_retries: int = 1,
+        max_tokens: int = 2048,
     ) -> None:
         self.persona = persona
         self.llm = llm
         self.facts = world_facts or {}
         self.max_retries = max_retries
+        self.max_tokens = max_tokens
 
     # ------------------------------------------------------------------ #
     # 场景目标 → 计划
@@ -293,6 +295,7 @@ class Planner:
             data = self.llm.complete_json(
                 [{"role": "user", "content": prompt}],
                 schema_hint="goal, rationale, steps[{goal, tool, args}]",
+                max_tokens=self.max_tokens,
             )
         except LLMUnavailable:
             return None

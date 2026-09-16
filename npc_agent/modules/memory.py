@@ -17,37 +17,20 @@
 
 from __future__ import annotations
 
-import math
-import re
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 from ..types import MemoryKind, MemoryRecord, Utterance
-
-# 中文没有天然分词，用「单字 + 双字 bigram」近似，配合 ASCII 词。
-_ASCII_WORD = re.compile(r"[a-z0-9_]+")
-_CJK_CHAR = re.compile(r"[\u4e00-\u9fff]")
+from .retrieval import (
+    DEFAULT_STRATEGY,
+    NoMemoryStrategy,
+    RetrievalStrategy,
+    build_strategy,
+    terms as _terms,
+)
 
 # 触发高重要度的线索词：偏好、承诺、身份信息
 _IMPORTANT_HINTS = ("喜欢", "讨厌", "习惯", "名字", "叫", "约定", "答应", "偏好", "常来", "第一次")
-
-
-def _terms(text: str) -> set[str]:
-    lowered = (text or "").lower()
-    words = set(_ASCII_WORD.findall(lowered))
-    chars = _CJK_CHAR.findall(lowered)
-    bigrams = {chars[i] + chars[i + 1] for i in range(len(chars) - 1)}
-    return words | bigrams | set(chars)
-
-
-def _overlap(query: set[str], content: str) -> float:
-    if not query:
-        return 0.0
-    content_terms = _terms(content)
-    if not content_terms:
-        return 0.0
-    hit = len(query & content_terms)
-    return hit / (len(query) ** 0.5 + 1e-9)
 
 
 def estimate_importance(text: str, base: float = 0.5) -> float:
@@ -75,14 +58,27 @@ class MemoryStats:
 
 
 class MemoryStore:
-    """分层记忆存储 + 混合检索。"""
+    """分层记忆存储 + 可替换的检索策略。"""
 
-    def __init__(self, half_life: float = 40.0, consolidate_at: int = 24) -> None:
+    def __init__(
+        self,
+        half_life: float = 40.0,
+        consolidate_at: int = 24,
+        strategy: RetrievalStrategy | str = DEFAULT_STRATEGY,
+    ) -> None:
         self.half_life = half_life
         self.consolidate_at = consolidate_at
+        self.strategy: RetrievalStrategy = (
+            build_strategy(strategy) if isinstance(strategy, str) else strategy
+        )
         self.records: list[MemoryRecord] = []
         self._seq = 0
         self.consolidated_count = 0
+
+    @property
+    def uses_memory(self) -> bool:
+        """`none` 策略是"裸模型"基线，用来量化记忆系统的净收益。"""
+        return not isinstance(self.strategy, NoMemoryStrategy)
 
     # ------------------------------------------------------------------ #
     def add(
@@ -109,10 +105,7 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ #
     def _score(self, record: MemoryRecord, query: set[str], now: int) -> float:
-        recency = math.exp(-max(0, now - record.tick) / max(1.0, self.half_life))
-        relevance = _overlap(query, record.content)
-        frequency = min(1.0, record.access_count / 5.0)
-        return 0.35 * relevance + 0.25 * recency + 0.25 * record.importance + 0.15 * frequency
+        return self.strategy.score(record, query, now, self.half_life)
 
     def search(
         self,
@@ -121,17 +114,15 @@ class MemoryStore:
         now: int | None = None,
         kinds: Iterable[MemoryKind] | None = None,
     ) -> list[MemoryRecord]:
+        if not self.uses_memory:
+            return []
         now = now if now is not None else 0
         query_terms = _terms(query)
         allowed = set(kinds) if kinds else None
         candidates = [r for r in self.records if not allowed or r.kind in allowed]
         scored: list[MemoryRecord] = []
         for record in candidates:
-            score = self._score(record, query_terms, now)
-            # reflection 是"教训"，权重略高，让它更容易被想起来
-            if record.kind == "reflection":
-                score *= 1.15
-            record.score = score
+            record.score = self._score(record, query_terms, now)
             scored.append(record)
         scored.sort(key=lambda r: (-r.score, -r.tick))
         top = scored[:k]
@@ -199,11 +190,19 @@ class MemoryStore:
 class MemoryManager:
     """面向 Agent 的门面：把世界事件翻译成记忆，并把记忆翻译成 prompt 片段。"""
 
-    def __init__(self, store: MemoryStore, top_k: int = 6, consolidate_at: int = 24) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        top_k: int = 6,
+        consolidate_at: int = 24,
+        strategy: RetrievalStrategy | str = DEFAULT_STRATEGY,
+    ) -> None:
         self.store = store
         self.top_k = top_k
         self.consolidate_at = consolidate_at
         self.store.consolidate_at = consolidate_at
+        if isinstance(strategy, str):
+            self.store.strategy = build_strategy(strategy)
 
     # ------------------------------------------------------------------ #
     def observe(self, utterance: Utterance, npc_id: str) -> Optional[MemoryRecord]:

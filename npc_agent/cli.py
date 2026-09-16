@@ -212,7 +212,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     from rich.console import Console
     from rich.table import Table
 
-    from .eval import EvalHarness
+    from .eval import EvalHarness, EvalReport
 
     console = Console()
     cfg = RuntimeConfig.from_env()
@@ -226,7 +226,21 @@ def cmd_eval(args: argparse.Namespace) -> int:
         cfg.api_key = args.api_key
 
     categories = args.category or None
-    report = EvalHarness(cfg).run(categories)
+    harness = EvalHarness(cfg)
+    cases = harness.load_cases(categories)
+    limit = getattr(args, "limit", 0) or 0
+    if limit:
+        cases = cases[:limit]
+
+    report = EvalReport(
+        config={
+            "provider": cfg.llm_provider,
+            "model": cfg.model or "(offline)",
+            "memory_strategy": cfg.memory_strategy,
+        }
+    )
+    for case in cases:
+        report.results.append(harness.run_case(case))
 
     table = Table(title="评测结果", header_style="bold")
     for column in ("用例", "场景", "任务", "工具", "记忆", "人设", "安全", "结论"):
@@ -264,6 +278,219 @@ def cmd_eval(args: argparse.Namespace) -> int:
         path = report.save(args.json)
         console.print(f"\n报告已写入 {path}")
     return 0 if report.passed == report.total else 1
+
+
+# --------------------------------------------------------------------------- #
+def _render_comparison(console, comparison) -> None:
+    """把对照结果渲染成两张表：绝对值 + 相对基线差值。"""
+    from rich.table import Table
+
+    table = Table(title="对照跑批 · 绝对值", header_style="bold")
+    for column in ("配置", "模型", "记忆策略", "通过", "任务", "工具", "记忆", "人设", "安全",
+                   "自由台词", "均长", "耗时"):
+        table.add_column(column, justify="left" if column in ("配置", "模型", "记忆策略") else "center")
+
+    for row in comparison.rows():
+        table.add_row(
+            row["label"],
+            row["model"],
+            row["strategy"],
+            row["pass"],
+            f"{row['task']:.3f}",
+            f"{row['tools']:.3f}",
+            f"{row['memory']:.3f}",
+            f"{row['persona']:.3f}",
+            f"{row['safety']:.3f}",
+            f"{row['free']:.0%}",
+            f"{row['chars']:.0f}",
+            f"{row['sec']:.0f}s",
+        )
+    console.print(table)
+
+    deltas = comparison.deltas()
+    if not deltas:
+        return
+
+    diff = Table(title="对照跑批 · 相对首行差值（正数=更好）", header_style="bold")
+    diff.add_column("配置", justify="left")
+    diff.add_column("vs", justify="left")
+    for column in ("通过率", "任务", "工具", "记忆", "人设", "安全", "自由台词"):
+        diff.add_column(column, justify="center")
+
+    def cell(value: float) -> str:
+        if abs(value) < 0.0005:
+            return "[dim]0.000[/dim]"
+        color = "green" if value > 0 else "red"
+        return f"[{color}]{value:+.3f}[/{color}]"
+
+    for row in deltas:
+        diff.add_row(
+            row["label"],
+            row["vs"],
+            cell(row["pass_rate"]),
+            cell(row["task"]),
+            cell(row["tools"]),
+            cell(row["memory"]),
+            cell(row["persona"]),
+            cell(row["safety"]),
+            cell(row["free"]),
+        )
+    console.print()
+    console.print(diff)
+
+
+def _base_config_from_args(args: argparse.Namespace) -> RuntimeConfig:
+    cfg = RuntimeConfig.from_env()
+    for attr, field in (
+        ("provider", "llm_provider"),
+        ("model", "model"),
+        ("base_url", "base_url"),
+        ("api_key", "api_key"),
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            setattr(cfg, field, value)
+    return cfg
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    """离线启发式 vs 真实模型：证明模型带来的不是"能跑"，而是"会说"。"""
+    from rich.console import Console
+
+    from .eval import Comparison, RunSpec
+
+    console = Console(width=150)
+    cfg = _base_config_from_args(args)
+
+    specs = [
+        RunSpec(label="离线启发式", provider="null", model="", memory_strategy=cfg.memory_strategy)
+    ]
+    provider = cfg.llm_provider if cfg.llm_provider != "null" else "openai-compat"
+    models = [m.strip() for m in (args.models or "").split(",") if m.strip()]
+    if not models and cfg.model:
+        models = [cfg.model]
+    for model in models:
+        specs.append(
+            RunSpec(
+                label=f"模型·{model}",
+                provider=provider,
+                model=model,
+                memory_strategy=cfg.memory_strategy,
+                temperature=args.temperature,
+            )
+        )
+
+    if len(specs) == 1:
+        console.print(
+            "[yellow]没有指定模型，只跑离线基线。"
+            "用 --models kimi-k2.7-code 或设置 NPC_AGENT_MODEL 来加一列真实模型。[/yellow]"
+        )
+    if not cfg.api_key and len(specs) > 1:
+        console.print("[red]缺少 API key（NPC_AGENT_API_KEY 或 --api-key），真实模型这一列会全部失败。[/red]")
+
+    comparison = Comparison(
+        base_config=cfg,
+        categories=args.category or None,
+        limit=args.limit or 0,
+    ).run(specs, progress=lambda msg: console.print(f"[dim]{msg}[/dim]"))
+
+    _render_comparison(console, comparison)
+
+    for outcome in comparison.outcomes:
+        for failure in outcome.to_dict()["failures"]:
+            console.print(f"\n[red]{outcome.spec.label} / {failure['case_id']}[/red]")
+            for note in failure["notes"]:
+                console.print(f"  - {note}")
+
+    if args.json:
+        path = comparison.save(args.json)
+        console.print(f"\n对照报告已写入 {path}")
+
+    if getattr(args, "html", ""):
+        from .eval.report import write_comparison_html
+
+        page = write_comparison_html(
+            comparison.to_dict(),
+            args.html,
+            title="离线启发式 vs 真实模型",
+            subtitle=(
+                "同一套用例、同一套指标、只换推理后端。"
+                "重点看「自由台词」这一列 —— 它衡量台词是人写的还是模型写的。"
+            ),
+            temperature=args.temperature,
+        )
+        console.print(f"HTML 报告已写入 {page}")
+    return 0
+
+
+def cmd_ablate(args: argparse.Namespace) -> int:
+    """记忆策略消融：量化"记忆到底贡献了多少"。"""
+    from rich.console import Console
+
+    from .eval import Comparison, RunSpec
+    from .modules.retrieval import available_strategies
+
+    console = Console(width=150)
+    cfg = _base_config_from_args(args)
+
+    wanted = [s.strip() for s in (args.strategies or "").split(",") if s.strip()]
+    known = available_strategies()
+    unknown = [s for s in wanted if s not in known]
+    if unknown:
+        console.print(f"[red]未知的记忆策略：{', '.join(unknown)}　可用：{', '.join(known)}[/red]")
+        return 2
+
+    use_model = bool(args.with_model) and bool(cfg.model)
+    provider = cfg.llm_provider if cfg.llm_provider != "null" else ("openai-compat" if use_model else "null")
+
+    specs = [
+        RunSpec(
+            label=f"记忆·{strategy}",
+            provider=provider,
+            model=cfg.model if use_model else "",
+            memory_strategy=strategy,
+            temperature=args.temperature,
+        )
+        for strategy in wanted
+    ]
+
+    if not use_model:
+        console.print(
+            "[dim]离线消融（确定性、可复现）。加 --with-model 可在真实模型上做同样的消融，但会慢很多。[/dim]"
+        )
+    console.print(
+        "[dim]说明：策略 none = 不注入任何记忆，即「裸模型」基线；"
+        "它与 hybrid 的差值就是记忆的净收益。[/dim]"
+    )
+
+    comparison = Comparison(
+        base_config=cfg,
+        categories=args.category or None,
+        limit=args.limit or 0,
+    ).run(specs, progress=lambda msg: console.print(f"[dim]{msg}[/dim]"))
+
+    _render_comparison(console, comparison)
+
+    if args.json:
+        path = comparison.save(args.json)
+        console.print(f"\n消融报告已写入 {path}")
+
+    if getattr(args, "html", ""):
+        from .eval.report import write_comparison_html
+
+        page = write_comparison_html(
+            comparison.to_dict(),
+            args.html,
+            title="记忆策略消融实验",
+            subtitle=(
+                "五种检索策略在同一批用例上的表现。"
+                "none 是「裸模型」基线，它与 hybrid 的差值就是记忆系统的净收益。"
+            ),
+            temperature=args.temperature,
+        )
+        console.print(f"HTML 报告已写入 {page}")
+    return 0
+
 
 
 # --------------------------------------------------------------------------- #
@@ -330,8 +557,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_eval = sub.add_parser("eval", help="运行评测")
     p_eval.add_argument("--category", action="append", help="只跑某类用例，可重复")
+    p_eval.add_argument("--limit", type=int, default=0, help="只跑前 N 条用例（冒烟用）")
     p_eval.add_argument("--json", help="把报告写入指定路径")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_cmp = sub.add_parser("compare", help="离线启发式 vs 真实模型 对照跑批")
+    p_cmp.add_argument("--models", default="", help="逗号分隔的模型名；留空则只跑离线基线")
+    p_cmp.add_argument("--temperature", type=float, default=0.3, help="评测建议低温以保证可复现")
+    p_cmp.add_argument("--category", action="append", help="只跑某类用例，可重复")
+    p_cmp.add_argument("--limit", type=int, default=0, help="只跑前 N 条用例（冒烟用）")
+    p_cmp.add_argument("--json", default="reports/comparison.json", help="报告输出路径")
+    p_cmp.add_argument("--html", default="reports/comparison.html", help="HTML 报告路径，空串则不生成")
+    p_cmp.set_defaults(func=cmd_compare)
+
+    p_abl = sub.add_parser("ablate", help="记忆策略消融实验")
+    p_abl.add_argument(
+        "--strategies",
+        default="hybrid,recency,lexical,importance,none",
+        help="逗号分隔；none 为裸模型基线",
+    )
+    p_abl.add_argument("--with-model", action="store_true", help="在真实模型上做消融（慢）")
+    p_abl.add_argument("--temperature", type=float, default=0.3)
+    p_abl.add_argument("--category", action="append", help="只跑某类用例，可重复")
+    p_abl.add_argument("--limit", type=int, default=0, help="只跑前 N 条用例（冒烟用）")
+    p_abl.add_argument("--json", default="reports/ablation.json", help="报告输出路径")
+    p_abl.add_argument("--html", default="reports/ablation.html", help="HTML 报告路径，空串则不生成")
+    p_abl.set_defaults(func=cmd_ablate)
 
     p_tools = sub.add_parser("tools", help="列出当前场景的工具清单")
     p_tools.add_argument("--scenario", default="tutorial", choices=list_scenarios())

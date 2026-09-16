@@ -14,6 +14,7 @@ from .memory import MemoryManager, MemoryStore, estimate_importance
 from .persona import Persona
 from .planner import Planner
 from .reflection import Reflection, Reflector
+from .retrieval import available_strategies, build_strategy
 from .state import PlayerModel, StateTracker
 from .tools import INTERNAL_SPEAK, ToolContext, ToolRegistry
 
@@ -24,6 +25,8 @@ __all__ = [
     "MemoryStore",
     "MemoryManager",
     "estimate_importance",
+    "build_strategy",
+    "available_strategies",
     "Planner",
     "ToolRegistry",
     "ToolContext",

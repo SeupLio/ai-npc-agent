@@ -60,14 +60,17 @@ class NPCAgent:
             MemoryStore(
                 half_life=self.config.memory_half_life,
                 consolidate_at=self.config.memory_consolidate_at,
+                strategy=self.config.memory_strategy,
             ),
             top_k=self.config.memory_top_k,
+            strategy=self.config.memory_strategy,
         )
         self.planner = Planner(
             self.persona,
             self.llm,
             world_facts=self.env.world_facts(),
             max_retries=self.config.max_plan_retries,
+            max_tokens=self.config.max_tokens,
         )
         self.registry = ToolRegistry(self.env, self.config)
         self.turn_manager = TurnManager(
@@ -99,6 +102,8 @@ class NPCAgent:
 
         observation = self.env.observe(self.id)
         self.state.update_from_env(observation)
+        # 世界规则会变（物品被拿走、位置改变），规划器每轮刷新一次事实表
+        self.planner.facts = self.env.world_facts()
 
         if utterance is not None:
             self.state.note_utterance(utterance)
@@ -210,15 +215,16 @@ class NPCAgent:
             return None
 
         # 4) 有模型 → 让模型规划
-        llm_plan = self.planner.plan_with_llm(
-            self.state,
-            utterance,
-            memories,
-            self.registry.catalog(self.id),
-            goal_hint=self._pending_goal_hint(),
-        )
-        if llm_plan and llm_plan.steps:
-            return llm_plan
+        if self.config.use_llm_planner:
+            llm_plan = self.planner.plan_with_llm(
+                self.state,
+                utterance,
+                memories,
+                self.registry.catalog(self.id),
+                goal_hint=self._pending_goal_hint(),
+            )
+            if llm_plan and llm_plan.steps:
+                return llm_plan
 
         # 5) 兜底：推进场景里还没完成的目标
         return self.planner.plan_next_objective(self.objectives, self.state, self._attempted)
@@ -427,7 +433,7 @@ class NPCAgent:
         decision: Any,
     ) -> str:
         """有模型就让模型说，没模型就用模板兜底。两条路都必须受人设约束。"""
-        if self.llm.available:
+        if self.config.use_llm_speech and self.llm.available:
             generated = self._llm_speech(intent, memories, utterance)
             if generated:
                 return generated
@@ -459,7 +465,7 @@ class NPCAgent:
             text = self.llm.complete(
                 [{"role": "user", "content": prompt}],
                 temperature=self.config.temperature,
-                max_tokens=160,
+                max_tokens=self.config.speech_max_tokens,
             ).strip()
         except LLMUnavailable:
             return None

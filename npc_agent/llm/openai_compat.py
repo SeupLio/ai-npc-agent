@@ -89,9 +89,24 @@ class OpenAICompatLLM(LLM):
             raise LLMUnavailable(f"{type(exc).__name__}: {exc}") from exc
 
         try:
-            return body["choices"][0]["message"]["content"] or ""
+            choice = body["choices"][0]
+            message = choice["message"]
         except (KeyError, IndexError) as exc:
             raise LLMUnavailable(f"响应结构异常: {body}") from exc
+
+        content = (message.get("content") or "").strip()
+        if content:
+            return content
+
+        # 推理模型（Qwen3.x / Kimi / DeepSeek-V4 等）会先输出 reasoning_content，
+        # 如果 max_tokens 给小了，思维链会把预算吃光，content 返回空字符串。
+        # 这时必须显式报错让上层回退，而不是把空台词当成"模型说了空话"。
+        finish = choice.get("finish_reason")
+        reasoning = message.get("reasoning_content") or ""
+        raise LLMUnavailable(
+            f"模型返回空内容（finish_reason={finish}，思维链 {len(reasoning)} 字）。"
+            f"推理模型需要更大的 max_tokens。"
+        )
 
     # ------------------------------------------------------------------ #
     def stream(
