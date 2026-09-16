@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Optional
 
 from .cast import Cast, build_cast, load_cast
 from .config import RuntimeConfig, list_scenarios, load_scenario
 from .env import env_label, env_name_of
+from .eval.harness import CASES_DIR
 from .llm import build_llm
 
 # 每个场景配一段固定的演示脚本，保证 Demo 可复现（录屏/截图用）
@@ -567,6 +569,56 @@ def cmd_ablate(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+def cmd_gencases(args: argparse.Namespace) -> int:
+    """生成用例集：结构性指纹去重 → 离线可达性门禁 → 落盘。
+
+    产出三样东西，缺一不可：
+      cases/generated.jsonl    回归集（离线基线全绿的那部分）
+      reports/blindspots.jsonl 基线盲区（结构正确、离线做不到）
+      reports/generation.json  门禁报告（剔了谁、为什么）
+    """
+    from rich.console import Console
+
+    from .eval.generator import (
+        GENERATED_FILE,
+        build_case_set,
+        render_coverage,
+        write_blindspots,
+        write_cases,
+        write_gate_report,
+    )
+
+    console = Console()
+    result = build_case_set(
+        target=args.target,
+        seed=args.seed,
+        verbose=not args.quiet,
+    )
+    cases = result["cases"]
+    gate = result["gate"]
+
+    cases_path = write_cases(cases, CASES_DIR / GENERATED_FILE, seed=args.seed)
+    blind = write_blindspots(
+        gate.dropped, Path(args.reports_dir) / "blindspots.jsonl"
+    )
+    report_path = write_gate_report(
+        gate, Path(args.reports_dir) / "generation.json", target=args.target, seed=args.seed
+    )
+
+    console.print(render_coverage(result["coverage"], gate.summary()))
+    console.print(f"\n回归集 → {cases_path}")
+    if blind:
+        console.print(f"基线盲区 → {blind}")
+    console.print(f"门禁报告 → {report_path}")
+    if gate.dropped:
+        console.print(
+            "\n[yellow]被剔除的用例不是坏用例[/yellow]：结构正确，但确定性离线路径做不到。"
+            "\n它们已单独落盘，模型跑批时可以加回来衡量「换模型多做到了什么」。"
+        )
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 def cmd_worlds(args: argparse.Namespace) -> int:
     """跨世界覆盖报告：同一套 Agent 跑在几个世界上。
 
@@ -732,6 +784,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_worlds.add_argument("--json", default="reports/worlds.json", help="报告输出路径")
     p_worlds.add_argument("--html", default="reports/worlds.html", help="HTML 报告路径，空串则不生成")
     p_worlds.set_defaults(func=cmd_worlds)
+
+    p_gen = sub.add_parser("gencases", help="生成用例集（指纹去重 + 离线可达性门禁）")
+    p_gen.add_argument("--target", type=int, default=240, help="用例数上限（不是配额，实际由结构数决定）")
+    p_gen.add_argument("--seed", type=int, default=20260916, help="随机种子；固定种子 → 同一批用例")
+    p_gen.add_argument("--reports-dir", default="reports", help="门禁报告与盲区文件的目录")
+    p_gen.add_argument("--quiet", action="store_true", help="不打印门禁进度")
+    p_gen.set_defaults(func=cmd_gencases)
 
     p_tools = sub.add_parser("tools", help="列出当前场景的工具清单")
     p_tools.add_argument("--scenario", default="tutorial", choices=list_scenarios())

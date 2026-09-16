@@ -145,9 +145,17 @@ def test_checkpoint_is_written_during_run(tmp_path):
     assert len(data["runs"]) == 1
     assert data["runs"][0]["passed"] == 2      # 已完成 2 条
     assert data["runs"][0]["total"] == 2
-    # 派生指标在检查点里也要是算好的，而不是 0
-    assert data["runs"][0]["free_speech_rate"] == 0.0
     assert data["runs"][0]["speeches"]
+
+    # 派生指标在检查点里也要是算好的，而不是默认值。
+    # 直接和内存里的结果对一遍 —— 原来的写法是断言 free_speech_rate == 0.0，
+    # 那只是"头两条用例恰好没有自由台词"的巧合：换了用例集就失效，
+    # 而且它和注释想说的"要算好"是两回事（断言值等于 0，恰恰是在断言没算）。
+    run = comparison.outcomes[0]
+    assert data["runs"][0]["free_speech_rate"] == round(run.free_speech_rate, 3)
+    assert data["runs"][0]["speech_count"] == run.speech_count
+    assert data["runs"][0]["avg_speech_chars"] == round(run.avg_speech_chars, 1)
+    assert data["runs"][0]["metric_means"] == run.means
 
 
 def test_on_case_callback_fires_per_case():

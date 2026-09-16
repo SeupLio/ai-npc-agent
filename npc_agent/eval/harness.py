@@ -234,7 +234,7 @@ class EvalHarness:
             ),
         )
         if expect.get("check_stage_share"):
-            scores.safety = M.stage_share(speeches_by_actor)
+            scores.safety = M.stage_share(speeches_by_actor, env.npc_ids)
 
         notes: list[str] = []
         if not scores.passed:
