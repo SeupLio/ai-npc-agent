@@ -31,6 +31,51 @@ from .types import ActionCall, ActionResult, AgentTurn, Plan, PlanStep, Utteranc
 # 记忆里出现这些词，说明是值得当面回引的偏好类信息
 RECALL_HINTS = ("喜欢", "讨厌", "习惯", "常来", "第一次", "答应", "约定")
 
+# 记忆内容的句子边界。必须包含「；」——
+# 巩固后的摘要用「；」把多条 episodic 拼在一起，
+# 不在这里切断就会拼出「…越酸越好。；小，是这个没错吧？」
+_CLAUSE_BREAK = "。！？；"
+# 巩固产出的 semantic 记录带的前缀，回引时要剥掉
+_SUMMARY_PREFIX = "（早前对话摘要）"
+_EDGE_PUNCT = "。！？，、；:： "
+
+
+def extract_memory_hint(content: str, limit: int = 18) -> str:
+    """从一条记忆里抽出可以直接说出口的短句。
+
+    三步：剥掉摘要前缀 → 剥掉「某某说：」前缀 → 在第一个句子边界处切断。
+
+    早期实现是 ``content.split("：", 1)[-1][:18].rstrip(...)``。
+    按字数硬截有两个问题：一是会截到半个词，二是对巩固后的摘要无效 ——
+    ``阿澈说：我特别喜欢偏酸的咖啡，越酸越好。；小满说：…`` 截出来是
+    ``我特别喜欢偏酸的咖啡，越酸越好。；小``，于是 NPC 说出
+    「…越好。；小，是这个没错吧？」。**按语义边界切，不按字数切。**
+    """
+    text = (content or "").strip()
+    if text.startswith(_SUMMARY_PREFIX):
+        text = text[len(_SUMMARY_PREFIX) :]
+    if "：" in text:
+        text = text.split("：", 1)[-1]
+
+    cut = len(text)
+    for mark in _CLAUSE_BREAK:
+        pos = text.find(mark)
+        if pos != -1:
+            cut = min(cut, pos)
+    text = text[:cut].strip(_EDGE_PUNCT)
+
+    if len(text) > limit:
+        head = text[:limit]
+        # 优先在逗号/顿号处收尾，避免留下半个词
+        for sep in ("，", "、"):
+            pos = head.rfind(sep)
+            if pos >= limit // 2:
+                head = head[:pos]
+                break
+        text = head
+
+    return text.strip(_EDGE_PUNCT)
+
 
 class NPCAgent:
     """一个可配置、可控、可评测的游戏 NPC。"""
@@ -494,8 +539,7 @@ class NPCAgent:
         memory_hint = ""
         for record in memories:
             if any(hint in record.content for hint in RECALL_HINTS):
-                # 去掉"某某说："前缀和句末标点，避免拼出"…越好。，是这个没错吧？"
-                memory_hint = record.content.split("：", 1)[-1][:18].rstrip("。！？，、 ")
+                memory_hint = extract_memory_hint(record.content)
                 break
 
         return self.persona.render_template(
