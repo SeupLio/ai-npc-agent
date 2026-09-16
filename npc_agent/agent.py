@@ -354,7 +354,12 @@ class NPCAgent:
             extra = {k: args.pop(k) for k in list(args) if k not in ("text", "to")}
             if "text" not in args:
                 if intent:
-                    args["text"] = self._render_intent(intent, memories, utterance, extra)
+                    # 走 _generate_speech 而不是直接 _render_intent：
+                    # 否则计划步骤会绕过模型、退回背课文，
+                    # NPC 就变成"接玩家话时像人，干活时像复读机"。
+                    args["text"] = self._generate_speech(
+                        intent, memories, utterance, extra=extra
+                    )
                 else:
                     args["text"] = self.persona.render_template("fallback")
         if step.tool == "remember" and "content" not in args:
@@ -446,6 +451,14 @@ class NPCAgent:
         ctx: ToolContext,
         memories: list[Any],
     ) -> None:
+        """被点名时先应一声，再去回答。
+
+        这里**刻意**用模板而不是模型：它是一句不含信息的语气词（"哎，我在"），
+        却要在玩家提问的同一轮里抢在正式回答之前说出来。
+        让模型生成它只会白白多一次推理延迟，换不来任何表达价值。
+        代价是它会拉低"自由台词率"——这是指标口径问题，不是质量问题，
+        所以报告里读这个数时要记得扣除这类语气词。
+        """
         text = self.persona.render_template("acknowledge", target=utterance.speaker_name)
         call = ActionCall("speak", {"text": text, "to": utterance.speaker_id}, reason="被点名先应一声")
         result = self.registry.execute(call, ctx)
@@ -475,22 +488,34 @@ class NPCAgent:
         intent: str,
         memories: list[Any],
         utterance: Optional[Utterance],
-        decision: Any,
+        decision: Any = None,
+        extra: Optional[dict[str, Any]] = None,
     ) -> str:
-        """有模型就让模型说，没模型就用模板兜底。两条路都必须受人设约束。"""
+        """有模型就让模型说，没模型就用模板兜底。两条路都必须受人设约束。
+
+        ``extra`` 是模板槽位的补充事实（例如 ``item_name=拿铁``）。
+        走模型时也要把它喂进去，否则模型不知道自己在交付什么，
+        会说出"你的咖啡好了"这种丢信息的话。
+        """
         if self.config.use_llm_speech and self.llm.available:
-            generated = self._llm_speech(intent, memories, utterance)
+            generated = self._llm_speech(intent, memories, utterance, extra)
             if generated:
                 return generated
-        return self._render_intent(intent, memories, utterance)
+        return self._render_intent(intent, memories, utterance, extra)
 
     def _llm_speech(
         self,
         intent: str,
         memories: list[Any],
         utterance: Optional[Utterance],
+        extra: Optional[dict[str, Any]] = None,
     ) -> Optional[str]:
         hint = self.INTENT_HINTS.get(intent, "自然地接一句话。")
+        extra_block = ""
+        if extra:
+            facts = "；".join(f"{k}：{v}" for k, v in extra.items() if v)
+            if facts:
+                extra_block = f"\n\n【本轮的事实】\n{facts}"
         prompt = f"""{self.persona.system_block()}
 
 【现场】
@@ -503,7 +528,7 @@ class NPCAgent:
 {utterance.render() if utterance else "（没有人说话，冷场了）"}
 
 【这一轮你要做的】
-{hint}
+{hint}{extra_block}
 
 直接输出你要说的台词。不要加引号，不要解释，不要旁白，不要写动作描写。"""
         try:
