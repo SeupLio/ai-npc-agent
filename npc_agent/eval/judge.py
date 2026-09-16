@@ -105,13 +105,20 @@ RUBRICS: dict[str, Rubric] = {
             pass_when=(
                 "正面接住了玩家的问题或请求；即使答案是拒绝或不知道，"
                 "也是针对这句话给的回应。"
+                "**「不知道」什么时候算合格**：如果【人设】说这件事不能讲"
+                "（未解锁的内容、不该由 NPC 做主的事），或者【现场】里确实没有"
+                "相关信息，那么说『不知道 / 说不好 / 这个我做不了主』就是**正确**的回答，"
+                "算通过。"
             ),
             fail_when=(
                 "答非所问；自说自话地推进自己的话题；把玩家的问题当没看见；"
                 "用一句万能话术敷衍（『嗯——我听着呢』）顶掉一个具体问题。"
-                "**尤其注意这一种**：对【现场】里明明已经有答案的事说『不知道』"
-                "『说不好』。这不算「诚实的不知道」，是拿含糊话躲开问题 —— "
-                "判断依据是【现场】里有没有答案，不是这句话听起来谦不谦虚。"
+                "**「不知道」什么时候算不合格**：如果答案就在【现场】里写着、"
+                "或者属于这个角色本该知道的事（店主知道自己的营业时间、"
+                "知道后厨有什么），却用『这个我还真说不好』含糊过去，"
+                "那就是拿话术躲问题，算不通过。"
+                "判断依据**只是**【现场】和【人设】里有没有答案 —— "
+                "和这句话听起来谦不谦虚无关。"
             ),
         ),
         Rubric(
@@ -132,6 +139,18 @@ RUBRICS: dict[str, Rubric] = {
 
 #: 默认要跑的评判标准。故意少而具体 —— 加一堆模糊的维度只会让 kappa 掉下来。
 DEFAULT_RUBRICS = ("in_character", "responsive", "grounded")
+
+#: 裁判的输出预算。**必须比台词预算大得多，这不是随手写大的。**
+#:
+#: 实测踩到的坑：拿 `speech_max_tokens`（1024）去跑裁判，校准集里有一条
+#: 返回了空内容 —— `finish_reason=length`，因为模型是推理模型，
+#: 光思维链就写了 4043 字，预算全被 CoT 吃光，正式回答一个字都没剩下。
+#:
+#: 这个失败很隐蔽：空内容会被判成"未判"（这是对的，不是 0 分），
+#: 于是报告不会报错，只会显示"未判 1 条"。一两条无所谓，
+#: 但如果 30% 的判决都因为预算不够而没判成，通过率就建立在少数样本上了。
+#: 所以预算要给足，而且要给到能容纳 CoT 的量级。
+JUDGE_MAX_TOKENS = 4096
 
 
 # --------------------------------------------------------------------------- #
@@ -180,7 +199,7 @@ class LLMJudge:
         llm: LLM,
         rubrics: Iterable[str] = DEFAULT_RUBRICS,
         *,
-        max_tokens: int = 512,
+        max_tokens: int = JUDGE_MAX_TOKENS,
         name: str = "",
     ) -> None:
         self.llm = llm
@@ -613,3 +632,181 @@ def dialogue_pairs(transcript: list[str]) -> list[dict[str, str]]:
             )
             last_speaker = speaker.strip()
     return [p for p in pairs if p["reply"]]
+
+
+# --------------------------------------------------------------------------- #
+# 对一份跑批报告逐条判分（并发）
+# --------------------------------------------------------------------------- #
+#: 判分默认并发。和跑批一样保守 —— 端点是同一个。
+DEFAULT_JUDGE_CONCURRENCY = 4
+
+
+@dataclass
+class CaseJudgement:
+    """一条用例的判分结果。"""
+
+    index: int
+    case_id: str
+    category: str = ""
+    scenario: str = ""
+    pairs: list[dict[str, Any]] = field(default_factory=list)
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+    def verdicts(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for entry in self.pairs:
+            out.extend(entry.get("verdicts") or [])
+        return out
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "case_id": self.case_id,
+            "category": self.category,
+            "scenario": self.scenario,
+            "error": self.error,
+            "pairs": self.pairs,
+        }
+
+
+def judge_report_cases(
+    results: list[dict[str, Any]],
+    *,
+    judge: "LLMJudge",
+    persona_of: Any,
+    scene_of: Any,
+    concurrency: int = DEFAULT_JUDGE_CONCURRENCY,
+    on_done: Any = None,
+) -> tuple[list[CaseJudgement], dict[str, Any]]:
+    """对一份跑批报告里的每条用例判分。
+
+    `persona_of(scenario_id)` / `scene_of(scenario_id)` 由调用方提供 ——
+    判分模块不该知道场景配置长什么样，否则换一个世界就要改判分逻辑。
+
+    ## 为什么并发
+
+    228 条用例 × 每条约 4 轮对话 × 3 条标准 ≈ 2700 次模型调用。
+    按实测单次 14 秒算，串行是**十小时**量级。不并行就等于不会有人跑，
+    于是"我们用了 LLM-as-judge"就永远停留在声明阶段。
+
+    ## 为什么可以共享一个 judge 实例
+
+    `judge_reply` 是无状态的（不缓存、不累加跨条状态），
+    模型客户端每次调用新开连接（`urllib.request.urlopen`），
+    不共享可变连接对象。所以并发调用互不干扰。
+
+    结果**按用例下标落位**再返回：判分报告的顺序必须和跑批报告一致，
+    否则"哪条用例人设崩了"要人工去对，等于没判。
+
+    单条用例内部仍然串行（一次对话的几轮之间有上下文关系，
+    并行判会让同一条用例的判决来自不同的时间点，反而不好归因）。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    total = len(results)
+    slots: list[Optional[CaseJudgement]] = [None] * total
+    done = 0
+
+    def work(index: int) -> CaseJudgement:
+        result = results[index]
+        scenario_id = result.get("scenario") or "tutorial"
+        case_id = str(result.get("case_id") or f"case_{index}")
+        pairs = dialogue_pairs(result.get("transcript") or [])
+        if not pairs:
+            # 没有对话 = 没东西可判。记成空，不记成错误 ——
+            # "这条用例本来就没有台词"和"判分炸了"是两回事。
+            return CaseJudgement(
+                index=index,
+                case_id=case_id,
+                category=result.get("category") or "",
+                scenario=scenario_id,
+            )
+        try:
+            verdicts = judge.judge_pairs(
+                pairs, persona=persona_of(scenario_id), scene=scene_of(scenario_id)
+            )
+        except Exception as exc:  # 兜底：判分炸了不能让整批报告作废
+            return CaseJudgement(
+                index=index,
+                case_id=case_id,
+                category=result.get("category") or "",
+                scenario=scenario_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return CaseJudgement(
+            index=index,
+            case_id=case_id,
+            category=result.get("category") or "",
+            scenario=scenario_id,
+            pairs=verdicts,
+        )
+
+    if concurrency <= 1 or total <= 1:
+        for index in range(total):
+            judgement = work(index)
+            slots[index] = judgement
+            done += 1
+            if on_done:
+                on_done(judgement, done, total)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {pool.submit(work, i): i for i in range(total)}
+            for future in as_completed(futures):
+                index = futures[future]
+                slots[index] = future.result()
+                done += 1
+                if on_done:
+                    on_done(slots[index], done, total)
+
+    judgements = [j for j in slots if j is not None]
+    judgements.sort(key=lambda j: j.index)
+    stats = judge_coverage(judgements, concurrency=concurrency)
+    return judgements, stats
+
+
+def judge_coverage(
+    judgements: list[CaseJudgement], *, concurrency: int = 1
+) -> dict[str, Any]:
+    """判分的覆盖情况。**"判了几条"和"炸了几条"必须分开报。**"""
+    failed = [j for j in judgements if not j.ok]
+    empty = [j for j in judgements if j.ok and not j.pairs]
+    judged = sum(len(j.verdicts()) for j in judgements)
+    unjudged = sum(
+        1 for j in judgements for v in j.verdicts() if not v.get("judged")
+    )
+    return {
+        "cases": len(judgements),
+        "cases_failed": len(failed),
+        "cases_without_dialogue": len(empty),
+        "failed_ids": [j.case_id for j in failed],
+        "verdicts": judged,
+        "unjudged": unjudged,
+        "concurrency": concurrency,
+        "verdict": _coverage_verdict(len(judgements), len(failed), judged, unjudged),
+    }
+
+
+def _coverage_verdict(total: int, failed: int, verdicts: int, unjudged: int) -> str:
+    if not total:
+        return "没有用例可判"
+    if failed:
+        return (
+            f"有 {failed}/{total} 条用例判分时炸了（不是「判了 0 分」）。"
+            "这些用例的台词没有被评估，报告里的通过率是**剩下的那些**算出来的"
+        )
+    if not verdicts:
+        return "一条台词都没判到 —— 检查转写是否为空"
+    if unjudged / verdicts > 0.10:
+        return (
+            f"有 {unjudged}/{verdicts} 条判决没拿到分数（模型超时/输出不合格式）。"
+            "占比超过 10%，通过率建立在剩下的少数判决上，读的时候要留意"
+        )
+    if unjudged:
+        return (
+            f"有 {unjudged}/{verdicts} 条判决没拿到分数。"
+            "它们没有变成 0 分混进均值，但样本变少了"
+        )
+    return f"全部 {verdicts} 条判决都拿到了分数"

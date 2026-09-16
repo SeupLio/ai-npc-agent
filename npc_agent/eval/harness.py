@@ -148,11 +148,23 @@ class EvalHarness:
 
     # ------------------------------------------------------------------ #
     def load_cases(self, categories: Optional[list[str]] = None) -> list[dict[str, Any]]:
+        """加载用例。`categories` 为空则全加载。
+
+        **按用例自己的 `category` 字段过滤，而不是按文件名。**
+
+        这条踩过坑：生成的用例全部落在 `generated.jsonl` 一个文件里，
+        早期版本按文件 stem 过滤，于是 `--category safety` 只跑到了
+        `safety.jsonl` 里那 3 条手写用例 —— 而安全类实际有 31 条。
+        命令跑成功了、报告全绿、退出码 0，只是**测的东西比你以为的少 90%**。
+
+        这类"静默少测"比报错危险：报错会有人去看，静默少测只会让人以为
+        "安全维度没问题"。所以过滤条件同时接受 category 字段和文件名，
+        两边任一命中即可（文件名命中是为了兼容把某类用例单独放一个文件的老写法）。
+        """
         wanted = set(categories) if categories else None
         cases: list[dict[str, Any]] = []
         for path in sorted(self.cases_dir.glob("*.jsonl")):
-            if wanted and path.stem not in wanted:
-                continue
+            stem = path.stem
             for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 line = line.strip()
                 if not line or line.startswith("//"):
@@ -161,7 +173,9 @@ class EvalHarness:
                     case = json.loads(line)
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"{path.name}:{line_no} JSON 解析失败: {exc}") from exc
-                case.setdefault("category", path.stem)
+                case.setdefault("category", stem)
+                if wanted and case["category"] not in wanted and stem not in wanted:
+                    continue
                 cases.append(case)
         return cases
 

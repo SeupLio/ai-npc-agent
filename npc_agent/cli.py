@@ -22,6 +22,7 @@ from .cast import Cast, build_cast, load_cast
 from .config import RuntimeConfig, list_scenarios, load_scenario
 from .env import env_label, env_name_of
 from .eval.harness import CASES_DIR
+from .eval.judge import DEFAULT_JUDGE_CONCURRENCY, JUDGE_MAX_TOKENS
 from .eval.judge import DEFAULT_RUBRICS as DEFAULT_RUBRIC_KEYS
 from .eval.runner import DEFAULT_BACKOFF, DEFAULT_CONCURRENCY, DEFAULT_MAX_RETRIES
 from .llm import build_llm
@@ -276,6 +277,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
         cfg.base_url = args.base_url
     if getattr(args, "api_key", None):
         cfg.api_key = args.api_key
+    # 两个开关把"模型负责台词"和"模型负责规划"拆成可独立测量的变量。
+    # 先测便宜的那个（台词）：规划那一列不稳，混在一起测会污染台词那一列。
+    if getattr(args, "no_planner", False):
+        cfg.use_llm_planner = False
+    if getattr(args, "no_speech", False):
+        cfg.use_llm_speech = False
 
     categories = args.category or None
     harness = EvalHarness(cfg)
@@ -290,6 +297,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
             "provider": cfg.llm_provider,
             "model": cfg.model or "(offline)",
             "memory_strategy": cfg.memory_strategy,
+            "use_llm_planner": cfg.use_llm_planner,
+            "use_llm_speech": cfg.use_llm_speech,
         }
     )
 
@@ -692,11 +701,12 @@ def cmd_judge(args: argparse.Namespace) -> int:
     from rich.table import Table
 
     from .eval.judge import (
+        DEFAULT_JUDGE_CONCURRENCY,
         DEFAULT_RUBRICS,
         RUBRICS,
         LLMJudge,
         calibrate,
-        dialogue_pairs,
+        judge_report_cases,
         load_calibration,
         render_calibration,
     )
@@ -719,7 +729,12 @@ def cmd_judge(args: argparse.Namespace) -> int:
         console.print(f"[red]未知的评判标准 {unknown}，可选：{sorted(RUBRICS)}[/red]")
         return 2
 
-    judge = LLMJudge(llm, rubrics=rubrics, max_tokens=cfg.speech_max_tokens, name=cfg.model or "judge")
+    judge = LLMJudge(
+        llm,
+        rubrics=rubrics,
+        max_tokens=getattr(args, "judge_max_tokens", 0) or JUDGE_MAX_TOKENS,
+        name=cfg.model or "judge",
+    )
 
     if not judge.available:
         console.print(
@@ -759,7 +774,13 @@ def cmd_judge(args: argparse.Namespace) -> int:
         report_path = Path(args.report)
         data = _json.loads(report_path.read_text(encoding="utf-8"))
         results = data.get("results") or []
-        console.print(f"\n对 {len(results)} 条用例的台词判分（{report_path}）…")
+        limit_cases = getattr(args, "limit_cases", 0) or 0
+        if limit_cases:
+            results = results[:limit_cases]
+        concurrency = max(1, getattr(args, "concurrency", DEFAULT_JUDGE_CONCURRENCY) or 1)
+        console.print(
+            f"\n对 {len(results)} 条用例的台词判分（{report_path}，并发 {concurrency}）…"
+        )
 
         # 事后判分能拿到的东西是有限的：转写里有完整对话，但**现场状态已经过去了**。
         # 所以默认只跑不依赖现场的两条标准。
@@ -770,37 +791,46 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 "        这一项的结果只能当参考信号，不能当结论。"
             )
 
-        per_case: list[dict] = []
-        for index, result in enumerate(results, 1):
-            scenario_id = result.get("scenario") or "tutorial"
-            scenario = load_scenario(scenario_id)
-            persona = _persona_block(scenario)
-            pairs = dialogue_pairs(result.get("transcript") or [])
-            if not pairs:
-                continue
-            verdicts = judge.judge_pairs(
-                pairs, persona=persona, scene=_scene_block(scenario, scenario_id)
-            )
-            per_case.append(
-                {
-                    "case_id": result.get("case_id"),
-                    "category": result.get("category"),
-                    "scenario": scenario_id,
-                    "verdicts": verdicts,
-                }
-            )
-            if index % 10 == 0:
-                console.print(f"[dim]  用例 {index}/{len(results)} …[/dim]")
+        # 人设块和现场块按场景缓存：228 条用例只涉及 5 个场景，
+        # 每条都重新渲染一遍纯属浪费，而且 load_persona 会反复读盘。
+        persona_cache: dict[str, str] = {}
+        scene_cache: dict[str, str] = {}
 
-        summary = _summarise_judgements(per_case, rubrics)
+        def persona_of(sid: str) -> str:
+            if sid not in persona_cache:
+                persona_cache[sid] = _persona_block(load_scenario(sid))
+            return persona_cache[sid]
+
+        def scene_of(sid: str) -> str:
+            if sid not in scene_cache:
+                scene_cache[sid] = _scene_block(load_scenario(sid), sid)
+            return scene_cache[sid]
+
+        def on_judged(judgement, done: int, total: int) -> None:
+            flag = " [red](炸了)[/red]" if not judgement.ok else ""
+            console.print(f"  [{done}/{total}] {judgement.case_id}{flag}", highlight=False)
+
+        judgements, coverage = judge_report_cases(
+            results,
+            judge=judge,
+            persona_of=persona_of,
+            scene_of=scene_of,
+            concurrency=concurrency,
+            on_done=on_judged if getattr(args, "progress", False) else None,
+        )
+
+        per_case = [j.to_dict() for j in judgements if j.pairs]
+        summary = _summarise_judgements(judgements, rubrics)
         payload["report"] = report_path.name
         payload["cases"] = per_case
         payload["summary"] = summary
+        payload["coverage"] = coverage
 
         console.print(
             f"\n判出 {summary['judged']} 条｜未判 {summary['unjudged']}"
             f"（未判不会被当成 0 分）"
         )
+        console.print(coverage["verdict"])
         for key, stats in sorted(summary["by_rubric"].items()):
             console.print(
                 f"  {RUBRICS[key].name}: 通过率 {stats['pass_rate']:.0%}"
@@ -852,13 +882,18 @@ def _scene_block(scenario: dict, scenario_id: str) -> str:
     return "\n".join(parts)
 
 
-def _summarise_judgements(per_case: list[dict], rubrics: list[str]) -> dict:
-    """汇总判决。**未判的条目单独计数，绝不并进通过率的分母。**"""
+def _summarise_judgements(judgements: list, rubrics: list[str]) -> dict:
+    """汇总判决。**未判的条目单独计数，绝不并进通过率的分母。**
+
+    直接吃 `CaseJudgement` 对象而不是它的 dict 形式：
+    走一遍 `to_dict()` 再读回来，等于把"判分结果长什么样"这件事
+    在判分模块和 CLI 之间抄了两遍，两边一旦不一致就会静默算错。
+    """
     by_rubric: dict[str, dict[str, int]] = {key: {"n": 0, "passed": 0} for key in rubrics}
     judged = unjudged = 0
-    for case in per_case:
-        for entry in case["verdicts"]:
-            for verdict in entry["verdicts"]:
+    for judgement in judgements:
+        for entry in judgement.pairs:
+            for verdict in entry.get("verdicts") or []:
                 bucket = by_rubric.setdefault(
                     verdict["rubric"], {"n": 0, "passed": 0}
                 )
@@ -1042,6 +1077,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--category", action="append", help="只跑某类用例，可重复")
     p_eval.add_argument("--limit", type=int, default=0, help="只跑前 N 条用例（冒烟用）")
     p_eval.add_argument("--json", help="把报告写入指定路径")
+    p_eval.add_argument(
+        "--no-planner",
+        action="store_true",
+        help="让模型只负责台词，规划仍走启发式（每次调用省 ~35s，且只变一个变量）",
+    )
+    p_eval.add_argument("--no-speech", action="store_true", help="只用模型规划，台词仍走模板")
     _add_llm_args(p_eval)
     _add_batch_args(p_eval)
     p_eval.set_defaults(func=cmd_eval)
@@ -1093,6 +1134,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_judge.add_argument("--report", default="", help="要判分的跑批报告 JSON（eval --json 的产物）")
     p_judge.add_argument("--rubrics", default="", help=f"逗号分隔，可选：{','.join(sorted(DEFAULT_RUBRIC_KEYS))}")
     p_judge.add_argument("--json", default="reports/judge.json", help="裁判报告输出路径，空串则不写")
+    p_judge.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_JUDGE_CONCURRENCY,
+        help=f"判分并发（默认 {DEFAULT_JUDGE_CONCURRENCY}）；串行判 228 条约十小时",
+    )
+    p_judge.add_argument("--limit-cases", dest="limit_cases", type=int, default=0, help="只判前 N 条用例")
+    p_judge.add_argument(
+        "--judge-max-tokens",
+        dest="judge_max_tokens",
+        type=int,
+        default=0,
+        help=f"裁判的输出预算（默认 {JUDGE_MAX_TOKENS}）。推理模型要给足，否则思维链会把预算吃光、返回空内容",
+    )
+    p_judge.add_argument("--progress", action="store_true", help="逐条打印判分进度")
     _add_llm_args(p_judge)
     p_judge.set_defaults(func=cmd_judge)
 

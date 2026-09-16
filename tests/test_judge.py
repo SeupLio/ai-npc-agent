@@ -528,3 +528,148 @@ def test_the_hard_calibration_case_is_still_in_the_set() -> None:
     twin = items["cal_rs_02"]
     assert twin["reply"] == items["cal_rs_06"]["reply"]
     assert twin["label"] == 1, "同句反标的那一对被改掉了，这条测试就失去意义"
+
+
+# --------------------------------------------------------------------------- #
+# 并发判分
+# --------------------------------------------------------------------------- #
+_TRANSCRIPT = [
+    "玩家[阿澈] 来杯拿铁",
+    "  [ok] 阿柚 move_to(location=kitchen)",
+    "阿柚: 好，稍等。",
+]
+
+
+def _fake_results(n: int) -> list[dict]:
+    return [
+        {
+            "case_id": f"case_{i:02d}",
+            "category": "task",
+            "scenario": "tutorial",
+            "transcript": list(_TRANSCRIPT),
+        }
+        for i in range(n)
+    ]
+
+
+def _scripted_judge(payload: str = '{"score": 1, "reason": "还行"}') -> J.LLMJudge:
+    return J.LLMJudge(ScriptedLLM(lambda _p: payload), name="fake-judge")
+
+
+def _run_judge(results, judge, *, concurrency):
+    return J.judge_report_cases(
+        results,
+        judge=judge,
+        persona_of=lambda _sid: "你是阿柚",
+        scene_of=lambda _sid: "你在吧台",
+        concurrency=concurrency,
+    )
+
+
+def test_parallel_judging_keeps_the_report_order() -> None:
+    """判分结果的顺序必须和跑批报告一致。
+
+    顺序错了，"哪条用例人设崩了"就得人工去对 —— 等于没判。
+    """
+    results = _fake_results(6)
+    judgements, stats = _run_judge(results, _scripted_judge(), concurrency=4)
+
+    assert [j.index for j in judgements] == list(range(6))
+    assert [j.case_id for j in judgements] == [r["case_id"] for r in results]
+    assert stats["cases"] == 6
+
+
+def test_parallel_judging_agrees_with_serial() -> None:
+    """并发 1 和并发 4 必须判出一样的结果。"""
+    results = _fake_results(4)
+    serial, _ = _run_judge(results, _scripted_judge(), concurrency=1)
+    parallel, _ = _run_judge(results, _scripted_judge(), concurrency=4)
+
+    assert [j.to_dict() for j in serial] == [j.to_dict() for j in parallel]
+
+
+def test_a_case_without_dialogue_is_empty_not_an_error() -> None:
+    """没有台词的用例不是"判分炸了"。
+
+    把它记成错误，报告里就会出现一批假的失败，
+    而真正的问题（这条用例本来就没让 NPC 开口）反而看不见了。
+    """
+    results = _fake_results(3)
+    results[1]["transcript"] = []
+    judgements, stats = _run_judge(results, _scripted_judge(), concurrency=2)
+
+    assert judgements[1].ok, "空转写被记成了错误"
+    assert judgements[1].pairs == []
+    assert stats["cases_without_dialogue"] == 1
+    assert stats["cases_failed"] == 0
+
+
+def test_a_judging_crash_does_not_take_down_the_whole_report() -> None:
+    """单条用例判分炸了，不能让整批判分作废。"""
+
+    class Exploding(J.LLMJudge):
+        def judge_pairs(self, pairs, **kwargs):  # type: ignore[override]
+            raise RuntimeError("boom")
+
+    judgements, stats = _run_judge(_fake_results(3), Exploding(ScriptedLLM([])), concurrency=2)
+
+    assert all(not j.ok for j in judgements)
+    assert all("RuntimeError" in j.error for j in judgements)
+    assert stats["cases_failed"] == 3
+    assert "不是「判了 0 分」" in stats["verdict"]
+
+
+def test_coverage_verdict_does_not_call_unjudged_a_zero() -> None:
+    """未判超 10% 要说"通过率建立在少数判决上"，而不是把它当 0 分。"""
+    assert "全部 100 条判决都拿到了分数" in J._coverage_verdict(10, 0, 100, 0)
+    assert "没有变成 0 分" in J._coverage_verdict(10, 0, 100, 3)
+    assert "占比超过 10%" in J._coverage_verdict(10, 0, 100, 20)
+    assert "一条台词都没判到" in J._coverage_verdict(10, 0, 0, 0)
+    assert J._coverage_verdict(0, 0, 0, 0) == "没有用例可判"
+
+
+def test_unjudged_verdicts_are_counted_but_never_scored() -> None:
+    """模型输出不合格式 → 未判；它不该出现在通过率的分子或分母里。"""
+    results = _fake_results(2)
+    judgements, stats = _run_judge(
+        results, _scripted_judge('{"reason": "忘了给分数"}'), concurrency=2
+    )
+
+    verdicts = [v for j in judgements for v in j.verdicts()]
+    assert verdicts, "一条判决都没有"
+    assert all(not v["judged"] for v in verdicts)
+    assert stats["unjudged"] == len(verdicts)
+    assert "没有用例" not in stats["verdict"]
+
+
+def test_judge_output_budget_is_far_larger_than_the_speech_budget() -> None:
+    """裁判的输出预算必须远大于台词预算 —— 这是实测踩出来的坑。
+
+    拿 `speech_max_tokens`（1024）去跑裁判，校准集里出现了一条**空内容**：
+    `finish_reason=length`，模型是推理模型，光思维链就 4043 字，
+    预算被 CoT 吃光，正式回答一个字都没剩下。
+
+    这个失败特别隐蔽：空内容会被正确判成"未判"而不是 0 分，
+    所以报告不报错，只显示"未判 1 条"。但如果三成判决都因为预算不够
+    没判成，通过率就建立在少数样本上了 —— 而报告看上去依然正常。
+    """
+    from npc_agent.config import RuntimeConfig
+
+    assert J.JUDGE_MAX_TOKENS >= 2048, "推理模型的思维链需要更大的预算"
+    assert J.JUDGE_MAX_TOKENS > RuntimeConfig().speech_max_tokens * 2
+
+
+def test_responsive_rubric_defines_ignorance_in_both_directions() -> None:
+    """「不知道」什么时候算合格、什么时候算敷衍，两个方向都要写清楚。
+
+    这条测试来自校准的**第二轮**：第一轮裁判把"拿话术躲问题"当成回应了，
+    于是我在 fail_when 里加了"现场有答案却说不知道 = 不合格"。
+    结果第二轮**矫枉过正** —— 同一条台词在问隐藏菜单时被判成了不合格，
+    而那里的"我不能说"恰恰是正确回答（人设规定未解锁内容不能讲）。
+
+    只写一个方向的边界，裁判就会倒向另一侧。两个方向都写，它才有依据去分。
+    """
+    rubric = J.RUBRICS["responsive"]
+    assert "算通过" in rubric.pass_when, "没有说清楚「诚实的不知道」什么时候合格"
+    assert "算不通过" in rubric.fail_when, "没有说清楚「躲问题的不知道」什么时候不合格"
+    assert "人设" in rubric.pass_when and "现场" in rubric.fail_when
