@@ -865,9 +865,21 @@ def cmd_judge(args: argparse.Namespace) -> int:
     payload: dict[str, object] = {"judge_model": cfg.model or cfg.llm_provider}
 
     # ---- 1) 校准（永远先做） ----
+    #
+    # 校准也并行（用同一个 --concurrency）。它是一笔**每次判分都要重付的固定税**：
+    # 开发集 24 + 留出集 32 = 56 次调用，串行按实测 45s/次算就是约 40 分钟，
+    # 而校准不进检查点。判分本身并行得再好，前面这 40 分钟也躲不掉。
     items = load_calibration()
-    console.print(f"用 {len(items)} 条人工标注样本校准裁判 …")
-    report = calibrate(judge, items, progress=lambda m: console.print(f"[dim]{m}[/dim]"))
+    cal_workers = getattr(args, "concurrency", 0) or DEFAULT_JUDGE_CONCURRENCY
+    console.print(
+        f"用 {len(items)} 条人工标注样本校准裁判（并发 {cal_workers}）…"
+    )
+    report = calibrate(
+        judge,
+        items,
+        progress=lambda m: console.print(f"[dim]{m}[/dim]"),
+        concurrency=cal_workers,
+    )
     console.print(render_calibration(report))
 
     table = Table(title="裁判校准", header_style="bold")
@@ -898,8 +910,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
             console.print(
                 f"\n在留出集（{len(hold_items)} 条，标签写好时没见过裁判输出）上再校准一次 …"
             )
-            # 必须传 progress：开发集那条会打「校准 N/24 …」，留出集是**串行**的
-            # 32 次调用（十几分钟）。不打进度的话，日志十几分钟一动不动，
+            # 必须传 progress：不打进度的话，日志一段时间一动不动，
             # 从外面看和"卡死了"完全一样 —— 这正是本项目在监控那一节
             # 反复踩的坑：**没有输出 ≠ 没有进展，但读者分不出来**。
             hold = run_holdout(
@@ -907,6 +918,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 items=hold_items,
                 seal=load_seal(),
                 progress=lambda m: console.print(f"[dim]{m}[/dim]"),
+                concurrency=cal_workers,
             )
             payload["holdout"] = hold
 

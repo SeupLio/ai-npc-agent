@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -727,27 +728,67 @@ def calibrate(
     items: Optional[list[dict[str, Any]]] = None,
     *,
     progress: Any = None,
+    concurrency: Optional[int] = None,
 ) -> CalibrationReport:
     """拿人工标注的样本校准裁判。
 
     **没跑过这一步，就不该在报告里写"我们用了 LLM-as-judge"。**
     一个没校准的裁判只是"另一个模型的意见"，把它写进结论是拿权威感代替证据。
+
+    ## 为什么也要并行
+
+    校准是**每一次判分都要先付的固定税**：开发集 24 + 留出集 32 = 56 次调用。
+    **实测串行 1130 秒（18.8 分钟，≈20s/次）** —— 这是从进程启动到
+    第一个用例判决落盘的时间差量出来的，不是估的。
+    而校准**不进检查点**（每次重跑），所以这笔钱每次都得重付。
+    它是整条判分流水线里最容易被忽略的一段固定开销 ——
+    判分本身并行得再好，前面这 19 分钟也躲不掉。
+    并发 8 之后是 ~2 分钟量级。
+
+    ## 并行不改变结果，但**必须按下标落位**
+
+    `judge.judge()` 是无状态的，所以并发调用互不干扰（论证同
+    `judge_report_cases`）。但累积必须**按 items 的原始顺序**做：
+    `disagreements` 是给人读的列表，若按完成顺序追加，
+    同一份校准集跑两次会得到两个顺序不同的报告 ——
+    这违反本项目"同一输入跑两次结果必须一致"的那条确定性断言。
+    所以先把判决按**下标**收齐，再顺序累积。
     """
     items = items if items is not None else load_calibration()
-    report = CalibrationReport(total=len(items))
+    total = len(items)
+    report = CalibrationReport(total=total)
 
-    collected: dict[str, dict[str, list[int]]] = {}
-    for index, item in enumerate(items, 1):
-        rubric_key = item["rubric"]
-        verdict = judge.judge(
-            rubric_key,
+    def _ask(item: dict[str, Any]) -> Any:
+        return judge.judge(
+            item["rubric"],
             persona=item.get("persona", ""),
             scene=item.get("scene", ""),
             player=item.get("player", ""),
             reply=item.get("reply", ""),
         )
-        if progress:
-            progress(f"  校准 {index}/{len(items)} …")
+
+    workers = DEFAULT_JUDGE_CONCURRENCY if concurrency is None else concurrency
+    verdicts: list[Any] = [None] * total
+    if workers > 1 and total > 1:
+        done = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_ask, item): i for i, item in enumerate(items)}
+            for future in as_completed(futures):
+                # 不吞异常：串行路径下 `judge()` 若抛异常会直接冒出来，
+                # 并行路径也必须一样，否则两条路径的失败行为就不一致了。
+                verdicts[futures[future]] = future.result()
+                done += 1
+                if progress:
+                    progress(f"  校准 {done}/{total} …")
+    else:
+        for index, item in enumerate(items, 1):
+            verdicts[index - 1] = _ask(item)
+            if progress:
+                progress(f"  校准 {index}/{total} …")
+
+    collected: dict[str, dict[str, list[int]]] = {}
+    for item, verdict in zip(items, verdicts):
+        rubric_key = item["rubric"]
         if not verdict.judged:
             report.disagreements.append(
                 {
@@ -802,6 +843,7 @@ def run_holdout(
     items: Optional[list[dict[str, Any]]] = None,
     seal: Optional[dict[str, Any]] = None,
     progress: Any = None,
+    concurrency: Optional[int] = None,
 ) -> dict[str, Any]:
     """跑留出集，返回一块可以直接进 payload 的结果。
 
@@ -812,7 +854,7 @@ def run_holdout(
     items = items if items is not None else load_calibration(HOLDOUT_FILE)
     seal = seal if seal is not None else load_seal()
     problems = verify_seal(seal, items)
-    report = calibrate(judge, items, progress=progress)
+    report = calibrate(judge, items, progress=progress, concurrency=concurrency)
     block: dict[str, Any] = report.to_dict()
     block["quotable"] = not problems
     block["problems"] = problems

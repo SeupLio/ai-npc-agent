@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import pytest
 
@@ -1135,3 +1136,100 @@ def test_judge_pairs_asks_for_the_persona_of_each_speaker() -> None:
     ]
     judge.judge_pairs(pairs, persona_of=persona_for, scene="")
     assert asked == ["阿柚", "小舟"]
+
+
+# --------------------------------------------------------------------------- #
+# 校准也要并行：它是一笔每次判分都要重付的固定税
+# --------------------------------------------------------------------------- #
+def _reply_keyed_judge(
+    scores: dict[str, int], latency: dict[str, float] | None = None
+) -> J.LLMJudge:
+    """按**台词**决定判决的裁判，可以给每条台词配一个人为延迟。
+
+    延迟是用来**故意打乱完成顺序**的：只有让先发的请求后回来，
+    才测得出"按完成顺序累积"这个 bug。用真实模型是测不出来的 ——
+    它回来的顺序本身就不可控。
+    """
+    latency = latency or {}
+
+    def fn(prompt: str) -> str:
+        for reply, score in scores.items():
+            if reply in prompt:
+                if latency.get(reply):
+                    time.sleep(latency[reply])
+                return json.dumps({"score": score, "reason": "脚本"})
+        return json.dumps({"score": 0, "reason": "没匹配上"})
+
+    return J.LLMJudge(ScriptedLLM(fn))
+
+
+def _fake_calibration_items(n: int = 4) -> list[dict]:
+    return [
+        {"id": f"f{i}", "rubric": "grounded", "reply": f"台词{i}", "label": 1}
+        for i in range(n)
+    ]
+
+
+def test_parallel_calibration_lands_results_by_index_not_completion_order() -> None:
+    """**这条是并行校准唯一真正的风险点。**
+
+    校准报告里的 `disagreements` 是给人读的列表。如果按**完成顺序**追加，
+    同一份校准集跑两次会得到两个顺序不同的报告 —— 本项目有一条
+    "同一输入跑两次结果必须一致"的确定性断言，那会直接违反它。
+
+    这里让第 0 条最慢：并发跑的话它**最后**回来。
+    """
+    items = _fake_calibration_items(4)
+    scores = {f"台词{i}": (0 if i in (0, 2) else 1) for i in range(4)}
+    latency = {f"台词{i}": (0.35 if i == 0 else 0.01) for i in range(4)}
+
+    report = J.calibrate(_reply_keyed_judge(scores, latency), items, concurrency=4)
+    assert [d["id"] for d in report.disagreements] == ["f0", "f2"], (
+        "判决必须按 items 下标落位，不能按完成顺序追加"
+    )
+
+
+def test_parallel_calibration_gives_the_same_report_as_serial() -> None:
+    items = _fake_calibration_items(6)
+    scores = {f"台词{i}": (0 if i % 3 == 0 else 1) for i in range(6)}
+
+    serial = J.calibrate(_reply_keyed_judge(scores), items, concurrency=1).to_dict()
+    parallel = J.calibrate(_reply_keyed_judge(scores), items, concurrency=4).to_dict()
+    assert serial == parallel
+
+
+def test_calibration_at_concurrency_one_does_not_build_a_thread_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """串行基线必须真的是串行的，否则"并行没改变结果"就没法验证。"""
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise AssertionError("并发 1 不该建线程池")
+
+    monkeypatch.setattr(J, "ThreadPoolExecutor", _boom)
+    report = J.calibrate(_reply_keyed_judge({"台词0": 1}), _fake_calibration_items(1),
+                         concurrency=1)
+    assert report.judged == 1
+
+
+def test_a_single_item_does_not_build_a_thread_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一条样本开线程池纯属浪费 —— 单条时走串行路径。"""
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise AssertionError("单条样本不该建线程池")
+
+    monkeypatch.setattr(J, "ThreadPoolExecutor", _boom)
+    report = J.calibrate(_reply_keyed_judge({"台词0": 1}), _fake_calibration_items(1),
+                         concurrency=8)
+    assert report.judged == 1
+
+
+def test_parallel_calibration_never_turns_unjudged_into_zero() -> None:
+    """铁律一在并行路径上同样成立 —— 未判绝不能变成 0 分。"""
+    report = J.calibrate(J.LLMJudge(NullLLM()), _fake_calibration_items(5), concurrency=4)
+    assert report.judged == 0
+    assert report.unjudged == 5
+    assert report.per_rubric == {}
+    assert {d["kind"] for d in report.disagreements} == {"unjudged"}
