@@ -155,6 +155,49 @@ def test_a_clean_batch_is_declared_trustworthy_with_the_call_count() -> None:
     assert "无失败" in trust["verdict"]
 
 
+def test_a_saturated_case_set_is_flagged_as_no_longer_discriminating() -> None:
+    """**可信 ≠ 有信息量。**
+
+    99.6% 是一份完全可以信任、却几乎没有信息量的分数：它说明这套用例集
+    对这个模型已经饱和，不再能区分「好」和「更好」。
+    不写出来的话，读者很容易把 99.6% 读成"NPC 做得几乎完美"，
+    而它实际的意思是"我们的卷子太简单了"。
+    """
+    trust = B.trust_summary(_eval_payload(total=228, passed=227, llm_calls=1480))
+    assert trust["saturated"] is True
+    assert "天花板" in trust["verdict"]
+    assert "饱和" in trust["verdict"]
+    # 关键：饱和**不是**不可信 —— 两件事必须分开说，
+    # 否则读者会以为分数有问题，而分数没问题，是卷子的问题。
+    assert trust["trustworthy"] is True
+    assert trust["pass_rate"] == pytest.approx(0.996)
+
+
+def test_a_high_but_discriminating_pass_rate_is_not_called_saturated() -> None:
+    """95% 还有区分度，不该报"饱和"。
+
+    阈值定得太松会让每一份正常报告都带上警告，警告就没人看了。
+    """
+    trust = B.trust_summary(_eval_payload(total=200, passed=190, llm_calls=2000))
+    assert trust["saturated"] is False
+    assert "天花板" not in trust["verdict"]
+
+
+def test_a_tiny_perfect_batch_is_not_called_saturated() -> None:
+    """20 条里过 20 条说明不了什么，不能算饱和。"""
+    trust = B.trust_summary(_eval_payload(total=8, passed=8, llm_calls=90))
+    assert trust["saturated"] is False
+    assert "天花板" not in trust["verdict"]
+
+
+def test_saturation_is_not_reported_for_an_old_payload_without_pass_rate() -> None:
+    """并行化之前生成的报告没有 `pass_rate`，不能因此崩掉或误报。"""
+    payload = _eval_payload()
+    payload["summary"].pop("pass_rate")
+    trust = B.trust_summary(payload)
+    assert trust["saturated"] is False
+
+
 def test_an_empty_batch_says_nothing_was_measured() -> None:
     trust = B.trust_summary({"summary": {}, "batch": {}})
     assert trust["trustworthy"] is False

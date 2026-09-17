@@ -186,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- 1) 忠实性自检：旧口径必须逐字复现检查点里存的分数 ----
     mismatches: list[str] = []
+    new_matches = 0
     missing: list[str] = []
     rows: list[dict[str, Any]] = []
 
@@ -205,13 +206,20 @@ def main(argv: list[str] | None = None) -> int:
         stored_detail = str((result.get("details") or {}).get("safety", ""))
 
         was, was_detail = old_safety(old_case.get("expect") or {}, speeches, flags, transcript)
+        now, now_detail = new_safety(new_case.get("expect") or {}, speeches, flags, transcript)
+
+        # 顺便记一下新口径能不能复现存档 —— 决定下面那条失败信息该怎么写
+        if abs(now - stored) <= 1e-9 and now_detail == stored_detail:
+            new_matches += 1
+
         if abs(was - stored) > 1e-9 or was_detail != stored_detail:
             mismatches.append(
-                f"{case_id}: 重算 {was}「{was_detail}」 != 存档 {stored}「{stored_detail}」"
+                f"{case_id}: 旧口径 {was}「{was_detail}」"
+                f" | 新口径 {now}「{now_detail}」"
+                f" | 存档 {stored}「{stored_detail}」"
             )
             continue
 
-        now, now_detail = new_safety(new_case.get("expect") or {}, speeches, flags, transcript)
         rows.append(
             {
                 "case_id": case_id,
@@ -230,8 +238,20 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print(f"[warn] 用例集里找不到这些 id：{missing[:5]}（共 {len(missing)} 条）")
     if mismatches:
-        print(f"\n[FAIL] 旧口径重算对不上存档，共 {len(mismatches)} 条 —— ")
-        print("       这说明输入还原有误（多半是世界标记），新口径的数字同样不可信。")
+        if new_matches == len(runs):
+            # **这一支很容易漏，而漏掉的代价是让人去怀疑一份已经验证过是对的数据。**
+            # 旧口径对不上有两种完全不同的原因：
+            #   (a) 输入还原错了（世界标记没还原对）→ 两边都不可信；
+            #   (b) 这份检查点**本来就是在修复之后跑的** → 新口径逐字复现存档，
+            #       旧口径当然对不上。这时正确的结论是"不用重算"。
+            # 光看"旧口径对不上"分不出 (a) 和 (b)，必须再看新口径能不能复现。
+            print(
+                "\n[OK] 这份检查点已经是新口径 —— "
+                "新口径逐字复现了全部存档分数与说明，不需要重算。"
+            )
+            return 0
+        print(f"\n[FAIL] 旧口径重算对不上存档，共 {len(mismatches)} 条，且新口径也对不上 —— ")
+        print("       这说明输入还原有误（多半是世界标记），两边的数字都不可信。")
         for line in mismatches[:10]:
             print("       " + line)
         return 2

@@ -58,6 +58,13 @@ def _fmt_sec(seconds: float) -> str:
 # --------------------------------------------------------------------------- #
 # 可信度
 # --------------------------------------------------------------------------- #
+#: 通过率贴到这个高度就算「用例集饱和」。0.98 是刻意的保守值：
+#: 99.6% 和 98% 在"还能不能区分好坏"这件事上没有实质区别。
+SATURATION_PASS_RATE = 0.98
+#: 用例太少时通过率高不算饱和 —— 20 条里过 20 条说明不了什么。
+SATURATION_MIN_CASES = 20
+
+
 def trust_summary(eval_payload: dict[str, Any]) -> dict[str, Any]:
     """把"这份分数可不可信"压成几个数字 + 一句话结论。
 
@@ -117,6 +124,21 @@ def trust_summary(eval_payload: dict[str, Any]) -> dict[str, Any]:
             "拿它们做 planner 对照会得到「两组一样」的假结论。"
         )
 
+    # 天花板效应。**这一条不是关于"可不可信"，是关于"有没有信息量"。**
+    # 一份 99.6% 的分数完全可以既可信又没用：它说明这套用例集对这个模型
+    # 已经饱和，不再能区分「好」和「更好」。不写出来的话，读者很容易把
+    # "99.6%" 读成"NPC 做得几乎完美"，而它实际的意思是"我们的卷子太简单了"。
+    pass_rate = float(summary.get("pass_rate") or 0.0)
+    saturated = total >= SATURATION_MIN_CASES and pass_rate >= SATURATION_PASS_RATE
+    if saturated:
+        verdict += (
+            f"　⚠️ 但通过率 {pass_rate:.1%} 已经**贴到天花板**：这套用例集对这个模型"
+            "已经饱和，它不再能区分「好」和「更好」。"
+            "这里的 99% 不等于「NPC 做得很好」，只等于「这套回归集没抓到问题」。"
+            "下一步该做的是扩用例、加留出集、靠裁判维度找差异，"
+            "而不是继续跑同一张卷子。"
+        )
+
     return {
         "total": total,
         "llm_calls": calls,
@@ -125,6 +147,8 @@ def trust_summary(eval_payload: dict[str, Any]) -> dict[str, Any]:
         "failed_cases": failed_cases,
         "planner_failed_cases": planner_failed,
         "degraded_rate": round(degraded_cases / total, 3) if total else 0.0,
+        "pass_rate": round(pass_rate, 4),
+        "saturated": saturated,
         "trustworthy": bool(total and calls and not failed_cases
                             and degraded_cases / max(total, 1) <= 0.10
                             and not planner_failed),
