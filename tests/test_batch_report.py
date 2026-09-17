@@ -344,6 +344,74 @@ def test_judge_section_degrades_gracefully_when_absent() -> None:
     assert "没有校准记录" in page
 
 
+def test_judge_section_separates_this_round_from_reused_judgements() -> None:
+    """「判过 228 条」和「这一轮新判了 228 条」是两件事。
+
+    一次 `--resume` 只判 1 条、复用 227 条，和从头判 228 条，
+    报告上都是"228 条判完了"。不把复用的量写出来，
+    读者会以为这一轮真的烧了 228 条的调用量 —— 而它只烧了 1 条。
+    """
+    payload = {
+        "eval": _eval_payload(),
+        "judge": {
+            "judge_model": "kimi-k2.7-code",
+            "summary": {"judged": 100, "unjudged": 0, "by_rubric": {
+                "in_character": {"n": 100, "passed": 90, "pass_rate": 0.9}}},
+            "coverage": {
+                "cases": 228, "cases_failed": 0, "cases_without_dialogue": 0,
+                "verdicts": 2922, "unjudged": 0,
+                "reused": 227, "executed": 1,
+                "verdict": "全部 2922 条判决都拿到了分数",
+            },
+        },
+    }
+    page = B.render_batch_html(payload)
+    assert "本轮新判" in page
+    assert "复用检查点" in page
+    assert "227 条是从检查点复用的" in page, "复用量必须写在页面上"
+
+
+def test_judge_section_does_not_claim_reuse_when_there_was_none() -> None:
+    """没复用就不要提"复用" —— 凭空多一句会让人以为报告是恢复出来的。"""
+    payload = {
+        "eval": _eval_payload(),
+        "judge": {
+            "judge_model": "kimi-k2.7-code",
+            "summary": {"judged": 10, "unjudged": 0, "by_rubric": {
+                "in_character": {"n": 10, "passed": 9, "pass_rate": 0.9}}},
+            "coverage": {
+                "cases": 10, "cases_failed": 0, "cases_without_dialogue": 0,
+                "verdicts": 30, "unjudged": 0, "reused": 0, "executed": 10,
+                "verdict": "全部 30 条判决都拿到了分数",
+            },
+        },
+    }
+    page = B.render_batch_html(payload)
+    assert "本轮新判" in page
+    assert "从检查点复用的" not in page
+
+
+def test_judge_section_still_renders_for_a_checkpoint_written_by_an_older_version() -> None:
+    """旧检查点里没有 `reused`/`executed` 字段，报告不能因此崩掉。
+
+    检查点是要跨版本读的：今天跑了一半，明天升级了代码再恢复。
+    缺字段就按 0 显示，别抛 KeyError。
+    """
+    payload = {
+        "eval": _eval_payload(),
+        "judge": {
+            "judge_model": "kimi-k2.7-code",
+            "summary": {"judged": 10, "unjudged": 0, "by_rubric": {
+                "in_character": {"n": 10, "passed": 9, "pass_rate": 0.9}}},
+            "coverage": {"cases": 10, "verdicts": 30, "unjudged": 0,
+                         "verdict": "全部 30 条判决都拿到了分数"},
+        },
+    }
+    page = B.render_batch_html(payload)
+    assert "本轮新判" in page
+    assert "全部 30 条判决都拿到了分数" in page
+
+
 def test_the_report_always_states_that_the_case_set_is_self_built() -> None:
     """诚实声明必须是页面的一部分，不能靠读者记得。
 

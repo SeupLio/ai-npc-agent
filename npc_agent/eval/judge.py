@@ -36,6 +36,7 @@ A/B 对比时裁判倾向于选先出现的那个。缓解办法是**交换顺�
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -656,6 +657,26 @@ class CaseJudgement:
     def ok(self) -> bool:
         return not self.error
 
+    @property
+    def reusable(self) -> bool:
+        """能不能在 `--resume` 时复用这条判分结果。
+
+        **不能只看 `ok`。** 判分失败走的是 `Verdict.unjudged` —— 它
+        **不抛异常**，所以 `error` 是空字符串，`ok` 为真，但整条用例
+        一条判决都没拿到分数。把这种结果当成"判完了"复用，等于把
+        "裁判当时连不上"永久写进报告：下次 `--resume` 会跳过它，
+        报告里那几条永远缺判决，而没有任何地方提示要去重跑。
+
+        所以规则是：没有对话可判（确定性结果）可以复用；
+        有对话但**一条判决都没拿到**，必须重判。
+        """
+        if self.error:
+            return False
+        if not self.pairs:
+            # 本来就没有对话可判 —— 这是确定性的，复用不会丢信息。
+            return True
+        return any(v.get("judged") for v in self.verdicts())
+
     def verdicts(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for entry in self.pairs:
@@ -671,6 +692,103 @@ class CaseJudgement:
             "pairs": self.pairs,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CaseJudgement":
+        """从检查点还原一条判分结果。
+
+        `index` 由调用方按下标重新赋值 —— 和跑批那边一样，
+        用例集可能被 `--limit-cases` 改过，恢复出来的报告顺序
+        必须跟着当前的用例列表走，而不是跟着上次的。
+        """
+        return cls(
+            index=0,
+            case_id=str(data.get("case_id") or ""),
+            category=str(data.get("category") or ""),
+            scenario=str(data.get("scenario") or ""),
+            pairs=list(data.get("pairs") or []),
+            error=str(data.get("error") or ""),
+        )
+
+
+def report_digest(results: list[dict[str, Any]]) -> str:
+    """把"被判的是什么内容"压成一个摘要。
+
+    为什么需要它：检查点是按 `case_id` 复用的，而**同一个 `case_id`
+    在不同批次里的台词是不一样的**（换模型、换预算、换世界都会变）。
+    拿 A 批的判决去补 B 批，报告会显示"这条判过了"，实际判的是 A 批的台词 ——
+    这比没判更糟，因为它看起来有数据。
+
+    配置指纹管的是"裁判怎么判"，摘要管的是"判的是哪份台词"，两者缺一不可。
+    """
+    blob = json.dumps(
+        [
+            [r.get("case_id"), r.get("speeches") or r.get("transcript") or []]
+            for r in results
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+#: 判分侧影响结果的配置字段。和跑批那边同理：**并发数不在里面** ——
+#: 它只影响判多久，不影响判出什么。
+JUDGE_RESUME_CRITICAL_FIELDS = ("judge", "rubrics", "max_tokens", "temperature")
+
+
+def judge_fingerprint(
+    judge: "LLMJudge", results: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "judge": judge.name,
+        "rubrics": sorted(judge.rubrics),
+        "max_tokens": judge.max_tokens,
+        "temperature": JUDGE_TEMPERATURE,
+        "report_digest": report_digest(results),
+    }
+
+
+def plan_judge_resume(
+    payload: dict[str, Any], fingerprint: dict[str, Any]
+) -> tuple[dict[str, CaseJudgement], str]:
+    """从判分检查点里挑出可以复用的结果。
+
+    返回 `(可复用结果 by case_id, 一句人话说明)`。
+    指纹对不上就返回空 + 原因 —— **不静默复用**。
+    """
+    entries = payload.get("judgements") or []
+    if not entries:
+        return {}, "判分检查点里没有已完成的结果"
+
+    recorded = payload.get("fingerprint")
+    if isinstance(recorded, dict) and recorded != fingerprint:
+        diff = [
+            f"{k}: {recorded.get(k)!r} → {fingerprint.get(k)!r}"
+            for k in (*JUDGE_RESUME_CRITICAL_FIELDS, "report_digest")
+            if recorded.get(k) != fingerprint.get(k)
+        ]
+        return {}, (
+            "判分检查点记录的是另一套配置（或另一份台词），拒绝恢复"
+            "（否则报告会把两次判分混成一列）：" + "；".join(diff)
+        )
+
+    usable: dict[str, CaseJudgement] = {}
+    skipped = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        judgement = CaseJudgement.from_dict(entry)
+        if not judgement.case_id:
+            continue
+        if judgement.reusable:
+            usable[judgement.case_id] = judgement
+        else:
+            skipped += 1
+    note = f"判分检查点里有 {len(usable)} 条可复用结果"
+    if skipped:
+        note += f"（另有 {skipped} 条一条判决都没拿到，会重判）"
+    return usable, note
+
 
 def judge_report_cases(
     results: list[dict[str, Any]],
@@ -680,6 +798,8 @@ def judge_report_cases(
     scene_of: Any,
     concurrency: int = DEFAULT_JUDGE_CONCURRENCY,
     on_done: Any = None,
+    resume: Optional[dict[str, CaseJudgement]] = None,
+    checkpoint: Any = None,
 ) -> tuple[list[CaseJudgement], dict[str, Any]]:
     """对一份跑批报告里的每条用例判分。
 
@@ -688,8 +808,8 @@ def judge_report_cases(
 
     ## 为什么并发
 
-    228 条用例 × 每条约 4 轮对话 × 3 条标准 ≈ 2700 次模型调用。
-    按实测单次 14 秒算，串行是**十小时**量级。不并行就等于不会有人跑，
+    228 条用例 × 每条约 3.3 轮对话 × 3 条标准 ≈ 2300 次模型调用。
+    按实测单次 15~50 秒算，串行是**十几小时**量级。不并行就等于不会有人跑，
     于是"我们用了 LLM-as-judge"就永远停留在声明阶段。
 
     ## 为什么可以共享一个 judge 实例
@@ -703,6 +823,14 @@ def judge_report_cases(
 
     单条用例内部仍然串行（一次对话的几轮之间有上下文关系，
     并行判会让同一条用例的判决来自不同的时间点，反而不好归因）。
+
+    ## 为什么也要检查点
+
+    跑批那边早就有了，判分这边一直漏着 —— 而判分**比跑批更长**
+    （跑批 227 条约 50 分钟，判分 228 条约 4 小时以上）。
+    一个四小时、两千多次调用、没有任何断点续跑的作业，
+    崩一次就是全丢。检查点和跑批共用 `runner.Checkpoint`
+    （加锁 + 临时文件 + `os.replace` 原子替换）。
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -744,33 +872,63 @@ def judge_report_cases(
             pairs=verdicts,
         )
 
+    # 先落位可复用的结果，再把剩下的排进待判队列。
+    # 下标**重新映射**到当前的用例列表上（`--limit-cases` 会改这个列表）。
+    reused = 0
+    pending: list[int] = []
+    for index, result in enumerate(results):
+        case_id = str(result.get("case_id") or f"case_{index}")
+        previous = (resume or {}).get(case_id)
+        if previous is not None and previous.reusable:
+            previous.index = index
+            slots[index] = previous
+            reused += 1
+        else:
+            pending.append(index)
+
     if concurrency <= 1 or total <= 1:
-        for index in range(total):
+        for index in pending:
             judgement = work(index)
             slots[index] = judgement
             done += 1
             if on_done:
-                on_done(judgement, done, total)
-    else:
+                on_done(judgement, done, len(pending))
+            if checkpoint:
+                checkpoint.save()
+    elif pending:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = {pool.submit(work, i): i for i in range(total)}
+            futures = {pool.submit(work, i): i for i in pending}
             for future in as_completed(futures):
                 index = futures[future]
                 slots[index] = future.result()
                 done += 1
                 if on_done:
-                    on_done(slots[index], done, total)
+                    on_done(slots[index], done, len(pending))
+                if checkpoint:
+                    checkpoint.save()
 
     judgements = [j for j in slots if j is not None]
     judgements.sort(key=lambda j: j.index)
     stats = judge_coverage(judgements, concurrency=concurrency)
+    stats["reused"] = reused
+    stats["executed"] = len(pending)
     return judgements, stats
 
 
 def judge_coverage(
-    judgements: list[CaseJudgement], *, concurrency: int = 1
+    judgements: list[CaseJudgement],
+    *,
+    concurrency: int = 1,
+    reused: int = 0,
+    executed: Optional[int] = None,
 ) -> dict[str, Any]:
-    """判分的覆盖情况。**"判了几条"和"炸了几条"必须分开报。**"""
+    """判分的覆盖情况。**"判了几条"和"炸了几条"必须分开报。**
+
+    `reused` / `executed` 也要报出来：一次 `--resume` 只判了 1 条用例
+    和一次从头判 228 条，报告上看起来都是"228 条判完了"。
+    不写清楚，"这次实际判了多少"就无从判断 —— 而它决定了这次
+    到底烧了多少模型调用、有多少判决是这一轮新产生的。
+    """
     failed = [j for j in judgements if not j.ok]
     empty = [j for j in judgements if j.ok and not j.pairs]
     judged = sum(len(j.verdicts()) for j in judgements)
@@ -785,6 +943,8 @@ def judge_coverage(
         "verdicts": judged,
         "unjudged": unjudged,
         "concurrency": concurrency,
+        "reused": reused,
+        "executed": len(judgements) - reused if executed is None else executed,
         "verdict": _coverage_verdict(len(judgements), len(failed), judged, unjudged),
     }
 

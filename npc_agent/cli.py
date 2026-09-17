@@ -745,10 +745,13 @@ def cmd_judge(args: argparse.Namespace) -> int:
         RUBRICS,
         LLMJudge,
         calibrate,
+        judge_fingerprint,
         judge_report_cases,
         load_calibration,
+        plan_judge_resume,
         render_calibration,
     )
+    from .eval.runner import Checkpoint, load_checkpoint
 
     console = Console()
     cfg = RuntimeConfig.from_env()
@@ -849,13 +852,63 @@ def cmd_judge(args: argparse.Namespace) -> int:
             flag = " [red](炸了)[/red]" if not judgement.ok else ""
             console.print(f"  [{done}/{total}] {judgement.case_id}{flag}", highlight=False)
 
+        # ---- 判分检查点 / 恢复 ----
+        # 判分比跑批更长（228 条约四小时），没有断点续跑就等于
+        # 一次网络抖动丢掉四小时。和跑批共用同一套 Checkpoint。
+        ckpt_path = getattr(args, "checkpoint", "") or ""
+        fingerprint = judge_fingerprint(judge, results)
+        resume_map: dict = {}
+        checkpoint = None
+
+        if getattr(args, "resume", False) and not ckpt_path:
+            console.print("[red]--resume 需要同时给 --checkpoint 指明恢复哪个文件[/red]")
+            return 2
+        if getattr(args, "resume", False):
+            resume_map, note = plan_judge_resume(
+                load_checkpoint(ckpt_path), fingerprint
+            )
+            console.print(f"[dim]{note}[/dim]")
+            if note.startswith("判分检查点记录的是另一套配置"):
+                # 拒绝恢复时**必须停下**。不能"没得复用就从头判一遍"——
+                # 那会安静地把检查点覆盖掉，把上一次的成果也毁了。
+                console.print(f"[red]{note}[/red]")
+                return 2
+
+        # 已判结果按 case_id 累积，检查点写的是它的快照。
+        # 每判完一条就落盘一次 —— "跑完再统一写"在进程被杀时
+        # 一条都救不回来，这正是跑批第一版的错。
+        collected: dict = dict(resume_map)
+        order = [str(r.get("case_id") or f"case_{i}") for i, r in enumerate(results)]
+
+        def _snapshot() -> dict:
+            return {
+                "fingerprint": fingerprint,
+                "report": report_path.name,
+                "total": len(results),
+                "done": len(collected),
+                "judgements": [
+                    collected[cid].to_dict() for cid in order if cid in collected
+                ],
+            }
+
+        if ckpt_path:
+            checkpoint = Checkpoint(ckpt_path, _snapshot)
+
+        def on_judged(judgement, done: int, total: int) -> None:
+            collected[judgement.case_id] = judgement
+            if getattr(args, "progress", False):
+                flag = " [red](炸了)[/red]" if not judgement.ok else ""
+                console.print(f"  [{done}/{total}] {judgement.case_id}{flag}", highlight=False)
+
         judgements, coverage = judge_report_cases(
             results,
             judge=judge,
             persona_of=persona_of,
             scene_of=scene_of,
             concurrency=concurrency,
-            on_done=on_judged if getattr(args, "progress", False) else None,
+            on_done=on_judged,
+            resume=resume_map or None,
+            checkpoint=checkpoint,
         )
 
         per_case = [j.to_dict() for j in judgements if j.pairs]
@@ -1242,6 +1295,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"裁判的输出预算（默认 {JUDGE_MAX_TOKENS}）。推理模型要给足，否则思维链会把预算吃光、返回空内容",
     )
     p_judge.add_argument("--progress", action="store_true", help="逐条打印判分进度")
+    p_judge.add_argument(
+        "--checkpoint",
+        default="",
+        help="边判边把进度写到这个文件；判 228 条是四小时量级的作业，强烈建议打开。空串 = 不写",
+    )
+    p_judge.add_argument(
+        "--resume",
+        action="store_true",
+        help="从 --checkpoint 指的文件里复用已判完的用例，只补判剩下的"
+             "（裁判配置或台词内容对不上会拒绝）",
+    )
     _add_llm_args(p_judge)
     p_judge.set_defaults(func=cmd_judge)
 

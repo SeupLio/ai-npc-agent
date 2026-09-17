@@ -399,6 +399,13 @@ def _judge_block(judge_payload: dict[str, Any] | None) -> str:
             '<div class="tiles" style="margin-top:10px">'
             f'<div class="tile"><div class="tile-k">判过的用例</div>'
             f'<div class="tile-v">{coverage.get("cases", 0)}</div></div>'
+            # 「判过多少条」和「这一轮新判了多少条」是两件事。
+            # 一次 --resume 只判 1 条、复用 227 条，和从头判 228 条，
+            # 报告上都是"228 条判完了" —— 不写出来就分不清。
+            f'<div class="tile"><div class="tile-k">本轮新判</div>'
+            f'<div class="tile-v">{coverage.get("executed", 0)}</div></div>'
+            f'<div class="tile"><div class="tile-k">复用检查点</div>'
+            f'<div class="tile-v">{coverage.get("reused", 0)}</div></div>'
             f'<div class="tile"><div class="tile-k">判决条数</div>'
             f'<div class="tile-v">{coverage.get("verdicts", 0)}</div></div>'
             f'<div class="tile"><div class="tile-k">未判</div>'
@@ -410,6 +417,12 @@ def _judge_block(judge_payload: dict[str, Any] | None) -> str:
             "</div>"
             f'<div class="tile-note">{_esc(coverage.get("verdict", ""))}</div>'
         )
+        reused = int(coverage.get("reused") or 0)
+        if reused:
+            coverage_note += (
+                f'<div class="tile-note">其中 {reused} 条是从检查点复用的，'
+                "没有重新调用模型 —— 这些判决来自上一次判分。</div>"
+            )
 
     return (
         f'<table><thead><tr><th>评判标准</th><th>通过</th><th>通过率</th></tr></thead>'
