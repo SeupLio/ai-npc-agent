@@ -134,8 +134,11 @@ def trust_summary(eval_payload: dict[str, Any]) -> dict[str, Any]:
         verdict += (
             f"　⚠️ 但通过率 {pass_rate:.1%} 已经**贴到天花板**：这套用例集对这个模型"
             "已经饱和，它不再能区分「好」和「更好」。"
-            "这里的 99% 不等于「NPC 做得很好」，只等于「这套回归集没抓到问题」。"
-            "下一步该做的是扩用例、加留出集、靠裁判维度找差异，"
+            f"这里的 {pass_rate:.0%} 不等于「NPC 做得很好」，"
+            "只等于「这套回归集没抓到问题」。"
+            "真正还有区分度的是下面的裁判维度（它测的是规则断言测不了的东西："
+            "像不像人设、有没有真的回应、有没有编造）。"
+            "要继续往前走，需要的是**更难的自建用例**去压规则指标，"
             "而不是继续跑同一张卷子。"
         )
 
@@ -478,7 +481,10 @@ def _judge_block(judge_payload: dict[str, Any] | None) -> str:
             "<tr>"
             f'<td class="name">{_esc(key)}</td>'
             f'<td class="num">{stats.get("passed", 0)}/{stats.get("n", 0)}</td>'
-            f'<td class="num">{_bar(stats.get("pass_rate", 0.0))}</td>'
+            # neutral=True：裁判的通过率不能用规则指标那套绿/黄/红阈值 ——
+            # 那会把 50%~72% 整片涂红，和上面绿油油的 1.000 并排摆着，
+            # 读者会读成"这个模型不行"。两列量的不是同一个东西。
+            f'<td class="num">{_bar(stats.get("pass_rate", 0.0), neutral=True)}</td>'
             "</tr>"
         )
     body = "".join(rows) or '<tr><td colspan="3" class="muted">没有判决。</td></tr>'
@@ -532,7 +538,14 @@ def _judge_block(judge_payload: dict[str, Any] | None) -> str:
 
     return (
         f'<table><thead><tr><th>评判标准</th><th>通过</th><th>通过率</th></tr></thead>'
-        f"<tbody>{body}</tbody></table>{coverage_note}"
+        f"<tbody>{body}</tbody></table>"
+        '<div class="tile-note"><b>这一列的进度条是中性色，'
+        "和上面的规则指标不是同一把尺子。</b>"
+        "规则指标量的是「断言有没有过」，1.000 是常态；"
+        "裁判量的是「另一个模型觉得像不像」，它更严，"
+        "50%~72% 属于正常范围，<b>不代表失败</b>。"
+        "两列不可相减，也不该比颜色。</div>"
+        f"{coverage_note}"
     )
 
 

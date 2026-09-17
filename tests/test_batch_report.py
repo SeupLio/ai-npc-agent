@@ -667,3 +667,67 @@ def test_report_stays_quiet_when_no_parse_retry_happened() -> None:
     payload["coverage"]["judge_parse_retries"] = 0
     page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
     assert "裁判返回的内容解析不了" not in page
+
+
+# --------------------------------------------------------------------------- #
+# 两把尺子不能混色：裁判的通过率不是"及格线"
+# --------------------------------------------------------------------------- #
+def test_judge_pass_rates_are_not_painted_with_the_rule_metric_colors() -> None:
+    """**这条防的是"数字对、读出来的结论错"。**
+
+    `_bar` 的绿/黄/红阈值是照着规则指标定的（那里 1.000 是常态）。
+    直接套到裁判的通过率上，0.50~0.72 会整片涂成红色；
+    而它上面紧挨着就是规则指标那一片绿色的 1.000 ——
+    读者扫一眼就会得出"这个模型不行"。
+
+    但两列量的不是同一个东西：规则指标问"断言过没过"，
+    裁判问"另一个模型觉得像不像"。裁判更严，50%~72% 是正常范围。
+
+    所以裁判那一列的条形必须是**中性色**，并且明确写出两把尺子不可比。
+    """
+    payload = _judge_with_holdout(dev_kappa=1.0, hold_kappa=1.0)
+    # 造一个"规则指标全绿、裁判通过率很低"的对比
+    payload["summary"]["by_rubric"] = {
+        "grounded": {"n": 100, "passed": 50, "pass_rate": 0.50},
+        "in_character": {"n": 100, "passed": 72, "pass_rate": 0.72},
+    }
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
+
+    # 裁判表格里不能出现"坏"的那个红色
+    judge_table = page.split("评判标准</th><th>通过</th>")[1]
+    judge_table = judge_table.split("</table>")[0]
+    assert "#d93025" not in judge_table, "裁判的通过率被涂成了红色"
+    assert "#0f9d58" not in judge_table, "裁判的通过率被涂成了绿色（会读成'很好'）"
+    assert "#5b7cfa" in judge_table, "裁判那一列应该是中性色"
+
+    # 而且要把"不可比"写出来，不能指望读者自己想到
+    assert "不是同一把尺子" in page
+    assert "不代表失败" in page
+
+
+def test_rule_metric_bars_still_use_the_threshold_colors() -> None:
+    """别矫枉过正：规则指标那套阈值是对的，不能一起改成中性色。
+
+    规则指标掉到 0.85 以下就是回归，红色是**该有的**信号。
+    """
+    page = B.render_batch_html({"eval": _eval_payload()})
+    assert "#d93025" in page or "#0f9d58" in page or "#e8a33d" in page
+
+
+def test_the_saturation_note_points_at_the_judge_not_at_a_stale_todo() -> None:
+    """饱和提示以前写着"下一步该做的是扩用例、加留出集、靠裁判维度找差异"。
+
+    这份报告**自己就带着**留出集和裁判维度 —— 让人去做已经做完的事，
+    等于承认这份报告的读者比作者更不了解它。改成指向报告里真实存在的那一节。
+
+    注意要把用例数抬到 `SATURATION_MIN_CASES` 以上，否则饱和提示根本不触发，
+    这条断言就成了空跑（fixture 默认只有 4 条）。
+    """
+    payload = _eval_payload()
+    payload["summary"]["total"] = 228
+    payload["summary"]["passed"] = 227
+    payload["summary"]["pass_rate"] = 227 / 228
+    page = B.render_batch_html({"eval": payload, "judge": _judge_with_holdout()})
+    assert "贴到天花板" in page, "饱和提示没触发，下面两条断言等于没测"
+    assert "真正还有区分度的是下面的裁判维度" in page
+    assert "加留出集" not in page

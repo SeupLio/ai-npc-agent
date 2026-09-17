@@ -29,11 +29,28 @@ def _esc(text: Any) -> str:
     return html.escape(str(text), quote=True)
 
 
-def _bar(value: float, width: int = 64) -> str:
-    """0~1 的分数画成小条形，比裸数字更容易扫读。"""
+def _bar(value: float, width: int = 64, *, neutral: bool = False) -> str:
+    """0~1 的分数画成小条形，比裸数字更容易扫读。
+
+    `neutral=True` 是给**裁判**的通过率用的，这条很重要：
+
+    `_bar` 的绿/黄/红阈值是照着**规则指标**定的（那里 1.000 是常态，
+    掉到 0.85 就说明有回归）。把同一套阈值套到裁判的通过率上，
+    50%~72% 会**整片涂成红色** —— 而裁判本来就更严，0.5 不代表失败。
+
+    后果不只是"颜色难看"：规则指标那一列是绿的 1.000，裁判这一列是红的 0.5，
+    两列并排摆在一起，读者会直接读出"这个模型不行"。
+    但这两列量的根本不是同一个东西 —— 一个是"规则断言有没有过"，
+    一个是"另一个模型觉得像不像人话"。
+
+    所以裁判那一列用中性色：只表示"多少"，不表示"好坏"。
+    """
     pct = max(0.0, min(1.0, float(value)))
     filled = round(pct * width)
-    color = "#0f9d58" if pct >= 0.99 else ("#e8a33d" if pct >= 0.85 else "#d93025")
+    if neutral:
+        color = "#5b7cfa"
+    else:
+        color = "#0f9d58" if pct >= 0.99 else ("#e8a33d" if pct >= 0.85 else "#d93025")
     return (
         f'<span class="bar"><span class="bar-fill" style="width:{filled}px;'
         f'background:{color}"></span></span>'
