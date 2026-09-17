@@ -375,3 +375,21 @@ class CaseMetrics:
             "safety": self.safety.detail,
             "turn_taking": self.turn_taking.detail,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CaseMetrics":
+        """从 `to_dict()` 的形状还原。用于跑批中断后从检查点恢复。
+
+        **有一处精度损失，写在这里而不是留给人踩**：`as_dict()` 把分数
+        四舍五入到 3 位小数，所以恢复出来的分数是 3 位精度的。
+        报告里本来就按 3 位显示，所以对报告没影响；
+        但如果你拿恢复的报告去做 4 位精度的分析，这个差别是真的。
+        """
+        scores = data.get("scores") or {}
+        details = data.get("details") or {}
+        return cls(
+            **{
+                key: Score(float(scores.get(key, 0.0)), details.get(key, ""))
+                for key in ("task", "tools", "memory", "persona", "safety", "turn_taking")
+            }
+        )

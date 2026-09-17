@@ -151,8 +151,8 @@ class CaseRun:
         """
         return self.llm_failures > 0
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, include_result: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "case_id": self.case_id,
             "index": self.index,
             "ok": self.ok,
@@ -164,6 +164,34 @@ class CaseRun:
             "error": self.error,
             "llm_last_error": self.llm_last_error[:200],
         }
+        # 只有检查点需要带上完整结果 —— 恢复的时候没有它就只能知道
+        # "这条跑过了"，却拿不出分数、转写和失败原因，等于白存。
+        if include_result and self.result is not None:
+            payload["result"] = self.result.to_dict()
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CaseRun":
+        """从检查点还原一条结果。"""
+        result = None
+        if isinstance(data.get("result"), dict):
+            try:
+                result = CaseResult.from_dict(data["result"])
+            except Exception:
+                # 结果还原不了就当成"没跑过"，重跑一遍。
+                # 宁可多花一次调用的钱，也不要一份读不出来的报告。
+                result = None
+        return cls(
+            index=int(data.get("index") or 0),
+            case_id=str(data.get("case_id") or ""),
+            result=result,
+            attempts=int(data.get("attempts") or 1),
+            duration=float(data.get("duration") or 0.0),
+            error=str(data.get("error") or ""),
+            llm_calls=int(data.get("llm_calls") or 0),
+            llm_failures=int(data.get("llm_failures") or 0),
+            llm_last_error=str(data.get("llm_last_error") or ""),
+        )
 
 
 @dataclass
@@ -177,6 +205,12 @@ class BatchStats:
     retried: int = 0
     degraded: int = 0
     failed: int = 0
+    #: 从检查点恢复、没有重新跑的条数。单独报出来，否则"跑了 228 条"
+    #: 和"跑了 5 条 + 恢复了 223 条"看起来是一样的。
+    reused: int = 0
+    #: 这次**实际执行**的条数（= cases - reused）。
+    #: 加速比的分子分母都只跟它有关：复用的那些既没花时间、也没被串行重跑过。
+    executed: int = 0
     #: 模型调用总数。**这个数字为 0 时，"通过率 100%" 衡量的不是模型** ——
     #: 所以它必须出现在报告里，而不是留给读者去猜。
     llm_calls: int = 0
@@ -186,16 +220,24 @@ class BatchStats:
     def speedup(self) -> float:
         """实测加速比 = 串行估计 / 实际墙钟。
 
-        串行估计用**每条用例的实际耗时求和**，那是串行跑一遍真正要花的时间
-        （重试也计入，因为串行同样要重试）。这个数字可以和并发数对照：
-        明显低于并发数，说明瓶颈在端点的排队或限流上，不在本地。
+        串行估计用**这次实际执行的那些用例**的耗时求和 —— 那是串行跑这一批
+        真正要花的时间（重试也计入，因为串行同样要重试）。这个数字可以和
+        并发数对照：明显低于并发数，说明瓶颈在端点的排队或限流上，不在本地。
+
+        **一条都没实际执行时返回 0，而不是返回一个巨大的数字。**
+        全部复用检查点时墙钟接近 0，`串行估计 / 墙钟` 会算出几千倍这种
+        "看起来很厉害、其实什么都没跑"的数。宁可报 0 并说明"没有实际跑批"。
         """
-        return round(self.serial_estimate / self.wall, 2) if self.wall > 0 else 0.0
+        if self.executed <= 0 or self.wall <= 0:
+            return 0.0
+        return round(self.serial_estimate / self.wall, 2)
 
     @property
     def efficiency(self) -> float:
         """并行效率 = 加速比 / 并发数。低于 0.5 说明并发开得太高（或端点限流）。"""
-        return round(self.speedup / self.concurrency, 3) if self.concurrency else 0.0
+        if self.executed <= 0 or not self.concurrency:
+            return 0.0
+        return round(self.speedup / self.concurrency, 3)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -205,6 +247,8 @@ class BatchStats:
             "concurrency": self.concurrency,
             "efficiency": self.efficiency,
             "cases": self.cases,
+            "reused_cases": self.reused,
+            "executed_cases": self.executed,
             "retried_cases": self.retried,
             "degraded_cases": self.degraded,
             "failed_cases": self.failed,
@@ -245,6 +289,87 @@ class Checkpoint:
 
 
 # --------------------------------------------------------------------------- #
+# 中断后恢复
+# --------------------------------------------------------------------------- #
+#: 检查点里要记下的"影响结果的配置"。
+#:
+#: 恢复时必须逐项对上，否则拒绝 —— 把 `--no-planner` 跑出来的半批和
+#: planner-on 跑出来的另半批拼起来，报告会把两个不同的变量混成一列，
+#: 而且从数字上完全看不出来。宁可重跑，也不要一份悄悄混了两个配置的报告。
+RESUME_CRITICAL_FIELDS = (
+    "llm_provider",
+    "model",
+    "base_url",
+    "memory_strategy",
+    "use_llm_planner",
+    "use_llm_speech",
+)
+
+
+def config_fingerprint(config: RuntimeConfig) -> dict[str, Any]:
+    """把影响结果的配置摘出来，用于恢复时比对。
+
+    刻意**不含**并发数、重试次数、退避基数：它们影响"跑多久"和"跑不跑得完"，
+    不影响"跑出什么"。把并发数也放进去会导致"上次并发 4、这次想开 6"
+    就必须整批重跑，那是把工程参数和实验变量混为一谈。
+    """
+    return {field: getattr(config, field, None) for field in RESUME_CRITICAL_FIELDS}
+
+
+def load_checkpoint(path: str | Path) -> dict[str, Any]:
+    """读检查点。**读不到/读坏了都返回空 dict，不抛异常。**
+
+    检查点的职责是"尽量救回一点"，不是"必须存在"。一个截断的检查点
+    如果让整条命令直接崩掉，那它就从保险变成了新的故障源。
+    """
+    target = Path(path)
+    if not target.exists():
+        return {}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def plan_resume(
+    payload: dict[str, Any], config: RuntimeConfig
+) -> tuple[dict[str, CaseRun], str]:
+    """从检查点里挑出可以复用的结果。
+
+    返回 `(可复用结果 by case_id, 一句人话说明)`。
+    配置指纹对不上就返回空 + 说明原因 —— **不静默复用**。
+    """
+    runs = payload.get("runs") or []
+    if not runs:
+        return {}, "检查点里没有已完成的结果"
+
+    recorded = payload.get("config")
+    current = config_fingerprint(config)
+    if isinstance(recorded, dict) and recorded != current:
+        diff = [
+            f"{k}: {recorded.get(k)!r} → {current.get(k)!r}"
+            for k in RESUME_CRITICAL_FIELDS
+            if recorded.get(k) != current.get(k)
+        ]
+        return {}, (
+            "检查点记录的是另一套配置，拒绝恢复（否则报告会把两个配置混成一列）："
+            + "；".join(diff)
+        )
+
+    usable: dict[str, CaseRun] = {}
+    for item in runs:
+        if not isinstance(item, dict):
+            continue
+        run = CaseRun.from_dict(item)
+        # 只复用**真的跑完了**的。基础设施故障的用例必须重跑 ——
+        # 它失败的原因是当时的环境，不是模型，换一次跑很可能就过了。
+        if run.case_id and run.ok:
+            usable[run.case_id] = run
+    return usable, f"检查点里有 {len(usable)} 条可复用结果"
+
+
+# --------------------------------------------------------------------------- #
 # 并行执行
 # --------------------------------------------------------------------------- #
 def run_cases(
@@ -258,6 +383,7 @@ def run_cases(
     cases_dir: Optional[Path] = None,
     on_done: Optional[Callable[[CaseRun, int, int], None]] = None,
     checkpoint: Optional[Checkpoint] = None,
+    resume: Optional[dict[str, CaseRun]] = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[list[CaseRun], BatchStats]:
     """跑一批用例。
@@ -268,12 +394,29 @@ def run_cases(
     并发 = 1 时走串行路径：不建线程池，行为与改造前完全一致。
     保留这条路径不是为了"兼容"，而是为了让并行结果**可以被串行验证** ——
     没有串行基线，就没法证明并行没有改变结果。
+
+    `resume` 给出"已经跑过的结果"，这些用例不再重跑，直接按下标落位。
+    下标会**重新映射**（用例集可能被 `--limit` 或类别筛选改过），
+    否则恢复出来的报告顺序会和用例集对不上。
     """
     total = len(cases)
     slots: list[Optional[CaseRun]] = [None] * total
     lock = threading.Lock()
     done = 0
     started = time.time()
+
+    # 先落位可复用的结果，再把剩下的排进待跑队列
+    reused = 0
+    pending: list[int] = []
+    for index, case in enumerate(cases):
+        case_id = str(case.get("id", f"case_{index}"))
+        previous = (resume or {}).get(case_id)
+        if previous is not None and previous.ok:
+            previous.index = index
+            slots[index] = previous
+            reused += 1
+        else:
+            pending.append(index)
 
     def work(index: int) -> CaseRun:
         case = cases[index]
@@ -305,17 +448,17 @@ def run_cases(
         return best
 
     if concurrency <= 1:
-        for index in range(total):
+        for index in pending:
             run = work(index)
             slots[index] = run
             done += 1
             if on_done:
-                on_done(run, done, total)
+                on_done(run, done, len(pending))
             if checkpoint:
                 checkpoint.save()
-    else:
+    elif pending:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = {pool.submit(work, i): i for i in range(total)}
+            futures = {pool.submit(work, i): i for i in pending}
             for future in as_completed(futures):
                 index = futures[future]
                 try:
@@ -330,12 +473,17 @@ def run_cases(
                 with lock:
                     done += 1
                     if on_done:
-                        on_done(run, done, total)
+                        on_done(run, done, len(pending))
                     if checkpoint:
                         checkpoint.save()
 
     runs = [r for r in slots if r is not None]
     runs.sort(key=lambda r: r.index)
+
+    # 串行估计只算**这次真的执行了**的用例。复用的那些这次没花时间，
+    # 串行跑一遍也不会再花时间 —— 把它们算进去，"加速比"就变成了
+    # "复用省下多少"的冒牌货，而不是"并发快了多少"。
+    executed_set = set(pending)
     stats = BatchStats(
         wall=time.time() - started,
         # 串行估计 = 每条用例的实际耗时求和（`work()` 里已经把每次重试的耗时累加了）。
@@ -344,9 +492,11 @@ def run_cases(
         # 但重试之间的**退避睡眠**刻意不计入：两条路径都要等同样长的时间，
         # 把它算进串行、却算进并行的墙钟，就是在拿睡眠时间冒充加速。
         # 少算一点是保守方向：加速比只会被低估，不会被吹高。
-        serial_estimate=sum(r.duration for r in runs),
+        serial_estimate=sum(r.duration for r in runs if r.index in executed_set),
         concurrency=max(1, concurrency),
         cases=len(runs),
+        reused=reused,
+        executed=len(pending),
         retried=sum(1 for r in runs if r.attempts > 1),
         degraded=sum(1 for r in runs if r.degraded),
         failed=sum(1 for r in runs if not r.ok),
@@ -473,11 +623,22 @@ def render_batch_stats(stats: BatchStats) -> str:
     else:
         # 不写"调用 0 次"，写清楚这意味着什么 —— 否则读者会以为模型参与了
         model_part = "未调用模型（离线路径）"
+
+    if stats.executed:
+        perf_part = (
+            f"墙钟 {stats.wall:.0f}s｜串行估计 {stats.serial_estimate:.0f}s｜"
+            f"并发 {stats.concurrency} → 实测加速 {stats.speedup}×"
+            f"（效率 {stats.efficiency:.0%}）"
+        )
+    else:
+        # 全部复用检查点：墙钟接近 0，算出来的"加速比"会是几千倍这种
+        # 什么都没跑出来的假数字。直接说清楚没有实际跑批。
+        perf_part = f"没有实际跑批（{stats.reused} 条全部复用检查点）"
+
     return (
-        f"跑批：{stats.cases} 条｜墙钟 {stats.wall:.0f}s｜"
-        f"串行估计 {stats.serial_estimate:.0f}s｜"
-        f"并发 {stats.concurrency} → 实测加速 {stats.speedup}×（效率 {stats.efficiency:.0%}）｜"
+        f"跑批：{stats.cases} 条｜{perf_part}｜"
         + model_part
+        + (f"｜复用 {stats.reused} 条" if stats.reused and stats.executed else "")
         + (f"｜重跑 {stats.retried} 条" if stats.retried else "")
         + (f"｜降级 {stats.degraded} 条" if stats.degraded else "")
         + (f"｜故障 {stats.failed} 条" if stats.failed else "")

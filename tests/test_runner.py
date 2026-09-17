@@ -674,3 +674,216 @@ def test_the_cli_checkpoint_is_actually_populated_during_the_run(tmp_path, monke
     assert len(data["runs"]) == 4, "检查点里没有逐条结果，被杀之后什么都恢复不了"
     assert all(r["case_id"] for r in data["runs"])
     assert not ckpt.with_suffix(ckpt.suffix + ".tmp").exists()
+
+
+# --------------------------------------------------------------------------- #
+# 中断后恢复
+# --------------------------------------------------------------------------- #
+def test_checkpoint_round_trip_preserves_the_result() -> None:
+    """检查点必须能还原出完整结果 —— 分数、转写、台词、失败原因。
+
+    只记"这条跑过了"是不够的：恢复的时候拿不出分数和转写，
+    等于白存 —— 而报告和判分都要靠它们。
+    """
+    cases = _cases(2)
+    runs, _ = _run(cases, concurrency=2, factory=_factory())
+    assert all(r.ok for r in runs)
+
+    for original in runs:
+        restored = R.CaseRun.from_dict(original.to_dict(include_result=True))
+        assert restored.case_id == original.case_id
+        assert restored.ok
+        assert restored.result is not None
+        assert restored.result.metrics.as_dict() == original.result.metrics.as_dict()
+        assert restored.result.transcript == original.result.transcript
+        assert restored.result.speeches == original.result.speeches
+        assert restored.result.notes == original.result.notes
+
+    # 不带 include_result 时不该塞进结果（进度快照不需要那么重）
+    assert "result" not in runs[0].to_dict()
+
+
+def test_resume_reuses_completed_cases_and_says_so() -> None:
+    """恢复时已完成的用例不再重跑，而且"复用了多少条"要出现在报告里。
+
+    不报出来的话，"跑了 228 条"和"跑了 5 条 + 恢复了 223 条"看起来一模一样。
+    """
+    cases = _cases(4)
+    first, _ = _run(cases, concurrency=2, factory=_factory())
+    resume_map = {r.case_id: r for r in first}
+
+    # 这次用一个**会立刻失败**的模型：如果它真去重跑了，结果会变成降级
+    second, stats = _run(
+        cases,
+        concurrency=2,
+        factory=_factory(fail_forever=True),
+        resume=resume_map,
+    )
+
+    assert stats.reused == 4
+    assert stats.executed == 0
+    assert stats.degraded == 0, "复用的用例被重跑了（重跑的话会因模型失败而降级）"
+    assert [r.case_id for r in second] == [r.case_id for r in first]
+    assert [r.result.metrics.as_dict() for r in second] == [
+        r.result.metrics.as_dict() for r in first
+    ]
+
+
+def test_a_partially_reused_batch_only_runs_the_remainder() -> None:
+    cases = _cases(4)
+    first, _ = _run(cases[:2], concurrency=2, factory=_factory())
+    resume_map = {r.case_id: r for r in first}
+
+    runs, stats = _run(cases, concurrency=2, factory=_factory(), resume=resume_map)
+    assert stats.reused == 2
+    assert stats.executed == 2
+    assert len(runs) == 4
+    assert [r.index for r in runs] == [0, 1, 2, 3], "恢复后的下标没有重新映射"
+
+
+def test_resume_never_reports_a_fake_speedup() -> None:
+    """全部复用检查点时不能报出一个巨大的加速比。
+
+    实测踩到过：全部复用 → 墙钟接近 0 → `串行估计 / 墙钟` 算出 **9611×**。
+    这是一个"看起来很厉害、其实什么都没跑"的数字，正是这个模块要防的那类。
+    """
+    cases = _cases(3)
+    first, _ = _run(cases, concurrency=2, factory=_factory())
+    resume_map = {r.case_id: r for r in first}
+
+    _, stats = _run(cases, concurrency=2, factory=_factory(), resume=resume_map)
+    assert stats.speedup == 0.0
+    assert stats.efficiency == 0.0
+    assert "没有实际跑批" in R.render_batch_stats(stats)
+    assert "加速" not in R.render_batch_stats(stats)
+
+    # 复用来的耗时也不能算进串行估计
+    assert stats.serial_estimate == 0.0
+
+
+def test_reused_durations_are_excluded_from_the_serial_estimate() -> None:
+    """复用的那些用例这次没花时间，串行跑一遍也不会再花时间。
+
+    把它们算进串行估计，"加速比"就变成了"复用省下多少"的冒牌货，
+    而不是"并发快了多少"。
+    """
+    cases = _cases(4)
+    first, _ = _run(cases[:2], concurrency=2, factory=_factory(delay=0.05))
+    resume_map = {r.case_id: r for r in first}
+
+    _, stats = _run(
+        cases, concurrency=1, factory=_factory(delay=0.05), resume=resume_map
+    )
+    assert stats.reused == 2
+    assert stats.executed == 2
+    # 只跑了 2 条，所以串行估计应该接近"2 条 × 各自耗时"，
+    # 而不是"4 条之和"。这里用一个宽区间锁住量级，避免测试依赖具体机器速度。
+    assert 0 < stats.serial_estimate < sum(
+        r.duration for r in _run(cases, concurrency=1, factory=_factory(delay=0.05))[0]
+    ), "串行估计里混进了复用条目的耗时"
+
+
+def test_resume_refuses_when_the_config_changed() -> None:
+    """配置对不上必须拒绝恢复 —— 这是恢复功能里最重要的一条。
+
+    把 `--no-planner` 跑出来的半批和 planner-on 跑出来的另半批拼起来，
+    报告会把两个不同的变量混成一列，而且从数字上完全看不出来。
+    宁可整批重跑，也不要一份悄悄混了两个配置的报告。
+    """
+    config_a = RuntimeConfig()
+    config_b = RuntimeConfig()
+    config_b.use_llm_planner = not config_a.use_llm_planner
+
+    # 用一份**真跑出来的**结果做载荷。手工拼一个 {"ok": True} 是不行的：
+    # 没有 result 的记录恢复不出分数和转写，`plan_resume` 会（正确地）拒绝它。
+    done, _ = _run(_cases(2), concurrency=2, factory=_factory())
+    payload = {
+        "config": R.config_fingerprint(config_a),
+        "runs": [r.to_dict(include_result=True) for r in done],
+    }
+    usable, why = R.plan_resume(payload, config_a)
+    assert usable and "可复用" in why
+
+    usable, why = R.plan_resume(payload, config_b)
+    assert usable == {}, "配置变了却仍然复用了结果"
+    assert "另一套配置" in why
+    assert "use_llm_planner" in why, "没有说清楚是哪一项配置对不上"
+
+    # 并发数不属于"影响结果"的配置，改它不该导致整批重跑
+    assert "concurrency" not in R.RESUME_CRITICAL_FIELDS
+
+
+def test_resume_skips_cases_that_did_not_finish() -> None:
+    """上次没跑完的用例（基础设施故障）必须重跑，不能当成"已完成"。
+
+    它失败的原因是当时的环境，不是模型 —— 换一次跑很可能就过了。
+    把它当成完成，就等于把一次事故永久固化进报告。
+    """
+    done, _ = _run(_cases(1), concurrency=1, factory=_factory())
+    good = done[0].to_dict(include_result=True)
+    crashed = dict(good, case_id="crashed", index=1, ok=False, error="ValueError: boom")
+    crashed.pop("result", None)
+
+    payload = {
+        "config": R.config_fingerprint(RuntimeConfig()),
+        "runs": [good, crashed],
+    }
+    usable, _ = R.plan_resume(payload, RuntimeConfig())
+    assert good["case_id"] in usable
+    assert "crashed" not in usable
+
+
+def test_a_corrupt_checkpoint_is_ignored_not_fatal(tmp_path) -> None:
+    """检查点读坏了就当成没有，不能把整条命令搞崩。
+
+    检查点的职责是"尽量救回一点"，不是"必须存在"。
+    一个截断的检查点如果让命令直接崩掉，它就从保险变成了新的故障源。
+    """
+    assert R.load_checkpoint(tmp_path / "nope.json") == {}
+
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"done": 3, "runs": [{"case_id": "x"', encoding="utf-8")
+    assert R.load_checkpoint(bad) == {}
+
+    weird = tmp_path / "weird.json"
+    weird.write_text("[1, 2, 3]", encoding="utf-8")
+    assert R.load_checkpoint(weird) == {}
+
+    # 结果字段坏掉的单条记录 → 当成"没跑过"，而不是抛异常
+    restored = R.CaseRun.from_dict({"case_id": "x", "ok": True, "result": "不是字典"})
+    assert restored.result is None
+
+
+def test_the_cli_resume_round_trip(tmp_path, monkeypatch) -> None:
+    """从 CLI 入口跑一遍完整的"跑一半 → 恢复"。"""
+    from npc_agent import cli as C
+
+    monkeypatch.setenv("NPC_AGENT_PROVIDER", "null")
+    ckpt = tmp_path / "ck.json"
+
+    assert C.main(["eval", "--limit", "3", "--concurrency", "2",
+                   "--checkpoint", str(ckpt), "--json", str(tmp_path / "a.json")]) == 0
+    first = json.loads(ckpt.read_text(encoding="utf-8"))
+    assert first["done"] == 3
+    assert first["config"]["llm_provider"] == "null"
+
+    # 换成"更大的 limit"，前 3 条应复用、后 2 条新跑
+    assert C.main(["eval", "--limit", "5", "--concurrency", "2", "--resume",
+                   "--checkpoint", str(ckpt), "--json", str(tmp_path / "b.json")]) == 0
+    second = json.loads(ckpt.read_text(encoding="utf-8"))
+    assert second["done"] == 5, "复用来的结果没有写回检查点，第二次中断就丢了"
+    assert len(second["runs"]) == 5
+    assert all("result" in r for r in second["runs"]), "检查点里没有完整结果，恢复不出来"
+
+    report = json.loads((tmp_path / "b.json").read_text(encoding="utf-8"))
+    assert report["summary"]["total"] == 5
+    assert report["batch"]["stats"]["reused_cases"] == 3
+    assert report["batch"]["stats"]["executed_cases"] == 2
+
+
+def test_resume_without_a_checkpoint_path_is_an_error(monkeypatch) -> None:
+    """`--resume` 不给 `--checkpoint` 是自相矛盾的，要说清楚而不是静默全跑。"""
+    from npc_agent import cli as C
+
+    monkeypatch.setenv("NPC_AGENT_PROVIDER", "null")
+    assert C.main(["eval", "--limit", "2", "--resume"]) == 2

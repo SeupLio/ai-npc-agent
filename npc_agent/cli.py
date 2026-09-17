@@ -265,7 +265,15 @@ def cmd_eval(args: argparse.Namespace) -> int:
     from rich.table import Table
 
     from .eval import EvalHarness, EvalReport
-    from .eval.runner import Checkpoint, degraded_summary, render_batch_stats, run_cases
+    from .eval.runner import (
+        Checkpoint,
+        config_fingerprint,
+        degraded_summary,
+        load_checkpoint,
+        plan_resume,
+        render_batch_stats,
+        run_cases,
+    )
 
     console = Console()
     cfg = RuntimeConfig.from_env()
@@ -305,15 +313,38 @@ def cmd_eval(args: argparse.Namespace) -> int:
     checkpoint = None
     ckpt_path = getattr(args, "checkpoint", "") or ""
     runs_holder: list = []
+
+    # ---- 中断恢复 ----
+    # 先看检查点里有没有能复用的结果。配置对不上就拒绝（不静默复用），
+    # 否则报告会把两个不同配置的分数混成一列，而且从数字上看不出来。
+    resume_map: dict = {}
+    if getattr(args, "resume", False):
+        if not ckpt_path:
+            console.print("[red]--resume 需要同时给 --checkpoint 指明恢复哪个文件[/red]")
+            return 2
+        payload = load_checkpoint(ckpt_path)
+        resume_map, why = plan_resume(payload, cfg)
+        console.print(f"[bold]恢复[/bold] {why}")
+        if not resume_map and payload:
+            console.print("[yellow]因此这次会从头跑。[/yellow]")
+
     if ckpt_path:
-        checkpoint = Checkpoint(
-            ckpt_path,
-            lambda: {
+        # 复用来的结果也要进检查点 —— 否则第二次中断时它们就丢了，
+        # 于是"恢复"变成一个只能做一次的操作。
+        # 直接放引用即可：`run_cases` 会把这些**同一个对象**的 index 重新映射，
+        # 所以下标自动跟着用例集走，不需要在这里算一遍。
+        runs_holder.extend(resume_map.values())
+
+        def _payload() -> dict:
+            return {
                 "done": len(runs_holder),
                 "total": len(cases),
-                "runs": [r.to_dict() for r in runs_holder],
-            },
-        )
+                # 记下配置指纹：恢复时要逐项对上，防止把两个配置混成一列
+                "config": config_fingerprint(cfg),
+                "runs": [r.to_dict(include_result=True) for r in runs_holder],
+            }
+
+        checkpoint = Checkpoint(ckpt_path, _payload)
 
     # 进度回调同时负责**把已完成的结果喂给检查点**。
     #
@@ -341,6 +372,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         cases_dir=harness.cases_dir,
         on_done=on_done,
         checkpoint=checkpoint,
+        resume=resume_map,
     )
 
     for run in runs:
@@ -1054,6 +1086,11 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
         "--checkpoint",
         default="",
         help="边跑边把进度写到这个文件；长跑（真实模型）建议打开。空串 = 不写",
+    )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="从 --checkpoint 指的文件里复用已跑完的用例，只补跑剩下的（配置对不上会拒绝）",
     )
     p.add_argument("--progress", action="store_true", help="逐条打印进度")
 

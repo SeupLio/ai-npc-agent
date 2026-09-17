@@ -62,6 +62,21 @@ class CaseResult:
             "speakers": self.speakers,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CaseResult":
+        """从 `to_dict()` 的形状还原。用于跑批中断后从检查点恢复。"""
+        return cls(
+            case_id=str(data.get("case_id") or ""),
+            category=str(data.get("category") or ""),
+            description=str(data.get("description") or ""),
+            scenario=str(data.get("scenario") or ""),
+            metrics=M.CaseMetrics.from_dict(data),
+            transcript=list(data.get("transcript") or []),
+            speeches=list(data.get("speeches") or []),
+            speakers=list(data.get("speakers") or []),
+            notes=list(data.get("notes") or []),
+        )
+
 
 @dataclass
 class EvalReport:
