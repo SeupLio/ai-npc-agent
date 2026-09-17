@@ -731,3 +731,20 @@ def test_the_saturation_note_points_at_the_judge_not_at_a_stale_todo() -> None:
     assert "贴到天花板" in page, "饱和提示没触发，下面两条断言等于没测"
     assert "真正还有区分度的是下面的裁判维度" in page
     assert "加留出集" not in page
+
+
+def test_the_saturation_note_prints_one_quantity_at_one_precision() -> None:
+    """同一个量在同一句话里只能有一个写法。
+
+    通过率是 227/228 = 0.996。原文第一处用 `.1%` 印成 "99.6%"，
+    第二处用 `.0%` 印成 "100%" —— 一句话里出现两个数，
+    读者会以为在说两件事（"通过率 99.6%，但满分是 100%"）。
+    这正是这份报告最该避免的一类错：它自己在制造歧义。
+    """
+    payload = _eval_payload()
+    payload["summary"]["total"] = 228
+    payload["summary"]["passed"] = 227
+    payload["summary"]["pass_rate"] = 227 / 228
+    verdict = B.trust_summary(payload)["verdict"]
+    assert "99.6%" in verdict
+    assert "100%" not in verdict, "同一个通过率被印成了两个不同的数"

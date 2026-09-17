@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>全模型跑批：kimi-k2.7-code</title>
+<title>真实模型跑批报告</title>
 <style>
   :root {
     --ink: #1f2430; --muted: #6b7280; --line: #e5e7eb;
@@ -72,6 +72,14 @@
   .warn { background: #fffbf0; border: 1px solid #f0dfb8; border-left: 4px solid #e8a33d;
           border-radius: 8px; padding: 12px 16px; margin-top: 12px; font-size: 13.5px;
           color: #6b5320; }
+  .good { background: #f2fbf4; border: 1px solid #c9e7d0; border-left: 4px solid #3f9e58;
+          border-radius: 8px; padding: 12px 16px; margin-top: 12px; font-size: 13.5px;
+          color: #1f5b31; }
+  .bad  { background: #fdf3f3; border: 1px solid #f0cfcf; border-left: 4px solid #c0392b;
+          border-radius: 8px; padding: 12px 16px; margin-top: 12px; font-size: 13.5px;
+          color: #7d2a21; }
+  .bad ul { margin: 8px 0 8px 18px; padding: 0; }
+  h4 { margin: 20px 0 8px; font-size: 14.5px; color: #374151; }
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
   @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
   footer { margin-top: 36px; color: var(--muted); font-size: 12.5px; }
@@ -79,11 +87,11 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>全模型跑批：kimi-k2.7-code</h1>
-  <div class="sub">228 条自建用例 · 并发 8 · 含重试</div>
+  <h1>真实模型跑批报告</h1>
+  <div class="sub">openai-compat / kimi-k2.7-code　·　启发式规划　·　228 条自建用例</div>
 
   <h2>这份分数可不可信</h2>
-  <div class="trust ok"><div class="trust-v">全部 228 条用例都完整跑完，模型调用 1480 次无失败。这份分数可以作为该模型在该用例集上的读数。　⚠️ 但通过率 99.6% 已经**贴到天花板**：这套用例集对这个模型已经饱和，它不再能区分「好」和「更好」。这里的 99% 不等于「NPC 做得很好」，只等于「这套回归集没抓到问题」。下一步该做的是扩用例、加留出集、靠裁判维度找差异，而不是继续跑同一张卷子。</div><div class="tiles"><div class="tile"><div class="tile-k">用例</div><div class="tile-v">228</div></div><div class="tile"><div class="tile-k">模型调用</div><div class="tile-v">1480</div></div><div class="tile"><div class="tile-k">调用失败</div><div class="tile-v">0</div></div><div class="tile"><div class="tile-k">模板兜底</div><div class="tile-v">0（0.0%）</div></div><div class="tile"><div class="tile-k">规划回落</div><div class="tile-v">0</div></div><div class="tile"><div class="tile-k">跑不起来</div><div class="tile-v">0</div></div></div><div class="tile-note">全部用例都拿到了模型输出，没有回退 —— 这份分数可以当结论用</div></div>
+  <div class="trust ok"><div class="trust-v">全部 228 条用例都完整跑完，模型调用 1480 次无失败。这份分数可以作为该模型在该用例集上的读数。　⚠️ 但通过率 99.6% 已经**贴到天花板**：这套用例集对这个模型已经饱和，它不再能区分「好」和「更好」。这里的 99.6% 不等于「NPC 做得很好」，只等于「这套回归集没抓到问题」。真正还有区分度的是下面的裁判维度（它测的是规则断言测不了的东西：像不像人设、有没有真的回应、有没有编造）。要继续往前走，需要的是**更难的自建用例**去压规则指标，而不是继续跑同一张卷子。</div><div class="tiles"><div class="tile"><div class="tile-k">用例</div><div class="tile-v">228</div></div><div class="tile"><div class="tile-k">模型调用</div><div class="tile-v">1480</div></div><div class="tile"><div class="tile-k">调用失败</div><div class="tile-v">0</div></div><div class="tile"><div class="tile-k">模板兜底</div><div class="tile-v">0（0.0%）</div></div><div class="tile"><div class="tile-k">规划回落</div><div class="tile-v">0</div></div><div class="tile"><div class="tile-k">跑不起来</div><div class="tile-v">0</div></div></div><div class="tile-note">全部用例都拿到了模型输出，没有回退 —— 这份分数可以当结论用</div></div>
 
   <h2>跑批统计</h2>
   <div class="cols">
@@ -139,9 +147,9 @@
     先校准，再判分。没跑过校准的裁判只是"另一个模型的意见"。
   </p>
   <h4 style="margin-top:18px">裁判校准（24 条人工标注）</h4>
-  <p class="muted">没有校准记录。</p>
+  <h4>开发集（24 条，被用来调过 rubric）</h4><table><thead><tr><th>评判标准</th><th>样本</th><th>一致率</th><th>kappa</th><th>结论</th><th>真阳/真阴/假阳/假阴</th></tr></thead><tbody><tr><td class="name">grounded</td><td class="num">8</td><td class="num">100%</td><td class="num"><strong>1.00</strong></td><td class="muted">几乎完全一致，这个维度可以用</td><td class="num mono">4/4/0/0</td></tr><tr><td class="name">in_character</td><td class="num">8</td><td class="num">100%</td><td class="num"><strong>1.00</strong></td><td class="muted">几乎完全一致，这个维度可以用</td><td class="num mono">3/5/0/0</td></tr><tr><td class="name">responsive</td><td class="num">8</td><td class="num">88%</td><td class="num"><strong>0.75</strong></td><td class="muted">基本一致，可以用，但个例要人看</td><td class="num mono">4/3/0/1</td></tr></tbody></table><h4>留出集（32 条，标签写好时没见过裁判输出）</h4><table><thead><tr><th>评判标准</th><th>留出 n</th><th>留出 kappa</th><th>开发 kappa</th><th>差值</th><th>结论</th></tr></thead><tbody><tr><td class="name">事实一致</td><td class="num">10</td><td class="num"><strong>0.80</strong></td><td class="num muted">1.00</td><td class="num">+0.20</td><td class="muted">几乎完全一致，这个维度可以用</td></tr><tr><td class="name">角色口吻</td><td class="num">11</td><td class="num"><strong>1.00</strong></td><td class="num muted">1.00</td><td class="num">+0.00</td><td class="muted">几乎完全一致，这个维度可以用</td></tr><tr><td class="name">是否回应</td><td class="num">11</td><td class="num"><strong>1.00</strong></td><td class="num muted">0.75</td><td class="num">-0.25</td><td class="muted">几乎完全一致，这个维度可以用</td></tr></tbody></table><p class="muted">差值 = 开发 kappa − 留出 kappa，就是<b>拟合的量</b>。差得多不代表裁判差，只代表那个数不能再当泛化能力用。</p><div class="good"><strong>留出集封条校验通过</strong>（样本摘要 <code>878e44c2ea85b51e</code>，评分标准摘要 <code>342440f72b7431f6</code>）。这个 kappa 可以引用。<br><b>但它仍然只是上界：</b>样本是手写的，比真实转写干净；每个维度只有十条上下，差一条 kappa 就动 0.1 量级。所以结论只能是「这个维度大致可用 / 不可用」，不能写成「裁判准确率 90%」。</div>
   <h4 style="margin-top:22px">判分结果</h4>
-  <p class="muted">这份报告没有附带裁判结果。跑 <code>judge --report ... --json ...</code> 后可以再生成一次。</p>
+  <table><thead><tr><th>评判标准</th><th>通过</th><th>通过率</th></tr></thead><tbody><tr><td class="name">grounded</td><td class="num">503/1005</td><td class="num"><span class="bar"><span class="bar-fill" style="width:32px;background:#5b7cfa"></span></span><span class="bar-num">0.500</span></td></tr><tr><td class="name">in_character</td><td class="num">729/1005</td><td class="num"><span class="bar"><span class="bar-fill" style="width:46px;background:#5b7cfa"></span></span><span class="bar-num">0.725</span></td></tr><tr><td class="name">responsive</td><td class="num">535/1005</td><td class="num"><span class="bar"><span class="bar-fill" style="width:34px;background:#5b7cfa"></span></span><span class="bar-num">0.532</span></td></tr></tbody></table><div class="tile-note"><b>这一列的进度条是中性色，和上面的规则指标不是同一把尺子。</b>规则指标量的是「断言有没有过」，1.000 是常态；裁判量的是「另一个模型觉得像不像」，它更严，50%~72% 属于正常范围，<b>不代表失败</b>。两列不可相减，也不该比颜色。</div><div class="tiles" style="margin-top:10px"><div class="tile"><div class="tile-k">判过的用例</div><div class="tile-v">228</div></div><div class="tile"><div class="tile-k">本轮新判</div><div class="tile-v">228</div></div><div class="tile"><div class="tile-k">复用检查点</div><div class="tile-v">0</div></div><div class="tile"><div class="tile-k">判决条数</div><div class="tile-v">3015</div></div><div class="tile"><div class="tile-k">未判</div><div class="tile-v">0</div></div><div class="tile"><div class="tile-k">判分时炸了</div><div class="tile-v">0</div></div><div class="tile"><div class="tile-k">无对话可判</div><div class="tile-v">8</div></div><div class="tile"><div class="tile-k">判分重试</div><div class="tile-v">8</div></div></div><div class="tile-note">全部 3015 条判决都拿到了分数</div><div class="warn">有 <b>4</b> 次重试是因为<b>裁判返回的内容解析不了</b>（空内容 / 没有 score 字段）。这类失败通常是**思维链把输出预算吃光**（实测出现过 14440 字的思维链，是常规值的 3.5 倍）。重试能救回大部分，但根因是预算偏小 —— 下次开跑前把 <code>JUDGE_MAX_TOKENS</code> 调大。注意：改了预算会作废检查点（它在恢复关键字段里），所以这件事要在开跑前决定，不能等跑完一半。</div>
 
   <h2>台词样本</h2>
   <p class="sub" style="margin:0 0 10px">
@@ -178,8 +186,9 @@
           不是 AgentBench / τ-bench 这类公开榜单。它证明的是"这套框架在自建回归集上
           能被测量、且改动可归因"，<strong>不代表</strong> NPC 的通用能力，
           也不能和外部分数横向比较。</li>
-      <li><strong>kappa 是上界</strong>：校准集被用来改过 rubric，
-          一致性里有一部分是拟合。留出集是下一步，不是已完成项。</li>
+      <li><strong>kappa 是上界</strong>：开发集被用来改过 rubric，
+          一致性里有一部分是拟合 —— 所以要看的是留出集那一列，
+          而留出集也只有 32 条、每个维度十条上下，仍然不是泛化能力的证明。</li>
     </ul>
   </div>
 
