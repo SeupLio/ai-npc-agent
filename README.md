@@ -1,4 +1,4 @@
-# game-npc-agent
+# ai-npc-agent
 
 > 面向游戏场景的可控 AI NPC 智能体框架 —— 让 NPC **不只是会说，而是真的会玩**。
 
@@ -903,8 +903,7 @@ python -m npc_agent.cli compare --models kimi-k2.7-code --no-planner \
 这一节是全量：**228 条用例全部跑真实模型**。
 
 ```bash
-PY="C:/Users/10718/.workbuddy-ai/binaries/python/envs/default/Scripts/python.exe"
-"$PY" -u -m npc_agent.cli eval --no-planner --concurrency 8 --retries 2 --backoff 3 \
+python -u -m npc_agent.cli eval --no-planner --concurrency 8 --retries 2 --backoff 3 \
   --progress --checkpoint reports/batch_model_checkpoint.json \
   --json reports/eval_model.json \
   --provider openai-compat --base-url https://ai.ctaigw.cn/v1 \
@@ -1559,4 +1558,4 @@ Minecraft 适配器另有 54 条，其中三条是结构性断言：
 
 ## License
 
-MIT
+[MIT](LICENSE)
