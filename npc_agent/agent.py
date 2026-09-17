@@ -162,6 +162,18 @@ class NPCAgent:
         self.state.update_from_env(self.env.observe(self.id))
 
     # ------------------------------------------------------------------ #
+    # 只读视图
+    # ------------------------------------------------------------------ #
+    @property
+    def planner_failures(self) -> int:
+        """规划调用失败的次数。见 `Planner.failures` 的注释。"""
+        return self.planner.failures
+
+    @property
+    def planner_last_error(self) -> str:
+        return self.planner.last_error
+
+    # ------------------------------------------------------------------ #
     # 主循环
     # ------------------------------------------------------------------ #
     # ------------------------------------------------------------------ #

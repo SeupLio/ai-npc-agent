@@ -75,6 +75,13 @@ def trust_summary(eval_payload: dict[str, Any]) -> dict[str, Any]:
     degraded_cases = int(stats.get("degraded_cases") or 0)
     failed_cases = int(stats.get("failed_cases") or 0)
 
+    # 规划调用失败的条数。规划失败会**静默回落到启发式规划**，
+    # 所以"planner 开着"和"planner 一直在失败"跑出来的轨迹是一样的 ——
+    # 这个数字是那个对照实验能不能读的前提。
+    planner_failed = sum(
+        1 for r in (eval_payload.get("results") or []) if r.get("planner_failures")
+    )
+
     if total == 0:
         verdict = "没有用例，什么都没测。"
     elif calls == 0:
@@ -103,15 +110,24 @@ def trust_summary(eval_payload: dict[str, Any]) -> dict[str, Any]:
             "这份分数可以作为该模型在该用例集上的读数。"
         )
 
+    if planner_failed:
+        verdict += (
+            f"　⚠️ 另有 {planner_failed}/{total} 条的**规划调用失败**并静默回落到了"
+            "启发式规划 —— 这些用例上的「模型规划」等于没开，"
+            "拿它们做 planner 对照会得到「两组一样」的假结论。"
+        )
+
     return {
         "total": total,
         "llm_calls": calls,
         "llm_failures": failures,
         "degraded_cases": degraded_cases,
         "failed_cases": failed_cases,
+        "planner_failed_cases": planner_failed,
         "degraded_rate": round(degraded_cases / total, 3) if total else 0.0,
         "trustworthy": bool(total and calls and not failed_cases
-                            and degraded_cases / max(total, 1) <= 0.10),
+                            and degraded_cases / max(total, 1) <= 0.10
+                            and not planner_failed),
         "verdict": verdict,
         "degraded_note": degraded.get("verdict", ""),
     }
@@ -125,6 +141,7 @@ def _trust_block(eval_payload: dict[str, Any]) -> str:
         ("模型调用", str(trust["llm_calls"])),
         ("调用失败", str(trust["llm_failures"])),
         ("模板兜底", f'{trust["degraded_cases"]}（{trust["degraded_rate"]:.1%}）'),
+        ("规划回落", str(trust["planner_failed_cases"])),
         ("跑不起来", str(trust["failed_cases"])),
     ]
     tiles = "".join(

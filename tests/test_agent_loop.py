@@ -12,6 +12,7 @@ from npc_agent.agent import NPCAgent
 from npc_agent.config import RuntimeConfig, load_persona, load_scenario
 from npc_agent.env.star_isle import StarIsleEnv
 from npc_agent.llm import NullLLM
+from npc_agent.llm.base import LLMUnavailable
 from npc_agent.modules.persona import Persona
 from npc_agent.modules.tools import ToolContext, ToolRegistry
 from npc_agent.types import ActionCall
@@ -236,3 +237,71 @@ def test_run_is_deterministic() -> None:
         drive(agent, env, [("player_a", "阿柚，能给我来杯拿铁吗？")] + [None] * 6)
         snapshots.append(env.snapshot())
     assert snapshots[0] == snapshots[1]
+
+
+# --------------------------------------------------------------------------- #
+# 规划失败必须留下痕迹
+#
+# 规划调用失败时会**静默回落到启发式规划**（见 NPCAgent._decide_plan 的兜底分支）。
+# 回落本身是对的 —— 一次调用失败不该让 NPC 卡住 —— 但它带来一个测量陷阱：
+# `--no-planner` 和"planner 开着但一直在失败"跑出来的轨迹**完全一样**。
+# 于是"接上模型规划到底有没有用"这个对照实验，可能在读者不知情的情况下
+# 变成自己跟自己比。所以失败次数和原因必须能被读到。
+# --------------------------------------------------------------------------- #
+class _BrokenPlannerLLM(NullLLM):
+    """`available` 为真、但每次调用都失败 —— 模拟端点挂了或预算被思维链吃光。
+
+    这两种原因在报错里长得不一样，但对规划器来说都是 `LLMUnavailable`，
+    所以用同一个假件覆盖。
+    """
+
+    name = "broken"
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def complete(self, messages, *, temperature=0.7, max_tokens=512):  # type: ignore[override]
+        raise LLMUnavailable(
+            "模型返回空内容（finish_reason=length，思维链 3905 字）。"
+            "推理模型需要更大的 max_tokens"
+        )
+
+
+def _build_with_llm(scenario_id: str, llm, planner_on: bool):
+    scenario = load_scenario(scenario_id)
+    persona = Persona.from_dict(load_persona(scenario.get("npc", "ayou")))
+    env = StarIsleEnv(scenario, persona.id, persona.name)
+    config = RuntimeConfig(use_llm_planner=planner_on)
+    return NPCAgent(persona, env, scenario, llm, config), env
+
+
+def test_a_failing_planner_falls_back_to_heuristics_and_says_so() -> None:
+    """回落要发生（NPC 不能因为一次调用失败就卡住），但**必须留下痕迹**。"""
+    agent, env = _build_with_llm("tutorial", _BrokenPlannerLLM(), planner_on=True)
+    drive(agent, env, [("player_a", "阿柚，能给我来杯拿铁吗？")] + [None] * 6)
+
+    # 回落生效：目标照样完成了（和 --no-planner 走的是同一条启发式路径）
+    assert env.snapshot()["actors"]["player_a"]["inventory"] == ["latte"]
+    # 但痕迹也在：否则这条轨迹和 --no-planner 完全无法区分
+    assert agent.planner_failures > 0, "规划一直在失败，却一次都没被记下来"
+    assert "空内容" in agent.planner_last_error
+    assert "max_tokens" in agent.planner_last_error
+
+
+def test_planner_off_does_not_count_as_a_planner_failure() -> None:
+    """`--no-planner` 是"没开这一路"，不是"失败了 N 次"。
+
+    两者混在一起，对照组会被记成一片红 —— 而它恰恰是基线。
+    """
+    agent, env = _build_with_llm("tutorial", _BrokenPlannerLLM(), planner_on=False)
+    drive(agent, env, [("player_a", "阿柚，能给我来杯拿铁吗？")] + [None] * 6)
+    assert agent.planner_failures == 0
+
+
+def test_an_unconfigured_model_is_not_a_planner_failure() -> None:
+    """离线跑批（NullLLM）同理：没配模型不是失败，但要能解释为什么走了启发式。"""
+    agent, env = _build_with_llm("tutorial", NullLLM(), planner_on=True)
+    drive(agent, env, [None] * 3)
+    assert agent.planner_failures == 0
+    assert "未配置模型" in agent.planner_last_error

@@ -698,6 +698,11 @@ def test_checkpoint_round_trip_preserves_the_result() -> None:
         assert restored.result.transcript == original.result.transcript
         assert restored.result.speeches == original.result.speeches
         assert restored.result.notes == original.result.notes
+        # 规划失败次数也要能过检查点 —— 否则恢复之后
+        # "planner 一直在失败"这件事就丢了，而报告正是靠它判断
+        # 那份 planner 对照能不能读。
+        assert restored.result.planner_failures == original.result.planner_failures
+        assert restored.result.planner_last_error == original.result.planner_last_error
 
     # 不带 include_result 时不该塞进结果（进度快照不需要那么重）
     assert "result" not in runs[0].to_dict()

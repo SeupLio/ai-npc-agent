@@ -42,6 +42,14 @@ class CaseResult:
     speeches: list[str] = field(default_factory=list)
     speakers: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: 这条用例里规划调用失败的次数与最后一次原因。
+    #:
+    #: 不记这个的话，`--no-planner` 和"planner 开着但一直在失败"会产出
+    #: **完全一样的轨迹** —— 因为规划失败会静默回落到启发式规划。
+    #: 于是"接上模型规划有没有用"这个对照实验，可能在读者不知情的情况下
+    #: 变成自己跟自己比。这是"配置故障伪装成模型行为"的又一个入口。
+    planner_failures: int = 0
+    planner_last_error: str = ""
 
     @property
     def passed(self) -> bool:
@@ -60,6 +68,8 @@ class CaseResult:
             "transcript": self.transcript,
             "speeches": self.speeches,
             "speakers": self.speakers,
+            "planner_failures": self.planner_failures,
+            "planner_last_error": self.planner_last_error,
         }
 
     @classmethod
@@ -75,6 +85,8 @@ class CaseResult:
             speeches=list(data.get("speeches") or []),
             speakers=list(data.get("speakers") or []),
             notes=list(data.get("notes") or []),
+            planner_failures=int(data.get("planner_failures") or 0),
+            planner_last_error=str(data.get("planner_last_error") or ""),
         )
 
 
@@ -307,6 +319,15 @@ class EvalHarness:
             speeches=speeches,
             speakers=speakers,
             notes=notes,
+            planner_failures=sum(a.planner_failures for a in cast.agents.values()),
+            planner_last_error=next(
+                (
+                    a.planner_last_error
+                    for a in cast.agents.values()
+                    if a.planner_failures
+                ),
+                "",
+            ),
         )
 
     # ------------------------------------------------------------------ #

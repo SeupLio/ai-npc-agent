@@ -170,6 +170,40 @@ def test_trust_survives_a_report_with_no_batch_block() -> None:
     assert trust["trustworthy"] is False
 
 
+def test_silent_planner_fallbacks_make_the_score_untrustworthy() -> None:
+    """规划失败会**静默回落到启发式规划** —— 这件事必须出现在可信度块里。
+
+    不报的话，`--no-planner` 和"planner 开着但一直在失败"跑出来的轨迹
+    完全一样，于是"接上模型规划有没有用"这个对照实验会得到「两组一样」
+    的假结论 —— 而读者看不出那是自己跟自己比。
+    """
+    payload = {"eval": _eval_payload(total=4, passed=4)}
+    payload["eval"]["results"][1]["planner_failures"] = 3
+    payload["eval"]["results"][1]["planner_last_error"] = (
+        "模型返回空内容（finish_reason=length，思维链 3905 字）"
+    )
+    trust = B.trust_summary(payload["eval"])
+    assert trust["planner_failed_cases"] == 1
+    assert trust["trustworthy"] is False
+    assert "规划调用失败" in trust["verdict"]
+    assert "启发式规划" in trust["verdict"]
+
+    page = B.render_batch_html(payload)
+    assert "规划回落" in page
+    assert "1" in page
+
+
+def test_a_run_without_planner_failures_stays_trustworthy() -> None:
+    """反向测试：没有规划回落时不该被误判。
+
+    假件默认不带 `planner_failures`，所以这条同时守住
+    "老报告（没有这个字段）不该被当成有失败"。
+    """
+    trust = B.trust_summary(_eval_payload(total=10, passed=10, llm_calls=100))
+    assert trust["planner_failed_cases"] == 0
+    assert trust["trustworthy"] is True
+
+
 # --------------------------------------------------------------------------- #
 # 差值表：用例集不同就不许相减
 # --------------------------------------------------------------------------- #

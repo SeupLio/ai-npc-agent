@@ -80,6 +80,18 @@ class Planner:
         self.facts = world_facts or {}
         self.max_retries = max_retries
         self.max_tokens = max_tokens
+        #: 规划调用失败的次数与最后一次原因。
+        #:
+        #: 为什么要记：`plan_with_llm` 失败时会**静默回落到启发式规划**
+        #: （见 `NPCAgent._decide_plan` 的兜底分支）。回落本身是对的 ——
+        #: 一次调用失败不该让 NPC 卡住 —— 但它带来一个测量陷阱：
+        #: `--no-planner` 和"planner 开着但一直在失败"会产生**完全一样的轨迹**，
+        #: 于是那个对照实验可能在读者不知情的情况下变成自己跟自己比。
+        #:
+        #: 这类失败还会伪装成模型行为：预算被思维链吃光时返回的是空内容，
+        #: 报错像"模型不行"，其实是配置问题（见 config.speech_max_tokens 的注释）。
+        self.failures = 0
+        self.last_error = ""
 
     # ------------------------------------------------------------------ #
     # 场景目标 → 计划
@@ -318,6 +330,9 @@ class Planner:
         goal_hint: str = "",
     ) -> Optional[Plan]:
         if not self.llm.available:
+            # 没配模型不是"失败"，是"没开这一路"。分开计数，
+            # 否则 `--no-planner` 的对照组会被记成一堆失败。
+            self.last_error = "未配置模型，走启发式规划"
             return None
 
         prompt = f"""{self.persona.system_block()}
@@ -348,7 +363,12 @@ class Planner:
                 schema_hint="goal, rationale, steps[{goal, tool, args}]",
                 max_tokens=self.max_tokens,
             )
-        except LLMUnavailable:
+        except LLMUnavailable as exc:
+            # **不要把原因吞掉。** 吞掉之后，"NPC 没做完目标"和
+            # "规划调用根本没成功"在报告里长得一模一样，
+            # 而这两件事的修法完全不同（一个改提示词/规划器，一个改预算）。
+            self.failures += 1
+            self.last_error = str(exc)
             return None
 
         raw_steps = data.get("steps") or []
