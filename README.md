@@ -1316,11 +1316,22 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 - [x] **跑批并行化**：下标落位 + 降级检测 + 原子检查点 + 实测加速比
 - [x] **全模型跑批（台词侧）**：228 条 × `kimi-k2.7-code`，227/228，
       实测加速 5.29×，**0 模板兜底 / 0 调用失败**；报告会主动提示"用例集已饱和"
+- [x] **判分加固**：判分检查点 + 断点恢复 + 重试 + `--timeout 180`，
+      未判率 **5.7% → 0.4%**；两类失败（调用 / 解析）分开计数
 - [ ] 全模型跑批（**规划侧**）：`use_llm_planner=True` 跑一遍，
       和启发式规划做对照（`planner_failures` 埋点已就位，用来区分
-      "规划调用失败"和"规划选错了"）
+      "规划调用失败"和"规划选错了"）。命令就是把台词侧那条**去掉 `--no-planner`**：
+      ```bash
+      python -m npc_agent.cli eval --json reports/eval_model_planner.json \
+          --concurrency 8 --checkpoint reports/eval_planner_checkpoint.json \
+          --provider openai-compat --base-url ... --model kimi-k2.7-code
+      ```
+      ⚠️ 别和判分**同时**跑：两边抢同一个端点会同时污染判分的未判率
+      和这条的加速比测量。规划调用约 35s，是台词调用的 2.5 倍，要留够时间。
 - [ ] 接真实 Minecraft 服务端跑通端到端（桥脚本已就绪，`--dry-run` 已验证协议）
 - [ ] 小模型蒸馏 + vLLM 部署，测端到端延迟
+- [ ] 裁判预算：`JUDGE_MAX_TOKENS=4096` 仍会被 14440 字的思维链吃穿（1/792），
+      下次开跑前调到 8192。**注意它作废检查点**，所以不能中途改
 
 ---
 
