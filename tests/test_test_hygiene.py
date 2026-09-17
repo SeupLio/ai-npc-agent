@@ -19,9 +19,16 @@ from __future__ import annotations
 
 import ast
 import collections
+import re
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
+
 TESTS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = TESTS_DIR.parent
+README = REPO_ROOT / "README.md"
 
 
 def _module(path: Path) -> ast.Module:
@@ -112,3 +119,83 @@ def test_the_hygiene_check_itself_can_fail(tmp_path: Path) -> None:
     names = [node.name for node in _top_level_functions(_module(fake))]
     dupes = {n: c for n, c in collections.Counter(names).items() if c > 1}
     assert dupes == {"test_same": 2}, "重复检测逻辑失效了"
+
+
+# --------------------------------------------------------------------------- #
+# README 里的测试数
+# --------------------------------------------------------------------------- #
+
+# README 承诺了测试数的地方。故意**逐个写死模式**，而不是"把文档里所有数字
+# 抓出来对一遍" —— 后者会把版本号、用例数、kappa 全卷进来，测试立刻变噪音。
+README_COUNT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("目录树里的测试数", re.compile(r"tests/\s+(\d+) 个单元与端到端测试")),
+    ("路线图里的测试数", re.compile(r"六维评测 harness \+ (\d+) 个测试")),
+    ("测试一节的输出", re.compile(r"#\s*(\d+) passed")),
+)
+
+# `pytest --collect-only -q` 的每一行形如 `tests/test_x.py: 12`
+_COLLECT_LINE = re.compile(r"^tests/(\w+\.py): (\d+)$")
+
+
+def _collected_test_count() -> int:
+    """跑一次 collect-only 数一遍 —— 这是唯一的真相来源。
+
+    用**子进程**而不是在当前进程里调 pytest：在收集期再嵌套触发一次收集，
+    pytest 的行为不保证（而且当前进程里已经有一份 session）。
+    """
+    proc = subprocess.run(
+        [
+            sys.executable, "-m", "pytest", "tests",
+            "-p", "no:cacheprovider", "--collect-only", "-q",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        pytest.fail(
+            "收集测试失败，没法核对 README 里的数字：\n"
+            f"stdout:\n{proc.stdout[-2000:]}\nstderr:\n{proc.stderr[-2000:]}"
+        )
+
+    total = 0
+    for line in proc.stdout.splitlines():
+        match = _COLLECT_LINE.match(line.strip())
+        if match:
+            total += int(match.group(2))
+
+    # 解析出 0 是最危险的情况：所有断言都会"通过"，因为没有一个数对得上。
+    if total == 0:
+        pytest.fail(
+            "没能从 collect-only 的输出里解析出任何用例数（输出格式变了？）：\n"
+            f"{proc.stdout[-2000:]}"
+        )
+    return total
+
+
+def test_readme_test_counts_match_reality() -> None:
+    """README 里的测试数必须是真的。
+
+    这个仓库里这个数已经过期过五次（546 → 557 → 565 → 568 → 569），
+    每次都是"加了测试、忘了改文档"。文档里的数字是**写给读者看的断言**，
+    过期了就是假话 —— 和报告里写死"开发集（24 条）"是同一类毛病。
+
+    注意这条测试**自己也计入总数**（它就是新加的那一条）。这是故意的：
+    断言的是"README 等于实际收集数"，不是"README 等于实际数减一"。
+    代价是每加一条测试都要顺手改 README —— 而这正是想要的。
+    """
+    actual = _collected_test_count()
+    text = README.read_text(encoding="utf-8")
+
+    found: dict[str, list[int]] = {}
+    for label, pattern in README_COUNT_PATTERNS:
+        matches = pattern.findall(text)
+        # 模式过期比数字过期更隐蔽：找不到就静默通过，等于没有这条护栏。
+        assert matches, f"README 里找不到「{label}」，正则过期了：{pattern.pattern}"
+        found[label] = [int(m) for m in matches]
+
+    wrong = {k: v for k, v in found.items() if v != [actual] * len(v)}
+    assert not wrong, (
+        f"README 里的测试数和实际收集到的不一致（实际 {actual}）：{wrong}。"
+        "改了测试就顺手把 README 里那三处数字一起改掉。"
+    )
