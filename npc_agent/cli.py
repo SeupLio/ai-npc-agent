@@ -898,7 +898,16 @@ def cmd_judge(args: argparse.Namespace) -> int:
             console.print(
                 f"\n在留出集（{len(hold_items)} 条，标签写好时没见过裁判输出）上再校准一次 …"
             )
-            hold = run_holdout(judge, items=hold_items, seal=load_seal())
+            # 必须传 progress：开发集那条会打「校准 N/24 …」，留出集是**串行**的
+            # 32 次调用（十几分钟）。不打进度的话，日志十几分钟一动不动，
+            # 从外面看和"卡死了"完全一样 —— 这正是本项目在监控那一节
+            # 反复踩的坑：**没有输出 ≠ 没有进展，但读者分不出来**。
+            hold = run_holdout(
+                judge,
+                items=hold_items,
+                seal=load_seal(),
+                progress=lambda m: console.print(f"[dim]{m}[/dim]"),
+            )
             payload["holdout"] = hold
 
             htable = Table(title="留出集校准（可引用的那个数）", header_style="bold")
