@@ -564,7 +564,11 @@ python -m npc_agent.cli judge --report reports/eval_model.json \
   但被标成 `quotable: false`，并且把破在哪里原样带上 ——
   这样它不可能被当成泛化能力引用。
 
-跑批时开发集和留出集并排打出来，**两个 kappa 的差就是拟合的量**：
+跑批时开发集和留出集并排打出来，**两个 kappa 的差就是拟合的量**。
+HTML 报告里也是同样的两张表加一列差值 —— 只印一个（不管哪个）都会被读成
+泛化能力：只印开发集是把拟合当本事，只印留出集是看不出拟合有多大。
+封条通过时报告给一块绿底说明"这个数可以引用"（并附上摘要供复核），
+对不上时给一块红底列出破在哪、并说明为什么**不可修复**。
 
 ```bash
 python -m npc_agent.cli judge --report reports/eval_model.json ...   # 默认带上留出集
@@ -1061,7 +1065,7 @@ game-npc-agent/
 │   ├── mineflayer_bridge.js    Node 桥：把世界操作契约翻成真实 Minecraft 动作
 │   ├── wait_for_batch.py       等跑批：区分「跑完了 / 跑死了 / 还在跑」
 │   └── rescore_safety.py       用新口径离线重算安全维度（要求先逐字复现旧口径）
-└── tests/                  534 个单元与端到端测试
+└── tests/                  538 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -1237,7 +1241,7 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 534 个测试
+- [x] 六维评测 harness + 538 个测试
 - [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
 - [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [x] **多 NPC 协作**：Cast 导演层 + 双 NPC 场景 + 发言调度评测维度
@@ -1261,7 +1265,7 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 ```bash
 python -m pytest tests -q
-# 534 passed
+# 538 passed
 ```
 
 覆盖：环境护栏、记忆检索与巩固、**五种检索策略的语义差异**、多人发言权判定、

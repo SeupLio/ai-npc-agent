@@ -529,3 +529,219 @@ def test_cli_rejects_a_missing_judge_file(tmp_path: Path) -> None:
                  "--judge", str(tmp_path / "nope.json"), "--html", str(out)])
     assert code == 2
     assert not out.exists()
+
+
+# --------------------------------------------------------------------------- #
+# 留出集：报告必须把「拟合」和「泛化」分开摆
+# --------------------------------------------------------------------------- #
+def _judge_with_holdout(
+    *,
+    dev_kappa: float = 1.0,
+    hold_kappa: float = 0.75,
+    quotable: bool = True,
+    problems: list[dict] | None = None,
+) -> dict:
+    """一份带留出集的裁判 payload。
+
+    刻意让开发集 kappa（1.00）比留出集（0.75）高 —— 这正是真实情况：
+    开发集被用来调过 rubric，所以它上面的数字必然更好看。
+    报告的价值就在于把这个差印出来，而不是只印好看的那个。
+    """
+    def _stats(kappa: float, n: int) -> dict:
+        return {"n": n, "agreement": kappa, "kappa": kappa, "reading": "基本一致，可以用，但个例要人看",
+                "confusion": {"真阳性": 3, "真阴性": 4, "假阳性": 1, "假阴性": 0}}
+
+    return {
+        "judge_model": "kimi-k2.7-code",
+        "calibration": {
+            "total": 24, "judged": 24, "unjudged": 0,
+            "per_rubric": {"in_character": _stats(dev_kappa, 8)},
+        },
+        "holdout": {
+            "total": 32, "judged": 32, "unjudged": 0,
+            "quotable": quotable,
+            "problems": problems if problems is not None else [],
+            "per_rubric": {"in_character": _stats(hold_kappa, 11)},
+            "seal": {"holdout_digest": "878e44c2ea85b51e", "rubric_digest": "342440f72b7431f6"},
+        },
+        "summary": {"judged": 100, "unjudged": 0, "by_rubric": {
+            "in_character": {"n": 100, "passed": 90, "pass_rate": 0.9}}},
+        "coverage": {"cases": 40, "cases_failed": 0, "cases_without_dialogue": 2,
+                     "verdicts": 100, "unjudged": 0, "verdict": "判分覆盖完整。"},
+    }
+
+
+def test_report_puts_the_dev_and_holdout_kappa_side_by_side() -> None:
+    """**两个数必须同时出现。** 只印一个（不管哪个）都会被读成泛化能力。
+
+    只印开发集 → 把拟合当本事；只印留出集 → 看不出拟合有多大。
+    差值才是"这个数字有多少水分"的直接读数。
+    """
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": _judge_with_holdout()})
+    assert "留出集" in page
+    assert "开发集" in page
+    assert "0.75" in page          # 留出
+    assert "1.00" in page          # 开发
+    assert "+0.25" in page         # 差值
+    assert "拟合的量" in page
+    # 封条通过时必须说清"可以引用"，并且把摘要摆出来以便复核
+    assert "封条校验通过" in page
+    assert "878e44c2ea85b51e" in page
+
+
+def test_report_refuses_to_quote_a_holdout_with_a_broken_seal() -> None:
+    """封条破了就**不能**把那个 kappa 当泛化能力印出来。
+
+    注意这里不是"不显示数字" —— 数字照显示（诊断信息不能扔），
+    但必须配一块红色的、说明它为什么不可引用。
+    """
+    page = B.render_batch_html({
+        "eval": _eval_payload(),
+        "judge": _judge_with_holdout(quotable=False, problems=[{
+            "kind": "rubric_changed",
+            "detail": "评分标准变过，这份留出集对当前 rubric 已不再是留出集。",
+        }]),
+    })
+    assert "封条对不上" in page
+    assert "不可引用" in page
+    assert "rubric_changed" in page
+    assert "不可修复" in page
+    assert "封条校验通过" not in page
+
+
+def test_report_says_so_when_there_is_no_holdout_at_all() -> None:
+    """没有留出集时不能沉默 —— 沉默会被读成"校准过了"。
+
+    老版本写的 judge.json 没有 holdout 块，这份报告必须仍然能渲染，
+    并且明说"这个数只能说明没有系统性偏差"。
+    """
+    payload = _judge_with_holdout()
+    payload.pop("holdout")
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
+    assert "没有留出集结果" in page
+    assert "不能当泛化能力引用" in page
+    assert "封条校验通过" not in page
+
+
+def test_the_holdout_block_does_not_invent_a_kappa_for_a_missing_rubric() -> None:
+    """只在一边出现的维度要显示成「—」，不能补 0。
+
+    补 0 会让"没测"和"测得极差"长得一样 —— 和铁律一是同一类错误。
+    """
+    payload = _judge_with_holdout()
+    payload["holdout"]["per_rubric"]["responsive"] = {
+        "n": 11, "agreement": 1.0, "kappa": 1.0, "reading": "几乎完全一致，这个维度可以用",
+        "confusion": {},
+    }
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
+    # in_character 在留出集里有，responsive 在开发集里没有
+    assert "—" in page
+    assert "0.00" not in page.split("留出集（32 条")[1][:2000]
+
+
+# --------------------------------------------------------------------------- #
+# 留出集：报告必须把「拟合」和「泛化」分开摆
+# --------------------------------------------------------------------------- #
+def _judge_with_holdout(
+    *,
+    dev_kappa: float = 1.0,
+    hold_kappa: float = 0.75,
+    quotable: bool = True,
+    problems: list[dict] | None = None,
+) -> dict:
+    """一份带留出集的裁判 payload。
+
+    刻意让开发集 kappa（1.00）比留出集（0.75）高 —— 这正是真实情况：
+    开发集被用来调过 rubric，所以它上面的数字必然更好看。
+    报告的价值就在于把这个差印出来，而不是只印好看的那个。
+    """
+    def _stats(kappa: float, n: int) -> dict:
+        return {"n": n, "agreement": kappa, "kappa": kappa, "reading": "基本一致，可以用，但个例要人看",
+                "confusion": {"真阳性": 3, "真阴性": 4, "假阳性": 1, "假阴性": 0}}
+
+    return {
+        "judge_model": "kimi-k2.7-code",
+        "calibration": {
+            "total": 24, "judged": 24, "unjudged": 0,
+            "per_rubric": {"in_character": _stats(dev_kappa, 8)},
+        },
+        "holdout": {
+            "total": 32, "judged": 32, "unjudged": 0,
+            "quotable": quotable,
+            "problems": problems if problems is not None else [],
+            "per_rubric": {"in_character": _stats(hold_kappa, 11)},
+            "seal": {"holdout_digest": "878e44c2ea85b51e", "rubric_digest": "342440f72b7431f6"},
+        },
+        "summary": {"judged": 100, "unjudged": 0, "by_rubric": {
+            "in_character": {"n": 100, "passed": 90, "pass_rate": 0.9}}},
+        "coverage": {"cases": 40, "cases_failed": 0, "cases_without_dialogue": 2,
+                     "verdicts": 100, "unjudged": 0, "verdict": "判分覆盖完整。"},
+    }
+
+
+def test_report_puts_the_dev_and_holdout_kappa_side_by_side() -> None:
+    """**两个数必须同时出现。** 只印一个（不管哪个）都会被读成泛化能力。
+
+    只印开发集 → 把拟合当本事；只印留出集 → 看不出拟合有多大。
+    差值才是"这个数字有多少水分"的直接读数。
+    """
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": _judge_with_holdout()})
+    assert "留出集" in page
+    assert "开发集" in page
+    assert "0.75" in page          # 留出
+    assert "1.00" in page          # 开发
+    assert "+0.25" in page         # 差值
+    assert "拟合的量" in page
+    # 封条通过时必须说清"可以引用"，并且把摘要摆出来以便复核
+    assert "封条校验通过" in page
+    assert "878e44c2ea85b51e" in page
+
+
+def test_report_refuses_to_quote_a_holdout_with_a_broken_seal() -> None:
+    """封条破了就**不能**把那个 kappa 当泛化能力印出来。
+
+    注意这里不是"不显示数字" —— 数字照显示（诊断信息不能扔），
+    但必须配一块红色的、说明它为什么不可引用。
+    """
+    page = B.render_batch_html({
+        "eval": _eval_payload(),
+        "judge": _judge_with_holdout(quotable=False, problems=[{
+            "kind": "rubric_changed",
+            "detail": "评分标准变过，这份留出集对当前 rubric 已不再是留出集。",
+        }]),
+    })
+    assert "封条对不上" in page
+    assert "不可引用" in page
+    assert "rubric_changed" in page
+    assert "不可修复" in page
+    assert "封条校验通过" not in page
+
+
+def test_report_says_so_when_there_is_no_holdout_at_all() -> None:
+    """没有留出集时不能沉默 —— 沉默会被读成"校准过了"。
+
+    老版本写的 judge.json 没有 holdout 块，这份报告必须仍然能渲染，
+    并且明说"这个数只能说明没有系统性偏差"。
+    """
+    payload = _judge_with_holdout()
+    payload.pop("holdout")
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
+    assert "没有留出集结果" in page
+    assert "不能当泛化能力引用" in page
+    assert "封条校验通过" not in page
+
+
+def test_the_holdout_block_does_not_invent_a_kappa_for_a_missing_rubric() -> None:
+    """只在一边出现的维度要显示成「—」，不能补 0。
+
+    补 0 会让"没测"和"测得极差"长得一样 —— 和铁律一是同一类错误。
+    """
+    payload = _judge_with_holdout()
+    payload["holdout"]["per_rubric"]["responsive"] = {
+        "n": 11, "agreement": 1.0, "kappa": 1.0, "reading": "几乎完全一致，这个维度可以用",
+        "confusion": {},
+    }
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
+    # in_character 在留出集里有，responsive 在开发集里没有
+    assert "—" in page
+    assert "0.00" not in page.split("留出集（32 条")[1][:2000]

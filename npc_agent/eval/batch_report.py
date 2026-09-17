@@ -360,12 +360,22 @@ def _speech_samples(eval_payload: dict[str, Any], per_category: int = 4,
 # 裁判
 # --------------------------------------------------------------------------- #
 def _calibration_block(judge_payload: dict[str, Any] | None) -> str:
+    """校准 + 留出集，**两块必须分开摆**。
+
+    它们回答的不是同一个问题：
+      开发集上的 kappa —— 裁判和这套标准自洽吗？
+      留出集上的 kappa —— 换一批没见过的样本，还准吗？
+
+    只摆一个数（不管哪个），读者都会把它当成后者。所以差值也要算出来印上：
+    **开发 kappa − 留出 kappa = 拟合的量。**
+    """
     if not judge_payload:
         return ""
     cal = judge_payload.get("calibration") or {}
     per = cal.get("per_rubric") or {}
     if not per:
         return ""
+
     rows = []
     for key in sorted(per):
         stats = per[key]
@@ -381,18 +391,74 @@ def _calibration_block(judge_payload: dict[str, Any] | None) -> str:
             f'{conf.get("假阳性", 0)}/{conf.get("假阴性", 0)}</td>'
             "</tr>"
         )
-    note = (
-        '<div class="warn"><strong>kappa 是上界，不是泛化能力。</strong>'
-        "这三条 rubric 是**对着这套校准集改过三轮**的，"
-        "所以一致性里有一部分是拟合出来的。n=8，一个样本的摆动就是 ±0.125。"
-        "真正的下一步是**留出集**：新标注样本时先不看裁判输出、不回头改 rubric。</div>"
-    )
-    return (
+    dev = (
+        "<h4>开发集（24 条，被用来调过 rubric）</h4>"
         "<table><thead><tr><th>评判标准</th><th>样本</th><th>一致率</th>"
         "<th>kappa</th><th>结论</th>"
         "<th>真阳/真阴/假阳/假阴</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>{note}"
+        f"<tbody>{''.join(rows)}</tbody></table>"
     )
+
+    holdout = judge_payload.get("holdout")
+    if not holdout:
+        return dev + (
+            '<div class="warn"><strong>这份报告没有留出集结果。</strong>'
+            "开发集上的 kappa 含拟合成分 —— 这三条 rubric 就是对着它改的。"
+            "所以上面那个数只能说明「没有明显的系统性偏差」，"
+            "不能当泛化能力引用。留出集在 "
+            "<code>npc_agent/eval/calibration_holdout.jsonl</code>，"
+            "跑 <code>judge</code>（默认会带上）就有了。</div>"
+        )
+
+    from .judge import contrast_rows
+
+    hrows = []
+    for row in contrast_rows(cal, holdout):
+        hk, dk, gap = row["holdout_kappa"], row["dev_kappa"], row["gap"]
+        hrows.append(
+            "<tr>"
+            f'<td class="name">{_esc(str(row["name"]))}</td>'
+            f'<td class="num">{row["holdout_n"] or "—"}</td>'
+            f'<td class="num"><strong>{"—" if hk is None else f"{hk:.2f}"}</strong></td>'
+            f'<td class="num muted">{"—" if dk is None else f"{dk:.2f}"}</td>'
+            f'<td class="num">{"—" if gap is None else f"{gap:+.2f}"}</td>'
+            f'<td class="muted">{_esc(str(row["holdout_reading"]))}</td>'
+            "</tr>"
+        )
+    table = (
+        "<h4>留出集（32 条，标签写好时没见过裁判输出）</h4>"
+        "<table><thead><tr><th>评判标准</th><th>留出 n</th><th>留出 kappa</th>"
+        "<th>开发 kappa</th><th>差值</th><th>结论</th></tr></thead>"
+        f"<tbody>{''.join(hrows)}</tbody></table>"
+        '<p class="muted">差值 = 开发 kappa − 留出 kappa，就是<b>拟合的量</b>。'
+        "差得多不代表裁判差，只代表那个数不能再当泛化能力用。</p>"
+    )
+
+    if holdout.get("quotable"):
+        seal = holdout.get("seal") or {}
+        note = (
+            '<div class="good"><strong>留出集封条校验通过</strong>'
+            f'（样本摘要 <code>{_esc(str(seal.get("holdout_digest", "")))}</code>，'
+            f'评分标准摘要 <code>{_esc(str(seal.get("rubric_digest", "")))}</code>）。'
+            "这个 kappa 可以引用。<br>"
+            "<b>但它仍然只是上界：</b>样本是手写的，比真实转写干净；"
+            "每个维度只有十条上下，差一条 kappa 就动 0.1 量级。"
+            "所以结论只能是「这个维度大致可用 / 不可用」，"
+            "不能写成「裁判准确率 90%」。</div>"
+        )
+    else:
+        problems = holdout.get("problems") or []
+        items = "".join(
+            f'<li><code>{_esc(str(p.get("kind", "")))}</code>：{_esc(str(p.get("detail", "")))}</li>'
+            for p in problems
+        )
+        note = (
+            '<div class="bad"><strong>⛔ 这份留出集的封条对不上，上面的 kappa 不可引用。</strong>'
+            f"<ul>{items}</ul>"
+            "封条破了是<b>不可修复</b>的：重封条只把破过的事实藏起来，"
+            "并不会让「标签是改之前写的」重新成立。正确做法是另攒一份新的留出集。</div>"
+        )
+    return dev + table + note
 
 
 def _judge_block(judge_payload: dict[str, Any] | None) -> str:
@@ -529,6 +595,14 @@ _TEMPLATE = """<!DOCTYPE html>
   .warn { background: #fffbf0; border: 1px solid #f0dfb8; border-left: 4px solid #e8a33d;
           border-radius: 8px; padding: 12px 16px; margin-top: 12px; font-size: 13.5px;
           color: #6b5320; }
+  .good { background: #f2fbf4; border: 1px solid #c9e7d0; border-left: 4px solid #3f9e58;
+          border-radius: 8px; padding: 12px 16px; margin-top: 12px; font-size: 13.5px;
+          color: #1f5b31; }
+  .bad  { background: #fdf3f3; border: 1px solid #f0cfcf; border-left: 4px solid #c0392b;
+          border-radius: 8px; padding: 12px 16px; margin-top: 12px; font-size: 13.5px;
+          color: #7d2a21; }
+  .bad ul { margin: 8px 0 8px 18px; padding: 0; }
+  h4 { margin: 20px 0 8px; font-size: 14.5px; color: #374151; }
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
   @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
   footer { margin-top: 36px; color: var(--muted); font-size: 12.5px; }
@@ -601,8 +675,9 @@ _TEMPLATE = """<!DOCTYPE html>
           不是 AgentBench / τ-bench 这类公开榜单。它证明的是"这套框架在自建回归集上
           能被测量、且改动可归因"，<strong>不代表</strong> NPC 的通用能力，
           也不能和外部分数横向比较。</li>
-      <li><strong>kappa 是上界</strong>：校准集被用来改过 rubric，
-          一致性里有一部分是拟合。留出集是下一步，不是已完成项。</li>
+      <li><strong>kappa 是上界</strong>：开发集被用来改过 rubric，
+          一致性里有一部分是拟合 —— 所以要看的是留出集那一列，
+          而留出集也只有 32 条、每个维度十条上下，仍然不是泛化能力的证明。</li>
     </ul>
   </div>
 

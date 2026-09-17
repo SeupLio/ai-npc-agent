@@ -781,17 +781,22 @@ def run_holdout(
 
 
 def contrast_rows(
-    dev: CalibrationReport, holdout: dict[str, Any]
+    dev: CalibrationReport | dict[str, Any], holdout: dict[str, Any]
 ) -> list[dict[str, Any]]:
     """把「开发集」和「留出集」的 kappa 摆在一起。
 
     两个数的差就是**拟合的量**。只有一个数的时候，你没法判断它有多少是
     真本事 —— 这正是要另起一份留出集的原因。
+
+    `dev` 既收 `CalibrationReport` 也收它的 `to_dict()` 形态：
+    CLI 手里是前者，HTML 报告手里是后者，两边都该用同一份算法，
+    否则两个地方会慢慢算出不一样的差值。
     """
+    dev_per = dev.per_rubric if isinstance(dev, CalibrationReport) else (dev.get("per_rubric") or {})
     per_holdout = holdout.get("per_rubric") or {}
     rows: list[dict[str, Any]] = []
-    for key in sorted(set(dev.per_rubric) | set(per_holdout)):
-        d = dev.per_rubric.get(key) or {}
+    for key in sorted(set(dev_per) | set(per_holdout)):
+        d = dev_per.get(key) or {}
         h = per_holdout.get(key) or {}
         dev_kappa = d.get("kappa")
         hold_kappa = h.get("kappa")
