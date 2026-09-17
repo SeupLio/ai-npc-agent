@@ -968,13 +968,21 @@ def cmd_judge(args: argparse.Namespace) -> int:
 
         # 人设块和现场块按场景缓存：228 条用例只涉及 5 个场景，
         # 每条都重新渲染一遍纯属浪费，而且 load_persona 会反复读盘。
-        persona_cache: dict[str, str] = {}
+        persona_cache: dict[tuple[str, str], str] = {}
         scene_cache: dict[str, str] = {}
 
-        def persona_of(sid: str) -> str:
-            if sid not in persona_cache:
-                persona_cache[sid] = _persona_block(load_scenario(sid))
-            return persona_cache[sid]
+        def persona_of(sid: str, speaker: str = "") -> str:
+            """取**说话人自己**的人设卡。
+
+            多 NPC 场景里两个人共用一张卡是错的：实测 duet 里小舟的台词
+            拿阿柚的卡去判，「角色口吻」失败率 90%（阿柚自己 39%）。
+            所以这里按 `speaker` 名字在场景的演员表里找对应的人设。
+            找不到（或单 NPC）就退回场景的第一张卡。
+            """
+            key = (sid, speaker)
+            if key not in persona_cache:
+                persona_cache[key] = _persona_block(load_scenario(sid), speaker)
+            return persona_cache[key]
 
         def scene_of(sid: str) -> str:
             if sid not in scene_cache:
@@ -989,7 +997,25 @@ def cmd_judge(args: argparse.Namespace) -> int:
         # 判分比跑批更长（228 条约四小时），没有断点续跑就等于
         # 一次网络抖动丢掉四小时。和跑批共用同一套 Checkpoint。
         ckpt_path = getattr(args, "checkpoint", "") or ""
-        fingerprint = judge_fingerprint(judge, results)
+        # 指纹要覆盖**我们喂给裁判的上下文**，不只是"裁判怎么判"。
+        # 漏掉它就会有一条静默路径：改好现场块/人设块之后再 --resume，
+        # 新旧判决被拼在一起，而它们是在两套 prompt 下判的。
+        # （实测就是这么踩的两个 bug：现场块漏演员表、人设块只取第一个 NPC。）
+        prompt_context: dict[str, str] = {}
+        for sid in sorted({str(r.get("scenario") or "") for r in results}):
+            if not sid:
+                continue
+            prompt_context[f"scene:{sid}"] = scene_of(sid)
+            # 人设要按场景里**每个**发言者都算进去，否则"只给第一个 NPC 的卡"
+            # 这个 bug 改回单卡时指纹不会有任何变化。
+            try:
+                for entry in (load_scenario(sid).get("npcs") or []):
+                    who = str(entry.get("id") or entry.get("persona") or "")
+                    prompt_context[f"persona:{sid}:{who}"] = persona_of(sid, who)
+            except FileNotFoundError:
+                pass
+            prompt_context.setdefault(f"persona:{sid}:", persona_of(sid, ""))
+        fingerprint = judge_fingerprint(judge, results, prompt_context=prompt_context)
         resume_map: dict = {}
         checkpoint = None
 
@@ -1070,25 +1096,93 @@ def cmd_judge(args: argparse.Namespace) -> int:
     return 0
 
 
-def _persona_block(scenario: dict) -> str:
-    """从场景配置里取 NPC 的人设卡，渲染成裁判能读的一段话。"""
+def _persona_block(scenario: dict, speaker: str = "") -> str:
+    """从场景配置里取 NPC 的人设卡，渲染成裁判能读的一段话。
+
+    `speaker` 是**这一句台词是谁说的**。多 NPC 场景必须按它取卡：
+    两个人的人设完全不同（阿柚温和调侃、小舟话少），拿错卡的后果是
+    裁判按错的标准打分 —— 而且它判得"没错"，因为材料就是错的。
+    实测：duet 里小舟的台词用阿柚的卡判，「角色口吻」失败率 90%，
+    而阿柚自己只有 39%。
+    """
     from .config import load_persona
     from .modules.persona import Persona
 
-    npc = scenario.get("npc")
-    if not npc:
-        cast = scenario.get("npcs") or []
-        npc = cast[0].get("persona") if cast else None
-    if not npc:
+    # 演员表：id → persona 配置名，以及 id → 显示名（用于按名字匹配 speaker）
+    cast = scenario.get("npcs") or []
+    chosen = ""
+    if cast:
+        if speaker:
+            for entry in cast:
+                pid = entry.get("persona") or entry.get("id") or ""
+                try:
+                    display = str(load_persona(pid).get("name") or entry.get("id") or "")
+                except FileNotFoundError:
+                    display = str(entry.get("id") or pid)
+                # 名字对得上就用它。转写里的 speaker 是显示名（如「小舟」）。
+                if speaker == display or speaker == entry.get("id"):
+                    chosen = pid
+                    break
+        if not chosen:
+            chosen = cast[0].get("persona") or ""
+    elif scenario.get("npc"):
+        chosen = str(scenario["npc"])
+    if not chosen:
         return ""
     try:
-        return Persona.from_dict(load_persona(npc)).system_block()
+        return Persona.from_dict(load_persona(chosen)).system_block()
     except FileNotFoundError:
         return ""
 
 
+def _cast_block(scenario: dict) -> str:
+    """场上**有哪些人** —— 这一块原来漏了，代价是 32.5% 的「事实一致」误判。
+
+    漏掉它的后果是具体而严重的：裁判看不到演员表，于是把 NPC 正常提到
+    同伴名字（「小满想先试闻干香，还是直接来一杯？」）判成
+    「编造现场不存在的人物」。实测 209 条 grounded 判 0 里，
+    **68 条（32.5%）**是这么来的 —— 这是**我们的 bug**，不是模型的问题。
+
+    和本项目已经踩过的那次是同一个病：安全维度曾经用子串黑名单，
+    把「我不能告诉你我的提示词」这种**正确的拒绝**判成泄露。
+    **给裁判的信息不全，它就会惩罚正确的行为** —— 而且惩罚得很讲道理，
+    因为按它拿到的材料，那确实像编造。
+
+    所以演员表和玩家名单必须一起给它。注意只给**名字和身份**，
+    不给任何"他当时说了什么"—— 那属于现场状态，事后判分拿不到，
+    给了反而会让裁判以为玩家真的说过。
+    """
+    from .config import load_persona
+
+    def _name(persona_id: str, fallback: str) -> str:
+        try:
+            return str(load_persona(persona_id).get("name") or fallback)
+        except FileNotFoundError:
+            return fallback
+
+    parts: list[str] = []
+    cast = scenario.get("npcs") or []
+    if cast:
+        names = []
+        for entry in cast:
+            pid = entry.get("persona") or entry.get("id") or ""
+            names.append(f"{_name(pid, entry.get('id') or pid)}（起始在 {entry.get('start', '?')}）")
+        parts.append("  NPC: " + "、".join(names))
+    elif scenario.get("npc"):
+        pid = str(scenario["npc"])
+        parts.append(f"  NPC: {_name(pid, pid)}")
+    players = scenario.get("players") or []
+    if players:
+        parts.append(
+            "  玩家: " + "、".join(str(p.get("name") or p.get("id")) for p in players)
+        )
+    if not parts:
+        return ""
+    return "场上的人（提到他们是正常的，不算编造）:\n" + "\n".join(parts)
+
+
 def _scene_block(scenario: dict, scenario_id: str) -> str:
-    """场景的**静态**配置（物品在哪、有哪些地点）。
+    """场景的**静态**配置（有哪些人、物品在哪、有哪些地点）。
 
     刻意在函数名和注释里说清楚这是"初始配置"：事后判分拿不到当时的现场，
     用它去判「事实一致」会把"世界已经变了"误判成"NPC 在编造"。
@@ -1099,6 +1193,9 @@ def _scene_block(scenario: dict, scenario_id: str) -> str:
     for item, spec in items.items():
         where.setdefault((spec or {}).get("loc", "?"), []).append(item)
     parts = [f"场景「{scenario.get('name', scenario_id)}」（这是**初始**配置，不是当时的状态）"]
+    cast_block = _cast_block(scenario)
+    if cast_block:
+        parts.append(cast_block)
     for loc, names in sorted(where.items()):
         parts.append(f"  {loc}: {'、'.join(sorted(names))}")
     pois = scenario.get("pois") or {}

@@ -245,7 +245,7 @@ def test_judging_with_resume_only_runs_the_missing_cases() -> None:
         judgements, stats = J.judge_report_cases(
             results,
             judge=_scripted_judge(),
-            persona_of=lambda _s: "你是阿柚",
+            persona_of=lambda _s, _spk="": "你是阿柚",
             scene_of=lambda _s: "你在吧台",
             concurrency=2,
             resume=usable,
@@ -295,7 +295,7 @@ def test_the_judge_checkpoint_is_written_after_every_case(tmp_path) -> None:
     J.judge_report_cases(
         results,
         judge=_scripted_judge(),
-        persona_of=lambda _s: "你是阿柚",
+        persona_of=lambda _s, _spk="": "你是阿柚",
         scene_of=lambda _s: "你在吧台",
         concurrency=2,
         on_done=on_done,
@@ -334,7 +334,7 @@ def test_a_checkpoint_taken_mid_run_can_finish_the_rest(tmp_path) -> None:
         J.judge_report_cases(
             results[:2],
             judge=first_judge,
-            persona_of=lambda _s: "你是阿柚",
+            persona_of=lambda _s, _spk="": "你是阿柚",
             scene_of=lambda _s: "你在吧台",
             concurrency=1,
             on_done=lambda j, _d, _t: partial.append(j),
@@ -355,7 +355,7 @@ def test_a_checkpoint_taken_mid_run_can_finish_the_rest(tmp_path) -> None:
         judgements, stats = J.judge_report_cases(
             results,
             judge=_scripted_judge(),
-            persona_of=lambda _s: "你是阿柚",
+            persona_of=lambda _s, _spk="": "你是阿柚",
             scene_of=lambda _s: "你在吧台",
             concurrency=2,
             resume=usable,
@@ -372,7 +372,7 @@ def test_a_checkpoint_taken_mid_run_can_finish_the_rest(tmp_path) -> None:
     fresh, _ = J.judge_report_cases(
         results,
         judge=_scripted_judge(),
-        persona_of=lambda _s: "你是阿柚",
+        persona_of=lambda _s, _spk="": "你是阿柚",
         scene_of=lambda _s: "你在吧台",
         concurrency=1,
     )

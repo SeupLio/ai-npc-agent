@@ -389,14 +389,23 @@ class LLMJudge:
         pairs: list[dict[str, str]],
         *,
         persona: str = "",
+        persona_of: Any = None,
         scene: str = "",
         progress: Any = None,
     ) -> list[dict[str, Any]]:
-        """对一串 (玩家说 → NPC 回) 逐条判分。"""
+        """对一串 (玩家说 → NPC 回) 逐条判分。
+
+        `persona_of(speaker)` 优先于 `persona`：多 NPC 场景里每一句台词
+        属于不同的人，必须拿**说话人自己的**人设卡去判。
+        只有一个 NPC 时调用方传 `persona` 就行。
+        """
         out: list[dict[str, Any]] = []
         for index, pair in enumerate(pairs, 1):
+            block = persona
+            if persona_of is not None:
+                block = persona_of(pair.get("speaker", "")) or persona
             verdicts = self.judge_reply(
-                persona=persona,
+                persona=block,
                 scene=scene,
                 player=pair.get("player", ""),
                 reply=pair.get("reply", ""),
@@ -1013,8 +1022,42 @@ def report_digest(results: list[dict[str, Any]]) -> str:
 JUDGE_RESUME_CRITICAL_FIELDS = ("judge", "rubrics", "max_tokens", "temperature")
 
 
+def prompt_digest(context: dict[str, str]) -> str:
+    """裁判 prompt 的**上下文**指纹（人设块 + 现场块）。
+
+    ## 为什么必须有它 —— 这条是被真实事故逼出来的
+
+    原来的指纹只覆盖两件事：
+      - "裁判怎么判"：模型名 / 标准**名字** / 预算 / 温度
+      - "判的是哪份台词"：`report_digest`
+
+    它**不覆盖我们喂给裁判的上下文**。于是出现了一个静默的破坏路径：
+    改好现场块（比如补上演员表）之后再 `--resume`，新旧两批判决会被
+    拼在一起 —— 而它们是在两套不同的 prompt 下判的，合起来的数字
+    没人能解释。更糟的是它**不会报错**，看起来只是"判完了"。
+
+    实测这次真踩了两个上下文 bug（都是我们的，不是模型的）：
+      1. 现场块漏了演员表 → 32.5% 的「事实一致」判 0 是把同伴名字当编造；
+      2. 人设块只取第一个 NPC → duet 里小舟的「角色口吻」失败率 90%
+         （阿柚 39%），因为它拿的是阿柚的卡。
+    两个 bug 都要求重判，所以指纹必须能识别"上下文变了"。
+
+    `rubrics` 字段只记标准的**名字**，标准**文本**改了它看不出来 ——
+    所以这里把 `rubric_digest()` 也一并算进来。
+    """
+    blob = json.dumps(
+        {"rubric_text": rubric_digest(), "context": context},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def judge_fingerprint(
-    judge: "LLMJudge", results: list[dict[str, Any]]
+    judge: "LLMJudge",
+    results: list[dict[str, Any]],
+    *,
+    prompt_context: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     return {
         "judge": judge.name,
@@ -1022,6 +1065,10 @@ def judge_fingerprint(
         "max_tokens": judge.max_tokens,
         "temperature": JUDGE_TEMPERATURE,
         "report_digest": report_digest(results),
+        # 上下文指纹。没给就留空串 —— 空串和历史检查点里的"没有这个键"
+        # 不相等，所以**加了这一项之后旧检查点一律拒绝恢复**，这是对的：
+        # 旧判决是在没被记录下来的上下文下判的。
+        "prompt_digest": prompt_digest(prompt_context or {}),
     }
 
 
@@ -1039,14 +1086,19 @@ def plan_judge_resume(
 
     recorded = payload.get("fingerprint")
     if isinstance(recorded, dict) and recorded != fingerprint:
+        # 逐字段解释差在哪。**取并集而不是硬编码字段表** —— 硬编码的表
+        # 在新增字段时会漏报，于是出现"拒绝恢复，但后面什么都不列"的消息，
+        # 而一个说不出理由的护栏最后一定会被人绕过。
+        keys = sorted(set(recorded) | set(fingerprint))
         diff = [
             f"{k}: {recorded.get(k)!r} → {fingerprint.get(k)!r}"
-            for k in (*JUDGE_RESUME_CRITICAL_FIELDS, "report_digest")
+            for k in keys
             if recorded.get(k) != fingerprint.get(k)
         ]
+        detail = "；".join(diff) or "（指纹整体不等，但没有单字段差异 —— 请检查指纹结构本身）"
         return {}, (
-            "判分检查点记录的是另一套配置（或另一份台词），拒绝恢复"
-            "（否则报告会把两次判分混成一列）：" + "；".join(diff)
+            "判分检查点记录的是另一套配置（或另一份台词 / 另一套上下文），拒绝恢复"
+            "（否则报告会把两次判分混成一列）：" + detail
         )
 
     usable: dict[str, CaseJudgement] = {}
@@ -1130,8 +1182,18 @@ def judge_report_cases(
                 scenario=scenario_id,
             )
         try:
+            # **人设要按发言者取，不能整条用例用同一张卡。**
+            #
+            # 原来这里是 `persona_of(scenario_id)`，一个场景一张卡 —— 而
+            # 多 NPC 场景（duet）里两个人共用一张卡，第二个 NPC 的台词
+            # 是拿第一个 NPC 的人设去判的。实测代价：
+            #   duet 里 小舟 的「角色口吻」失败率 **90%**（36/40），
+            #   阿柚 是 39% —— 因为小舟在用阿柚的卡（要「嗯——」、要温和调侃）。
+            # 这是**我们的 bug**，不是模型的问题：裁判按它拿到的材料判得没错。
             verdicts = judge.judge_pairs(
-                pairs, persona=persona_of(scenario_id), scene=scene_of(scenario_id)
+                pairs,
+                persona_of=lambda speaker: persona_of(scenario_id, speaker),
+                scene=scene_of(scenario_id),
             )
         except Exception as exc:  # 兜底：判分炸了不能让整批报告作废
             return CaseJudgement(

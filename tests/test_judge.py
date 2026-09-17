@@ -560,7 +560,7 @@ def _run_judge(results, judge, *, concurrency):
     return J.judge_report_cases(
         results,
         judge=judge,
-        persona_of=lambda _sid: "你是阿柚",
+        persona_of=lambda _sid, _spk="": "你是阿柚",
         scene_of=lambda _sid: "你在吧台",
         concurrency=concurrency,
     )
@@ -844,7 +844,7 @@ def test_judge_retries_are_reported_separately_from_calls() -> None:
     _, stats = J.judge_report_cases(
         results,
         judge=judge,
-        persona_of=lambda _s: "你是阿柚",
+        persona_of=lambda _s, _spk="": "你是阿柚",
         scene_of=lambda _s: "你在吧台",
         concurrency=1,
     )
@@ -947,3 +947,191 @@ def test_a_missing_reply_is_still_not_retried() -> None:
     assert "没有台词可判" in verdict.error
     assert llm.attempts == 0, "连模型都不该调用"
     assert judge.retries == 0
+
+
+# --------------------------------------------------------------------------- #
+# 判分的上下文：喂错了材料，裁判会"讲道理地"惩罚正确的行为
+#
+# 这一组是被真实事故逼出来的。两个 bug 都是**我们的**，不是模型的：
+#   1. 现场块漏了演员表 → 32.5% 的「事实一致」判 0 是把同伴名字当编造；
+#   2. 人设块只取第一个 NPC → duet 里小舟的「角色口吻」失败率 90%（阿柚 39%）。
+# 共同点：裁判按它拿到的材料判得没错，是材料错了。
+# 这和本项目早先踩过的"安全子串黑名单把正确的拒绝判成泄露"是同一个病。
+# --------------------------------------------------------------------------- #
+def _duet_scenario() -> dict:
+    from npc_agent.config import load_scenario
+
+    return load_scenario("duet")
+
+
+def test_the_persona_card_follows_the_speaker_not_the_first_npc() -> None:
+    """**这是上面那两个 bug 里更严重的那个。**
+
+    duet 里站着阿柚和小舟，人设完全不同（一个温和调侃带口头禅、
+    一个话少）。原来整条用例只取第一张卡，于是小舟的台词拿阿柚的卡去判 ——
+    实测「角色口吻」失败率 90%，而阿柚自己只有 39%。
+    """
+    from npc_agent.cli import _persona_block
+
+    scenario = _duet_scenario()
+    ayou = _persona_block(scenario, "阿柚")
+    xiaozhou = _persona_block(scenario, "小舟")
+
+    assert ayou and xiaozhou
+    assert ayou != xiaozhou, "两个发言者拿到的卡必须不同"
+    assert "阿柚" in ayou
+    assert "小舟" in xiaozhou
+    assert "小舟" not in ayou, "小舟的卡不该出现在阿柚的判分材料里"
+
+
+def test_the_persona_card_matches_by_actor_id_too() -> None:
+    """转写里 speaker 是显示名，但演员表用的是 id —— 两种都要能匹配上。"""
+    from npc_agent.cli import _persona_block
+
+    scenario = _duet_scenario()
+    assert _persona_block(scenario, "xiaozhou") == _persona_block(scenario, "小舟")
+
+
+def test_an_unknown_speaker_falls_back_instead_of_going_blank() -> None:
+    """认不出来的发言者要退回第一张卡，不能返回空串。
+
+    返回空串会让裁判"没有人设可依"地瞎判 —— 比拿错卡更难发现，
+    因为报告里看不出异常。
+    """
+    from npc_agent.cli import _persona_block
+
+    scenario = _duet_scenario()
+    assert _persona_block(scenario, "查无此人") == _persona_block(scenario, "")
+
+
+def test_the_scene_block_lists_the_cast_and_the_players() -> None:
+    """现场块必须给出**场上有哪些人**。
+
+    不给的后果实测过：209 条 grounded 判 0 里 68 条（32.5%）是把
+    NPC 正常提到同伴名字判成「编造现场不存在的人物」。
+    """
+    from npc_agent.cli import _scene_block
+
+    block = _scene_block(_duet_scenario(), "duet")
+    for who in ("阿柚", "小舟", "阿澈", "小满"):
+        assert who in block, f"现场块里应该有 {who}"
+    assert "不算编造" in block, "要明说提到他们不算编造，否则裁判还是会按字面判"
+
+
+def test_the_scene_block_does_not_leak_what_anyone_said() -> None:
+    """只给名字和身份，**不给**"他当时说了什么"。
+
+    事后判分拿不到当时的对话状态；把静态配置里的东西伪装成"玩家说过"
+    会让裁判判出一个根本不存在的现场。
+    """
+    from npc_agent.cli import _scene_block
+
+    block = _scene_block(_duet_scenario(), "duet")
+    assert "说过" not in block
+    assert "台词" not in block
+
+
+# --------------------------------------------------------------------------- #
+# 上下文变了，检查点就必须作废
+# --------------------------------------------------------------------------- #
+def test_the_prompt_digest_changes_when_the_context_changes() -> None:
+    """指纹要覆盖"我们喂了什么"，否则改好上下文再 --resume 会静默拼接。"""
+    assert J.prompt_digest({"scene:duet": "A"}) != J.prompt_digest({"scene:duet": "B"})
+    assert J.prompt_digest({"scene:duet": "A"}) == J.prompt_digest({"scene:duet": "A"})
+    # 键的顺序不该影响结果
+    assert J.prompt_digest({"a": "1", "b": "2"}) == J.prompt_digest({"b": "2", "a": "1"})
+
+
+def test_the_prompt_digest_covers_the_rubric_text_not_just_its_name() -> None:
+    """`rubrics` 字段只记标准**名字**，改标准**文本**它看不出来。
+
+    这是另一个静默路径：把 rubric 措辞改好、再 --resume，
+    新旧判决混成一列，而它们用的不是同一套标准。
+    """
+    import dataclasses
+
+    before = J.prompt_digest({})
+    original = J.RUBRICS["grounded"]
+    J.RUBRICS["grounded"] = dataclasses.replace(original, pass_when="改过的标准")
+    try:
+        assert J.prompt_digest({}) != before
+    finally:
+        J.RUBRICS["grounded"] = original
+
+
+def test_a_changed_prompt_context_refuses_to_resume() -> None:
+    """**这条是那两个 bug 的护栏。** 上下文变了就必须拒绝恢复。"""
+    judge = J.LLMJudge(ScriptedLLM(['{"score": 1, "reason": "ok"}']), name="m")
+    results = [{"case_id": "c1", "scenario": "duet", "speeches": ["你好"]}]
+
+    old_fp = J.judge_fingerprint(judge, results, prompt_context={"scene:duet": "旧的现场块"})
+    payload = {
+        "fingerprint": old_fp,
+        "total": 1,
+        "done": 1,
+        "judgements": [{"case_id": "c1", "pairs": [
+            {"pair": {"reply": "你好"}, "verdicts": [
+                {"rubric": "grounded", "judged": True, "score": 1.0, "reason": "ok"}]}]}],
+    }
+    # 同上下文 -> 可以复用
+    usable, note = J.plan_judge_resume(payload, old_fp)
+    assert len(usable) == 1, note
+
+    # 补了演员表（上下文变了）-> 必须拒绝，并且说清是哪一项变了
+    new_fp = J.judge_fingerprint(judge, results, prompt_context={"scene:duet": "补了演员表的现场块"})
+    usable, note = J.plan_judge_resume(payload, new_fp)
+    assert usable == {}
+    assert "prompt_digest" in note
+
+
+def test_a_refusal_must_always_name_what_changed() -> None:
+    """**护栏必须说得出理由。**
+
+    原来的解释逻辑硬编码了一张字段表。将来加字段时，那张表会漏，
+    于是出现「拒绝恢复（…）：」后面**什么都没有**的消息 ——
+    而一个说不出理由的护栏，最后一定会被人 `--force` 掉。
+    这里用一个不在任何硬编码表里的字段来钉住：取并集，就一定能列出来。
+    """
+    judge = J.LLMJudge(ScriptedLLM(['{"score": 1, "reason": "ok"}']), name="m")
+    results = [{"case_id": "c1", "scenario": "duet", "speeches": ["你好"]}]
+
+    recorded = J.judge_fingerprint(judge, results, prompt_context={"scene:duet": "x"})
+    payload = {
+        "fingerprint": recorded,
+        "total": 1,
+        "done": 1,
+        "judgements": [{"case_id": "c1", "pairs": [
+            {"pair": {"reply": "你好"}, "verdicts": [
+                {"rubric": "grounded", "judged": True, "score": 1.0, "reason": "ok"}]}]}],
+    }
+
+    # 模拟"将来新增了一个影响结果的字段" —— 它不在 JUDGE_RESUME_CRITICAL_FIELDS 里
+    assert "future_knob" not in J.JUDGE_RESUME_CRITICAL_FIELDS
+    new_fp = dict(recorded, future_knob="开了")
+    usable, note = J.plan_judge_resume(payload, new_fp)
+    assert usable == {}
+    assert "future_knob" in note, f"拒绝了却没说为什么：{note!r}"
+
+    # 反向：老指纹少了新字段（真实场景 —— 加了 prompt_digest 之后，
+    # 旧检查点里根本没有这个键），也必须列出来而不是沉默
+    trimmed = {k: v for k, v in recorded.items() if k != "report_digest"}
+    usable, note = J.plan_judge_resume(payload, dict(trimmed, prompt_digest="新的"))
+    assert usable == {}
+    assert "prompt_digest" in note and "report_digest" in note, note
+
+
+def test_judge_pairs_asks_for_the_persona_of_each_speaker() -> None:
+    """`judge_pairs` 要按发言者取卡，而不是整串用一张。"""
+    asked: list[str] = []
+
+    def persona_for(speaker: str) -> str:
+        asked.append(speaker)
+        return f"你是{speaker}"
+
+    judge = J.LLMJudge(ScriptedLLM(lambda _p: '{"score": 1, "reason": "ok"}'))
+    pairs = [
+        {"player": "在吗", "speaker": "阿柚", "reply": "嗯——在。"},
+        {"player": "在吗", "speaker": "小舟", "reply": "嗯。"},
+    ]
+    judge.judge_pairs(pairs, persona_of=persona_for, scene="")
+    assert asked == ["阿柚", "小舟"]
