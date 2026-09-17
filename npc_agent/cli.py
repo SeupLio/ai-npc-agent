@@ -1006,6 +1006,55 @@ def cmd_worlds(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report_batch(args: argparse.Namespace) -> int:
+    """把跑批 JSON（+ 可选的裁判 JSON / 基线 JSON）渲染成一张自包含 HTML。
+
+    单独做成一个命令而不是塞进 `eval --html`，是因为**裁判是异步的**：
+    跑批要先出结果，判分再基于结果跑，两步之间可能隔着几小时甚至一天。
+    如果 HTML 只能在跑批那一刻生成，那"加上裁判结果"就要求把跑批重跑一遍。
+    """
+    import json as _json
+
+    from rich.console import Console
+
+    from .eval.batch_report import render_batch_html, trust_summary
+
+    console = Console()
+    eval_path = Path(args.eval_json)
+    if not eval_path.exists():
+        console.print(f"[red]找不到跑批报告：{eval_path}[/red]")
+        return 2
+    payload: dict[str, object] = {
+        "eval": _json.loads(eval_path.read_text(encoding="utf-8"))
+    }
+
+    if args.judge_json:
+        judge_path = Path(args.judge_json)
+        if not judge_path.exists():
+            console.print(f"[red]找不到裁判报告：{judge_path}[/red]")
+            return 2
+        payload["judge"] = _json.loads(judge_path.read_text(encoding="utf-8"))
+
+    if args.baseline_json:
+        base_path = Path(args.baseline_json)
+        if not base_path.exists():
+            console.print(f"[red]找不到基线报告：{base_path}[/red]")
+            return 2
+        payload["baseline"] = _json.loads(base_path.read_text(encoding="utf-8"))
+
+    page = Path(args.html)
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(
+        render_batch_html(payload, args.title, args.subtitle), encoding="utf-8"
+    )
+
+    trust = trust_summary(payload["eval"])  # type: ignore[arg-type]
+    style = "green" if trust["trustworthy"] else "yellow"
+    console.print(f"[{style}]{trust['verdict']}[/{style}]")
+    console.print(f"HTML 报告已写入 {page}")
+    return 0
+
+
 def cmd_tools(args: argparse.Namespace) -> int:
     from rich.console import Console
     from rich.table import Table
@@ -1195,6 +1244,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_judge.add_argument("--progress", action="store_true", help="逐条打印判分进度")
     _add_llm_args(p_judge)
     p_judge.set_defaults(func=cmd_judge)
+
+    p_rb = sub.add_parser(
+        "report-batch", help="把一次跑批（可带裁判结果）渲染成自包含 HTML 报告"
+    )
+    p_rb.add_argument("--eval", dest="eval_json", required=True,
+                      help="跑批报告 JSON（eval --json 的产物）")
+    p_rb.add_argument("--judge", dest="judge_json", default="",
+                      help="裁判结果 JSON（judge --json 的产物），可选")
+    p_rb.add_argument("--baseline", dest="baseline_json", default="",
+                      help="基线报告 JSON（通常是离线跑批），用于算差值，可选")
+    p_rb.add_argument("--html", default="reports/batch.html", help="HTML 输出路径")
+    p_rb.add_argument("--title", default="真实模型跑批报告")
+    p_rb.add_argument("--subtitle", default="")
+    p_rb.set_defaults(func=cmd_report_batch)
 
     p_tools = sub.add_parser("tools", help="列出当前场景的工具清单")
     p_tools.add_argument("--scenario", default="tutorial", choices=list_scenarios())
