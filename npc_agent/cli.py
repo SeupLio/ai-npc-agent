@@ -764,7 +764,13 @@ def cmd_judge(args: argparse.Namespace) -> int:
     if getattr(args, "api_key", None):
         cfg.api_key = args.api_key
 
-    llm = build_llm(cfg.llm_provider, model=cfg.model, base_url=cfg.base_url, api_key=cfg.api_key)
+    llm = build_llm(
+        cfg.llm_provider,
+        model=cfg.model,
+        base_url=cfg.base_url,
+        api_key=cfg.api_key,
+        timeout=getattr(args, "timeout", 0.0) or 0.0,
+    )
     rubrics = [r.strip() for r in (args.rubrics or "").split(",") if r.strip()] or list(DEFAULT_RUBRICS)
     unknown = [r for r in rubrics if r not in RUBRICS]
     if unknown:
@@ -1295,6 +1301,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"裁判的输出预算（默认 {JUDGE_MAX_TOKENS}）。推理模型要给足，否则思维链会把预算吃光、返回空内容",
     )
     p_judge.add_argument("--progress", action="store_true", help="逐条打印判分进度")
+    p_judge.add_argument(
+        "--timeout",
+        type=float,
+        default=0.0,
+        help="单次调用的读超时（秒）。0 = 用默认 60s。"
+             "判分的 prompt 比台词长得多，实测有约 7% 的调用会超过 60s —— "
+             "那会变成一条永久缺失的判决，所以长跑判分建议给 180",
+    )
     p_judge.add_argument(
         "--checkpoint",
         default="",

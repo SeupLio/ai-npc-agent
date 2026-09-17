@@ -1184,7 +1184,7 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 510 个测试
+- [x] 六维评测 harness + 513 个测试
 - [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
 - [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [x] **多 NPC 协作**：Cast 导演层 + 双 NPC 场景 + 发言调度评测维度
@@ -1206,7 +1206,7 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 ```bash
 python -m pytest tests -q
-# 510 passed
+# 513 passed
 ```
 
 覆盖：环境护栏、记忆检索与巩固、**五种检索策略的语义差异**、多人发言权判定、

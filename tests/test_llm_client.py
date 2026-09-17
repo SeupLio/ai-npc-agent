@@ -142,3 +142,52 @@ def test_malformed_body_raises(monkeypatch):
     with pytest.raises(LLMUnavailable) as excinfo:
         llm.complete([{"role": "user", "content": "hi"}])
     assert "响应结构异常" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------- #
+# 读超时的透传
+#
+# 判分的 prompt 比台词长得多，实测约 7% 的调用会超过默认的 60s ——
+# 而超时会变成一条**永久缺失的判决**（`Verdict.unjudged` 是合法返回值，
+# 不重试、不报错）。所以超时必须可调。
+# --------------------------------------------------------------------------- #
+
+
+def test_build_llm_uses_the_client_default_timeout_when_unspecified():
+    """不传就保持原样 —— 默认值只写在 `OpenAICompatLLM` 一处。
+
+    两处各写一遍默认值，改一处漏一处，就会出现"命令行说 60s、
+    实际跑的是别的数"这种查不动的问题。
+    """
+    from npc_agent.llm import build_llm
+
+    assert build_llm("openai-compat", model="m").timeout == 60.0
+    # 显式给 0 也算"没给"，不能变成 0 秒超时（那等于每次都失败）
+    assert build_llm("openai-compat", model="m", timeout=0).timeout == 60.0
+    assert build_llm("openai-compat", model="m", timeout=None).timeout == 60.0
+
+
+def test_build_llm_passes_an_explicit_timeout_through():
+    from npc_agent.llm import build_llm
+
+    assert build_llm("openai-compat", model="m", timeout=180).timeout == 180.0
+    assert build_llm("openai-compat", model="m", timeout="180").timeout == 180.0
+
+
+def test_a_longer_timeout_is_actually_handed_to_urlopen(monkeypatch):
+    """光把字段存下来不算数 —— 要真的传到 `urlopen` 上。"""
+    seen: dict = {}
+
+    def fake_urlopen(request, timeout=None):  # noqa: ANN001
+        seen["timeout"] = timeout
+        return _FakeResponse(
+            {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    from npc_agent.llm import build_llm
+
+    llm = build_llm("openai-compat", model="m", api_key="k", timeout=180)
+    llm.complete([{"role": "user", "content": "hi"}])
+    assert seen["timeout"] == 180.0
+
