@@ -685,3 +685,129 @@ def test_responsive_rubric_defines_ignorance_in_both_directions() -> None:
     assert "算通过" in rubric.pass_when, "没有说清楚「诚实的不知道」什么时候合格"
     assert "算不通过" in rubric.fail_when, "没有说清楚「躲问题的不知道」什么时候不合格"
     assert "人设" in rubric.pass_when and "现场" in rubric.fail_when
+
+
+# --------------------------------------------------------------------------- #
+# 调用失败的重试
+#
+# 判分是几小时的长作业，而模型客户端有 60s 读超时。一次抖动就会永久丢掉
+# 一条判决 —— 因为 `judge()` 把异常转成 `Verdict.unjudged` **返回**，
+# 而"未判"是合法返回值，不重试、不报错、不会有人发现。
+# --------------------------------------------------------------------------- #
+
+
+class _FlakyLLM:
+    """前 `fail_times` 次调用抛异常，之后正常返回。"""
+
+    name = "flaky"
+
+    def __init__(self, fail_times: int, payload: str = '{"score": 1, "reason": "还行"}'):
+        self.remaining = fail_times
+        self.payload = payload
+        self.attempts = 0
+        self.exc = TimeoutError("The read operation timed out")
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def complete(self, messages, **kwargs):  # noqa: ANN001, ANN003
+        self.attempts += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise self.exc
+        return self.payload
+
+
+def _no_sleep(_seconds: float) -> None:
+    """测试里不要真的等 3 秒、6 秒。"""
+
+
+def test_a_transient_timeout_is_retried_instead_of_losing_the_verdict() -> None:
+    """一次 60s 读超时不该变成一条永久缺失的判决。"""
+    llm = _FlakyLLM(fail_times=1)
+    judge = J.LLMJudge(llm, sleep=_no_sleep)
+    verdict = judge.judge("in_character", reply="好嘞，稍等")
+
+    assert verdict.judged is True, "重试之后应该拿到判决，而不是记成未判"
+    assert verdict.score == 1.0
+    assert llm.attempts == 2
+    assert judge.retries == 1
+    assert judge.calls == 1, "只有成功那次算一次调用"
+
+
+def test_retrying_gives_up_eventually_and_reports_the_real_error() -> None:
+    """一直失败要放弃，而且错误信息要留真话 —— 不能变成"没有台词可判"。"""
+    llm = _FlakyLLM(fail_times=99)
+    judge = J.LLMJudge(llm, max_retries=2, sleep=_no_sleep)
+    verdict = judge.judge("in_character", reply="好嘞，稍等")
+
+    assert verdict.judged is False
+    assert "TimeoutError" in verdict.error, "要把真正的失败原因带出来"
+    assert llm.attempts == 3, "1 次 + 2 次重试"
+    assert judge.retries == 2
+
+
+def test_the_sleep_between_retries_grows_exponentially() -> None:
+    """退避要指数增长，否则端点抖一下会被我们连打三拳。"""
+    waits: list[float] = []
+    judge = J.LLMJudge(_FlakyLLM(fail_times=99), backoff=3.0, sleep=waits.append)
+    judge.judge("in_character", reply="好嘞，稍等")
+    assert waits == [3.0, 6.0]
+
+
+def test_a_missing_reply_is_not_retried() -> None:
+    """**"没有台词可判"不该重试。**
+
+    它是确定性的：台词是空的，重试一万次也还是空的。
+    把"重试"和"没判"混在一起，会让一份几千次调用的作业白烧一大截。
+    """
+    llm = _FlakyLLM(fail_times=0)
+    judge = J.LLMJudge(llm, sleep=_no_sleep)
+    verdict = judge.judge("in_character", reply="   ")
+
+    assert verdict.judged is False
+    assert llm.attempts == 0, "根本不该发起调用，更不该重试"
+    assert "没有台词可判" in verdict.error
+
+
+def test_an_unavailable_model_is_not_retried() -> None:
+    """模型压根没配（NullLLM）也是确定性的，重试没意义。"""
+    judge = J.LLMJudge(NullLLM(), sleep=_no_sleep)
+    verdict = judge.judge("in_character", reply="好嘞，稍等")
+
+    assert verdict.judged is False
+    assert judge.retries == 0
+    assert judge.calls == 0
+
+
+def test_a_bad_output_format_is_not_retried() -> None:
+    """解析失败不重试。
+
+    它通常是确定性的 —— 思维链把预算吃光就会稳定地返回空内容，
+    重试只是白烧钱。真正该做的是把预算调够（见
+    `test_judge_output_budget_is_sized_for_a_reasoning_models_cot`）。
+    """
+    llm = _FlakyLLM(fail_times=0, payload="我觉得这句话挺好的，给 1 分吧。")
+    judge = J.LLMJudge(llm, sleep=_no_sleep)
+    verdict = judge.judge("in_character", reply="好嘞，稍等")
+
+    assert verdict.judged is False
+    assert llm.attempts == 1, "解析失败只调一次，不重试"
+    assert judge.retries == 0
+
+
+def test_judge_retries_are_reported_separately_from_calls() -> None:
+    """重试次数要出现在统计里：它回答"这次判分有多不稳"。"""
+    judge = J.LLMJudge(_FlakyLLM(fail_times=1), sleep=_no_sleep)
+    results = _fake_results(2)
+    _, stats = J.judge_report_cases(
+        results,
+        judge=judge,
+        persona_of=lambda _s: "你是阿柚",
+        scene_of=lambda _s: "你在吧台",
+        concurrency=1,
+    )
+    assert stats["judge_retries"] >= 1
+    assert "judge_retries" in stats
+

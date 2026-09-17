@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -49,6 +50,18 @@ CALIBRATION_FILE = Path(__file__).resolve().parent / "calibration.jsonl"
 
 #: 裁判的默认温度。判分要的是稳定，不是创造力。
 JUDGE_TEMPERATURE = 0.0
+
+#: 判分调用失败时的重试次数与退避基数。
+#:
+#: 判分是**几小时**的长作业（228 条 ≈ 2900 次调用），而模型客户端有 60s
+#: 读超时 —— 一次网络抖动就会永久丢掉一条判决：`judge()` 把异常转成
+#: `Verdict.unjudged` 返回，而"未判"是**合法返回值**，不会重试、不会报错。
+#: 跑批那边早就有重试了，判分一直漏着。
+#:
+#: 只对**调用失败**重试，不对解析失败重试：解析失败通常是确定性的
+#: （思维链把预算吃光 → 空内容），重试只是白烧钱。
+JUDGE_MAX_RETRIES = 2
+JUDGE_BACKOFF = 3.0
 
 
 # --------------------------------------------------------------------------- #
@@ -202,12 +215,22 @@ class LLMJudge:
         *,
         max_tokens: int = JUDGE_MAX_TOKENS,
         name: str = "",
+        max_retries: int = JUDGE_MAX_RETRIES,
+        backoff: float = JUDGE_BACKOFF,
+        sleep: Any = None,
     ) -> None:
         self.llm = llm
         self.rubrics = list(rubrics)
         self.max_tokens = max_tokens
         self.name = name or getattr(llm, "name", "judge")
+        self.max_retries = max(0, int(max_retries))
+        self.backoff = backoff
+        # 注入 sleep 是为了让测试不用真的等 3 秒、6 秒
+        self._sleep = sleep or time.sleep
         self.calls = 0
+        #: 重试次数。单独计数，因为它回答的是"这次判分有多不稳"——
+        #: 和 `calls`（花了多少资源）是两个问题。
+        self.retries = 0
 
     @property
     def available(self) -> bool:
@@ -234,19 +257,30 @@ class LLMJudge:
             return Verdict.unjudged(rubric_key, "没有台词可判")
 
         prompt = self._build_prompt(rubric, persona, scene, player, reply)
-        try:
-            raw = self.llm.complete(
-                [{"role": "user", "content": prompt}],
-                temperature=JUDGE_TEMPERATURE,
-                max_tokens=self.max_tokens,
-            )
-        except LLMUnavailable as exc:
-            return Verdict.unjudged(rubric_key, f"模型调用失败：{exc}")
-        except Exception as exc:  # 网络/鉴权/超时都算"没判"，不该让跑批崩掉
-            return Verdict.unjudged(rubric_key, f"模型调用异常：{type(exc).__name__}: {exc}")
 
-        self.calls += 1
-        return self._parse(rubric_key, raw)
+        # 调用失败要重试。**注意别把"重试"和"没判"混起来**：
+        # `Verdict.unjudged` 是合法返回值（比如"没有台词可判"），
+        # 那种情况**不该重试** —— 重试一万次结果也一样。
+        # 只有"这次调用本身失败了"才值得再试一次。
+        last_error = ""
+        for attempt in range(self.max_retries + 1):
+            try:
+                raw = self.llm.complete(
+                    [{"role": "user", "content": prompt}],
+                    temperature=JUDGE_TEMPERATURE,
+                    max_tokens=self.max_tokens,
+                )
+            except LLMUnavailable as exc:
+                last_error = f"模型调用失败：{exc}"
+            except Exception as exc:  # 网络/鉴权/超时都算"没判"，不该让跑批崩掉
+                last_error = f"模型调用异常：{type(exc).__name__}: {exc}"
+            else:
+                self.calls += 1
+                return self._parse(rubric_key, raw)
+            if attempt < self.max_retries:
+                self.retries += 1
+                self._sleep(self.backoff * (2 ** attempt))
+        return Verdict.unjudged(rubric_key, last_error)
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -912,6 +946,9 @@ def judge_report_cases(
     stats = judge_coverage(judgements, concurrency=concurrency)
     stats["reused"] = reused
     stats["executed"] = len(pending)
+    # 重试次数要报出来：它回答"这次判分有多不稳"，
+    # 和 `unjudged`（最后真没判成的）是两个问题。
+    stats["judge_retries"] = judge.retries
     return judgements, stats
 
 
