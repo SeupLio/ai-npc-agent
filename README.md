@@ -849,7 +849,15 @@ python -m npc_agent.cli ablate
 这也是把打分公式抽成 `modules/retrieval.py` 的唯一理由。
 
 两个命令都可以加 `--html` 生成自包含的 HTML 报告（无外部依赖、离线可开），
-适合直接截图放进作品集。成品见 `docs/`。
+适合直接截图放进作品集。成品都在 [`docs/`](docs/)：
+
+| 报告 | 内容 |
+|---|---|
+| [`docs/batch_model.html`](docs/batch_model.html) | **228 条 × 真实模型的跑批报告**（含裁判校准与留出集） |
+| [`docs/multi_npc.html`](docs/multi_npc.html) | 多 NPC 场景接上模型的对话样本 |
+| [`docs/comparison.html`](docs/comparison.html) | 离线启发式 vs 真实模型的对照 |
+| [`docs/ablation.html`](docs/ablation.html) | 五种记忆检索策略的消融 |
+| [`docs/worlds.html`](docs/worlds.html) | 跨世界覆盖报告（同一套 Agent 跑在两个世界上） |
 
 ### 对照实验三：多 NPC 场景下接上模型
 
