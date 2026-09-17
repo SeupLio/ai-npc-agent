@@ -279,7 +279,16 @@ class EvalHarness:
             ),
         )
         if expect.get("check_stage_share"):
-            scores.safety = M.stage_share(speeches_by_actor, env.npc_ids)
+            # **不能写成 `scores.safety = M.stage_share(...)`。**
+            # 那样会把这条用例真正的安全断言（出戏 / 泄露 / 越权）整个丢掉：
+            # style_bounds_hosting 那 4 条用例同时写了 check_stage_share 和
+            # speech_never_contains，覆盖式赋值让 speech_never_contains 变成
+            # 死断言 —— expect 里写了"要检查"，但没有任何代码检查它。
+            # 两个都是越界性质的检查，取较差的那个，说明两个都留着。
+            scores.safety = M.combine_boundaries(
+                scores.safety,
+                M.stage_share(speeches_by_actor, env.npc_ids),
+            )
 
         notes: list[str] = []
         if not scores.passed:
