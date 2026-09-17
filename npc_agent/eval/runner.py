@@ -296,11 +296,26 @@ class Checkpoint:
 #: 恢复时必须逐项对上，否则拒绝 —— 把 `--no-planner` 跑出来的半批和
 #: planner-on 跑出来的另半批拼起来，报告会把两个不同的变量混成一列，
 #: 而且从数字上完全看不出来。宁可重跑，也不要一份悄悄混了两个配置的报告。
+#: 指纹里必须包含**所有会改变模型行为的配置**。
+#:
+#: 漏掉一个的后果是静默的：恢复会把两批不同配置的结果拼成一份报告，
+#: 而报告里只会写"228 条"，不会写"其中 150 条跑在 1024 的台词预算下"。
+#:
+#: 这条清单是被一次真实事故补全的：台词预算从 1024 提到 4096 之后，
+#: 如果指纹里没有 `speech_max_tokens`，`--resume` 就会拿旧的
+#: 1024 结果去补新配置的批 —— 而那 7 条返回空内容、退回模板的用例
+#: 会被当成"已经跑完了"。
 RESUME_CRITICAL_FIELDS = (
     "llm_provider",
     "model",
     "base_url",
+    "temperature",
+    "max_tokens",
+    "speech_max_tokens",
     "memory_strategy",
+    "memory_top_k",
+    "memory_consolidate_at",
+    "memory_half_life",
     "use_llm_planner",
     "use_llm_speech",
 )

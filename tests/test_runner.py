@@ -813,6 +813,63 @@ def test_resume_refuses_when_the_config_changed() -> None:
     assert "concurrency" not in R.RESUME_CRITICAL_FIELDS
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("temperature", 0.0),
+        ("speech_max_tokens", 1024),
+        ("max_tokens", 1024),
+        ("memory_top_k", 2),
+        ("memory_consolidate_at", 8),
+        ("memory_half_life", 5.0),
+        ("memory_strategy", "none"),
+        ("model", "some-other-model"),
+        ("base_url", "https://elsewhere.example/v1"),
+    ],
+)
+def test_every_field_that_changes_model_behaviour_invalidates_resume(
+    field: str, value: object
+) -> None:
+    """指纹必须覆盖**所有**会改变模型行为的配置，不只是模型名。
+
+    这条清单是被一次真实事故补全的：台词预算从 1024 提到 4096 之后，
+    指纹里如果没有 `speech_max_tokens`，`--resume` 就会拿旧的 1024 结果
+    去补新配置的批 —— 而那 7 条返回空内容、退回模板台词的用例会被当成
+    "已经跑完了"。报告里只会写"228 条"，不会写"其中 150 条跑在 1024 下"。
+
+    参数化而不是写九个函数：漏掉一个字段就是这条测试的全部意义，
+    所以每个字段都要有自己的一条。
+    """
+    config_a = RuntimeConfig()
+    config_b = RuntimeConfig()
+    setattr(config_b, field, value)
+
+    done, _ = _run(_cases(1), concurrency=1, factory=_factory())
+    payload = {
+        "config": R.config_fingerprint(config_a),
+        "runs": [r.to_dict(include_result=True) for r in done],
+    }
+
+    usable, why = R.plan_resume(payload, config_b)
+    assert usable == {}, f"{field} 变了却仍然复用了结果"
+    assert field in why, f"{field} 对不上但说明里没写：{why}"
+
+
+def test_resume_fingerprint_covers_the_whole_result_affecting_surface() -> None:
+    """反向守卫：指纹里的字段必须真的存在于 RuntimeConfig 上。
+
+    写错一个字段名（比如 `speech_max_token` 少个 s）不会报错 ——
+    `config_fingerprint` 用的是 `getattr(config, field, None)`，
+    取不到就是 `None`，两侧都是 `None`，于是永远相等、永远复用。
+    这正是"静默失效"的形状，所以拿 `dataclasses.fields` 对一遍。
+    """
+    import dataclasses
+
+    known = {f.name for f in dataclasses.fields(RuntimeConfig)}
+    unknown = [f for f in R.RESUME_CRITICAL_FIELDS if f not in known]
+    assert not unknown, f"指纹里有 RuntimeConfig 上不存在的字段：{unknown}"
+
+
 def test_resume_skips_cases_that_did_not_finish() -> None:
     """上次没跑完的用例（基础设施故障）必须重跑，不能当成"已完成"。
 

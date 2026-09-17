@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from npc_agent.config import RuntimeConfig
 from npc_agent.llm.base import LLMUnavailable
 from npc_agent.llm.openai_compat import OpenAICompatLLM
 
@@ -83,6 +84,45 @@ def test_length_with_content_is_not_silently_accepted(monkeypatch):
     llm = _client(monkeypatch, _body("这是一句看起来完整的话。", "length"))
     with pytest.raises(LLMUnavailable):
         llm.complete([{"role": "user", "content": "hi"}])
+
+
+#: 实测：kimi-k2.7-code 在**台词**调用里的思维链长度（字符）。
+#: 来源是 228 条真实跑批里的 7 条失败记录 —— 客户端在
+#: `finish_reason=length` 且内容为空时，会把思维链长度写进错误信息。
+OBSERVED_SPEECH_COT_CHARS = (3394, 3526, 3753, 3773, 3840, 3905)
+
+
+def test_the_speech_budget_is_sized_for_a_reasoning_models_cot() -> None:
+    """台词的预算必须容得下思维链 + 正式回答。
+
+    这条测试锁的是一个**实测数字**，不是审美。台词预算给 1024 时，
+    150 条里 7 条返回空内容 → 框架退回模板台词 → 那 7 条的分数
+    衡量的就不是模型了，而报告里只会显示"通过率 95%"。
+
+    下限直接跟着观测到的思维链长度走，而不是拍一个好看的整数 ——
+    这样下次有人想把预算调小，测试会指出它是拿什么换来的。
+    """
+    longest = max(OBSERVED_SPEECH_COT_CHARS)
+    budget = RuntimeConfig().speech_max_tokens
+    assert budget >= longest, (
+        f"台词预算 {budget} 小于实测最长思维链 {longest} 字："
+        "推理模型会把预算吃光、返回空内容，用例静默退回模板台词"
+    )
+    assert budget >= 4096, (
+        "4096 是同端点裁判能正常处理 4043 字思维链的实测值，"
+        "台词调用没有理由给得比它更紧"
+    )
+
+
+def test_the_planner_budget_is_not_smaller_than_the_speech_budget() -> None:
+    """规划和台词是两次独立调用，各吃各的预算。
+
+    规划的思维链不会比台词短（它要想完整个计划），所以规划预算
+    没有理由比台词预算小 —— 真小了就会出现"台词正常、规划静默退回启发式"
+    这种最难查的组合。
+    """
+    config = RuntimeConfig()
+    assert config.max_tokens >= config.speech_max_tokens
 
 
 def test_available_requires_model(monkeypatch):

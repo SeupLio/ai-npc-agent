@@ -642,21 +642,33 @@ def test_unjudged_verdicts_are_counted_but_never_scored() -> None:
     assert "没有用例" not in stats["verdict"]
 
 
-def test_judge_output_budget_is_far_larger_than_the_speech_budget() -> None:
-    """裁判的输出预算必须远大于台词预算 —— 这是实测踩出来的坑。
+def test_judge_output_budget_is_sized_for_a_reasoning_models_cot() -> None:
+    """裁判的输出预算必须容得下思维链 —— 这是实测踩出来的坑。
 
-    拿 `speech_max_tokens`（1024）去跑裁判，校准集里出现了一条**空内容**：
-    `finish_reason=length`，模型是推理模型，光思维链就 4043 字，
+    拿 `speech_max_tokens`（当时是 1024）去跑裁判，校准集里出现了一条
+    **空内容**：`finish_reason=length`，模型是推理模型，光思维链就 4043 字，
     预算被 CoT 吃光，正式回答一个字都没剩下。
 
     这个失败特别隐蔽：空内容会被正确判成"未判"而不是 0 分，
     所以报告不报错，只显示"未判 1 条"。但如果三成判决都因为预算不够
     没判成，通过率就建立在少数样本上了 —— 而报告看上去依然正常。
+
+    **曾经这里写的是 `JUDGE_MAX_TOKENS > speech_max_tokens * 2`。**
+    那条断言已经退役：它是个代理指标（"别把台词预算直接拿去跑裁判"），
+    而台词预算后来也被提到 4096 之后，`2×` 就变成了一个
+    和真实约束无关的数字。真实的约束只有一条：
+    **两个预算都必须容得下推理模型的思维链**，而裁判的 prompt 更长
+    （人设 + 现场 + 玩家 + 台词），所以它不能比台词预算小。
     """
     from npc_agent.config import RuntimeConfig
 
-    assert J.JUDGE_MAX_TOKENS >= 2048, "推理模型的思维链需要更大的预算"
-    assert J.JUDGE_MAX_TOKENS > RuntimeConfig().speech_max_tokens * 2
+    speech = RuntimeConfig().speech_max_tokens
+    assert J.JUDGE_MAX_TOKENS >= 4096, (
+        "4096 是同端点能正常处理 4043 字思维链的实测值"
+    )
+    assert J.JUDGE_MAX_TOKENS >= speech, (
+        "裁判的 prompt 比台词长，思维链不会更短，预算不该比台词小"
+    )
 
 
 def test_responsive_rubric_defines_ignorance_in_both_directions() -> None:
