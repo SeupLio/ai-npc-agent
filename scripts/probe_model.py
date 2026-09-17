@@ -18,7 +18,7 @@ import time
 import urllib.request
 import json
 
-BASE_URL = os.environ.get("NPC_AGENT_BASE_URL", "https://ai.ctaigw.cn/v1")
+BASE_URL = os.environ.get("NPC_AGENT_BASE_URL", "")
 API_KEY = os.environ.get("NPC_AGENT_API_KEY", "")
 
 PERSONA_PROMPT = """你叫阿柚，是"星屿咖啡屋"的店员，性格爽朗但话不多。
@@ -48,6 +48,10 @@ def main() -> int:
     ap.add_argument("--max-tokens", type=int, default=2048)
     ap.add_argument("--timeout", type=float, default=120.0)
     args = ap.parse_args()
+
+    if not BASE_URL:
+        print("缺少 NPC_AGENT_BASE_URL（例：https://your-endpoint/v1）", flush=True)
+        return 2
 
     if not API_KEY:
         print("缺少 NPC_AGENT_API_KEY", flush=True)

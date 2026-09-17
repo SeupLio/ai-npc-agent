@@ -920,7 +920,7 @@ python -m npc_agent.cli compare --models kimi-k2.7-code --no-planner \
 python -u -m npc_agent.cli eval --no-planner --concurrency 8 --retries 2 --backoff 3 \
   --progress --checkpoint reports/batch_model_checkpoint.json \
   --json reports/eval_model.json \
-  --provider openai-compat --base-url https://ai.ctaigw.cn/v1 \
+  --provider openai-compat --base-url https://your-endpoint/v1 \
   --api-key "$KEY" --model kimi-k2.7-code
 ```
 
