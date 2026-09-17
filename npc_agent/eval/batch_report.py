@@ -392,7 +392,7 @@ def _calibration_block(judge_payload: dict[str, Any] | None) -> str:
             "</tr>"
         )
     dev = (
-        "<h4>开发集（24 条，被用来调过 rubric）</h4>"
+        f"<h4>开发集（{cal.get('total', 0)} 条，被用来调过 rubric）</h4>"
         "<table><thead><tr><th>评判标准</th><th>样本</th><th>一致率</th>"
         "<th>kappa</th><th>结论</th>"
         "<th>真阳/真阴/假阳/假阴</th></tr></thead>"
@@ -426,7 +426,7 @@ def _calibration_block(judge_payload: dict[str, Any] | None) -> str:
             "</tr>"
         )
     table = (
-        "<h4>留出集（32 条，标签写好时没见过裁判输出）</h4>"
+        f"<h4>留出集（{holdout.get('total', 0)} 条，标签写好时没见过裁判输出）</h4>"
         "<table><thead><tr><th>评判标准</th><th>留出 n</th><th>留出 kappa</th>"
         "<th>开发 kappa</th><th>差值</th><th>结论</th></tr></thead>"
         f"<tbody>{''.join(hrows)}</tbody></table>"

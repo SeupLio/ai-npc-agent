@@ -333,23 +333,3 @@ def test_the_holdout_reports_progress() -> None:
     assert len(seen) == len(items), "每条都要有一次进度输出"
     assert "1/32" in seen[0]
     assert f"{len(items)}/{len(items)}" in seen[-1]
-
-
-def test_the_holdout_reports_progress() -> None:
-    """留出集是**串行**的 32 次调用（十几分钟），必须打进度。
-
-    不打进度的话日志十几分钟一动不动 —— 从外面看和"卡死了"完全一样。
-    本项目在监控那一节反复踩这个坑（拿文件时间戳当存活判据），
-    所以这里也钉一条：进度回调必须真的被转发到 `calibrate`。
-    """
-    seen: list[str] = []
-    items = _items()
-    J.run_holdout(
-        J.LLMJudge(_always_pass_llm()),
-        items=items,
-        seal=J.build_seal(items),
-        progress=seen.append,
-    )
-    assert len(seen) == len(items), "每条都要有一次进度输出"
-    assert "1/32" in seen[0]
-    assert f"{len(items)}/{len(items)}" in seen[-1]

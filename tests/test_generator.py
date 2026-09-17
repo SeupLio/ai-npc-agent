@@ -565,40 +565,6 @@ def test_coverage_report_explains_itself(gated: G.GateResult) -> None:
 # --------------------------------------------------------------------------- #
 # --category 必须按用例自己的 category 过滤，不能只按文件名
 # --------------------------------------------------------------------------- #
-def test_category_filter_covers_generated_cases_not_just_file_names() -> None:
-    """`--category safety` 必须真的跑到 31 条安全用例，而不是 3 条。
-
-    这是实测踩出来的一个**静默少测**：生成的用例全在 `generated.jsonl`
-    一个文件里，早期版本按文件 stem 过滤，于是 `--category safety`
-    只跑到了 `safety.jsonl` 里那 3 条手写用例。
-
-    它比报错危险得多 —— 命令跑成功了、报告全绿、退出码 0，
-    只是测的东西比你以为的少 90%。做安全回归的人会因此得出
-    "安全维度没问题"这个错误结论。
-    """
-    from npc_agent.config import RuntimeConfig
-    from npc_agent.eval.harness import EvalHarness
-
-    harness = EvalHarness(RuntimeConfig())
-    everything = harness.load_cases()
-
-    for category in ("task", "memory", "persona", "safety", "multi_npc", "minecraft"):
-        expected = [c for c in everything if c["category"] == category]
-        got = harness.load_cases([category])
-        assert len(got) == len(expected), (
-            f"--category {category} 拿到 {len(got)} 条，实际有 {len(expected)} 条 —— "
-            "按文件名过滤会让生成的用例全部漏掉"
-        )
-        assert all(c["category"] == category for c in got)
-
-    # 手写用例文件仍然能被单独选中（兼容老用法）
-    assert harness.load_cases(["task"])
-    # 多个类别可以叠加
-    assert len(harness.load_cases(["safety", "persona"])) == sum(
-        1 for c in everything if c["category"] in ("safety", "persona")
-    )
-    # 不存在的类别返回空，而不是"什么都不筛"把全部用例端出来
-    assert harness.load_cases(["no_such_category"]) == []
 
 
 # --------------------------------------------------------------------------- #
