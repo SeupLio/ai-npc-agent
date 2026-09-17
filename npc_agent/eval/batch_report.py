@@ -504,6 +504,8 @@ def _judge_block(judge_payload: dict[str, Any] | None) -> str:
             f'<div class="tile-v">{coverage.get("cases_failed", 0)}</div></div>'
             f'<div class="tile"><div class="tile-k">无对话可判</div>'
             f'<div class="tile-v">{coverage.get("cases_without_dialogue", 0)}</div></div>'
+            f'<div class="tile"><div class="tile-k">判分重试</div>'
+            f'<div class="tile-v">{coverage.get("judge_retries", 0)}</div></div>'
             "</div>"
             f'<div class="tile-note">{_esc(coverage.get("verdict", ""))}</div>'
         )
@@ -512,6 +514,20 @@ def _judge_block(judge_payload: dict[str, Any] | None) -> str:
             coverage_note += (
                 f'<div class="tile-note">其中 {reused} 条是从检查点复用的，'
                 "没有重新调用模型 —— 这些判决来自上一次判分。</div>"
+            )
+        # 解析失败的重试单独报：它不是网络抖动，而是**裁判预算被思维链吃穿**。
+        # 这个数只要不是 0，处置办法就是加预算 / 换模型，和查网络完全不同。
+        parse_retries = int(coverage.get("judge_parse_retries") or 0)
+        if parse_retries:
+            coverage_note += (
+                '<div class="warn">有 '
+                f'<b>{parse_retries}</b> 次重试是因为<b>裁判返回的内容解析不了</b>'
+                "（空内容 / 没有 score 字段）。这类失败通常是**思维链把输出预算吃光**"
+                "（实测出现过 14440 字的思维链，是常规值的 3.5 倍）。"
+                "重试能救回大部分，但根因是预算偏小 —— 下次开跑前把 "
+                "<code>JUDGE_MAX_TOKENS</code> 调大。"
+                "注意：改了预算会作废检查点（它在恢复关键字段里），"
+                "所以这件事要在开跑前决定，不能等跑完一半。</div>"
             )
 
     return (

@@ -745,3 +745,53 @@ def test_the_holdout_block_does_not_invent_a_kappa_for_a_missing_rubric() -> Non
     # in_character 在留出集里有，responsive 在开发集里没有
     assert "—" in page
     assert "0.00" not in page.split("留出集（32 条")[1][:2000]
+
+
+def test_report_flags_judge_parse_retries_as_a_budget_problem() -> None:
+    """解析失败的重试必须单独提示 —— 它的处置办法和网络抖动完全不同。
+
+    "裁判返回的内容解析不了"通常意味着思维链把输出预算吃光了，
+    该做的是加预算/换模型；而调用失败该做的是查网络。
+    两者混在一个"重试 N 次"里，读者会去查错方向。
+    """
+    payload = _judge_with_holdout()
+    payload["coverage"]["judge_retries"] = 5
+    payload["coverage"]["judge_parse_retries"] = 2
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
+    assert "裁判返回的内容解析不了" in page
+    assert "JUDGE_MAX_TOKENS" in page
+    assert "作废检查点" in page
+
+
+def test_report_stays_quiet_when_no_parse_retry_happened() -> None:
+    """没发生过就别报 —— 常驻的警告等于没有警告。"""
+    payload = _judge_with_holdout()
+    payload["coverage"]["judge_retries"] = 3
+    payload["coverage"]["judge_parse_retries"] = 0
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
+    assert "裁判返回的内容解析不了" not in page
+
+
+def test_report_flags_judge_parse_retries_as_a_budget_problem() -> None:
+    """解析失败的重试必须单独提示 —— 它的处置办法和网络抖动完全不同。
+
+    "裁判返回的内容解析不了"通常意味着思维链把输出预算吃光了，
+    该做的是加预算/换模型；而调用失败该做的是查网络。
+    两者混在一个"重试 N 次"里，读者会去查错方向。
+    """
+    payload = _judge_with_holdout()
+    payload["coverage"]["judge_retries"] = 5
+    payload["coverage"]["judge_parse_retries"] = 2
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
+    assert "裁判返回的内容解析不了" in page
+    assert "JUDGE_MAX_TOKENS" in page
+    assert "作废检查点" in page
+
+
+def test_report_stays_quiet_when_no_parse_retry_happened() -> None:
+    """没发生过就别报 —— 常驻的警告等于没有警告。"""
+    payload = _judge_with_holdout()
+    payload["coverage"]["judge_retries"] = 3
+    payload["coverage"]["judge_parse_retries"] = 0
+    page = B.render_batch_html({"eval": _eval_payload(), "judge": payload})
+    assert "裁判返回的内容解析不了" not in page

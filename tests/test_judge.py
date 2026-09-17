@@ -781,20 +781,60 @@ def test_an_unavailable_model_is_not_retried() -> None:
     assert judge.calls == 0
 
 
-def test_a_bad_output_format_is_not_retried() -> None:
-    """解析失败不重试。
+def test_a_bad_output_format_is_retried_because_truncation_is_random() -> None:
+    """解析失败**要**重试 —— 这条推翻了它自己的前身。
 
-    它通常是确定性的 —— 思维链把预算吃光就会稳定地返回空内容，
-    重试只是白烧钱。真正该做的是把预算调够（见
-    `test_judge_output_budget_is_sized_for_a_reasoning_models_cot`）。
+    原来这里叫 `test_a_bad_output_format_is_not_retried`，理由是
+    "它通常是确定性的 —— 思维链把预算吃光就会稳定地返回空内容"。
+    **实测把这个理由推翻了**：长跑里出现过一条思维链 14440 字，
+    是之前实测最长值（4043）的 3.5 倍。思维链长度在不同调用之间波动极大，
+    所以"被预算截断"是**随机事件**，不是这句话的属性 —— 重试大概率能过。
+
+    代价对比：命中率 1/792，重试上限是 2 次额外调用。便宜得多。
+    真正该同时做的仍然是把预算调够（见
+    `test_judge_output_budget_is_sized_for_a_reasoning_models_cot`），
+    但那是**下次开跑前**的事 —— 改了 `max_tokens` 会作废检查点，
+    不能等跑完 35% 才发现。
     """
     llm = _FlakyLLM(fail_times=0, payload="我觉得这句话挺好的，给 1 分吧。")
     judge = J.LLMJudge(llm, sleep=_no_sleep)
     verdict = judge.judge("in_character", reply="好嘞，稍等")
 
+    assert verdict.judged is False, "重试到底仍然解析不了，就该老实记未判"
+    assert llm.attempts == 3, "初次 + 2 次重试"
+    assert judge.parse_retries == 2
+    # 报出来的必须是**解析失败**的原因，不能被重试过程中的其它错误盖掉
+    assert "没有 score 字段" in verdict.error
+
+
+def test_the_original_parse_error_survives_a_later_network_blip() -> None:
+    """重试会把原始原因盖掉 —— 这里钉住"不许盖"。
+
+    第一次返回了没格式的内容（模型答了，但答得没法解析），
+    第二三次撞上网络抖动。如果直接报最后一次的错误，读者会去查网络，
+    而真正的问题是输出格式。**解析失败说明模型回应了，它更接近真相。**
+    """
+    class _ParseThenBoom:
+        name = "parse-then-boom"
+
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        @property
+        def available(self) -> bool:
+            return True
+
+        def complete(self, messages, **kwargs):  # noqa: ANN001, ANN003
+            self.attempts += 1
+            if self.attempts == 1:
+                return "我觉得挺好的。"
+            raise TimeoutError("The read operation timed out")
+
+    judge = J.LLMJudge(_ParseThenBoom(), sleep=_no_sleep)
+    verdict = judge.judge("in_character", reply="好嘞，稍等")
     assert verdict.judged is False
-    assert llm.attempts == 1, "解析失败只调一次，不重试"
-    assert judge.retries == 0
+    assert "没有 score 字段" in verdict.error
+    assert "timed out" not in verdict.error
 
 
 def test_judge_retries_are_reported_separately_from_calls() -> None:
@@ -811,3 +851,99 @@ def test_judge_retries_are_reported_separately_from_calls() -> None:
     assert stats["judge_retries"] >= 1
     assert "judge_retries" in stats
 
+
+
+# --------------------------------------------------------------------------- #
+# 解析失败也要重试：思维链长度是随机的，所以"被预算截断"不是这句话的属性
+# --------------------------------------------------------------------------- #
+class _ParseThenOK:
+    """前 N 次返回**解析不了**的内容，之后正常返回。
+
+    模拟的正是实测遇到的那个故障：推理模型的思维链长度在不同调用之间
+    波动极大（实测 4043 → 14440 字），偶尔会把预算吃光 → 空内容。
+    """
+
+    name = "parse-flaky"
+
+    def __init__(self, bad_times: int, bad: str = "", payload: str = '{"score": 1, "reason": "还行"}'):
+        self.remaining = bad_times
+        self.bad = bad
+        self.payload = payload
+        self.attempts = 0
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def complete(self, messages, **kwargs):  # noqa: ANN001, ANN003
+        self.attempts += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            return self.bad
+        return self.payload
+
+
+def test_an_empty_response_is_retried_not_accepted_as_unjudged() -> None:
+    """**这条推翻了代码里原本的假设。**
+
+    原来的注释写着"解析失败通常是确定性的（思维链把预算吃光 → 空内容），
+    重试只是白烧钱"。实测证明它是错的：跑批里出现过一条思维链 14440 字，
+    是之前实测最长值（4043）的 3.5 倍。思维链长度是**随机**的，
+    所以"被预算截断"是随机事件 —— 重试大概率就能过。
+    """
+    llm = _ParseThenOK(bad_times=1, bad="")   # 第一次空内容
+    judge = J.LLMJudge(llm, sleep=_no_sleep)
+    verdict = judge.judge("grounded", reply="我这儿还有一袋豆子。")
+    assert verdict.judged is True
+    assert verdict.score == 1
+    assert llm.attempts == 2, "应该重试了一次"
+    assert judge.parse_retries == 1
+    assert judge.retries == 1
+
+
+def test_a_response_without_a_score_field_is_retried() -> None:
+    llm = _ParseThenOK(bad_times=1, bad="我觉得这句挺好的，没什么问题。")
+    judge = J.LLMJudge(llm, sleep=_no_sleep)
+    assert judge.judge("responsive", reply="嗯——到十点。").judged is True
+    assert judge.parse_retries == 1
+
+
+def test_retrying_parse_failures_is_bounded_and_still_gives_up() -> None:
+    """重试是有上限的 —— 一直解析不了就要老实记"未判"，不能无限烧钱。"""
+    llm = _ParseThenOK(bad_times=99, bad="")
+    judge = J.LLMJudge(llm, max_retries=2, sleep=_no_sleep)
+    verdict = judge.judge("grounded", reply="我这儿还有一袋豆子。")
+    assert verdict.judged is False
+    assert llm.attempts == 3, "初次 + 2 次重试"
+    assert judge.parse_retries == 2
+
+
+def test_call_failures_and_parse_failures_are_counted_separately() -> None:
+    """两类重试分开计数：只有解析重试才说明"预算被思维链吃穿了"。
+
+    合并成一个 `retries` 就看不出这一点了 —— 而这两件事的处置办法
+    完全不同（一个查网络，一个加预算）。
+    """
+    call_llm = _FlakyLLM(fail_times=1)
+    call_judge = J.LLMJudge(call_llm, sleep=_no_sleep)
+    call_judge.judge("grounded", reply="有豆子。")
+    assert (call_judge.retries, call_judge.parse_retries) == (1, 0)
+
+    parse_judge = J.LLMJudge(_ParseThenOK(bad_times=1), sleep=_no_sleep)
+    parse_judge.judge("grounded", reply="有豆子。")
+    assert (parse_judge.retries, parse_judge.parse_retries) == (1, 1)
+
+
+def test_a_missing_reply_is_still_not_retried() -> None:
+    """没有台词可判 = 真确定性，**不能**重试。
+
+    它和"解析失败"长得像（都是 unjudged），但性质完全不同：
+    这句台词本来就是空的，重试一万次还是空的。
+    """
+    llm = _ParseThenOK(bad_times=0)
+    judge = J.LLMJudge(llm, sleep=_no_sleep)
+    verdict = judge.judge("grounded", reply="   ")
+    assert verdict.judged is False
+    assert "没有台词可判" in verdict.error
+    assert llm.attempts == 0, "连模型都不该调用"
+    assert judge.retries == 0

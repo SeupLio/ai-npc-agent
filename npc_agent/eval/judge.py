@@ -242,6 +242,11 @@ class LLMJudge:
         #: 重试次数。单独计数，因为它回答的是"这次判分有多不稳"——
         #: 和 `calls`（花了多少资源）是两个问题。
         self.retries = 0
+        #: 其中因**解析失败**（空内容 / 没有 score 字段）而重试的次数。
+        #: 单独拆出来是因为它对应一个具体故障：**思维链把预算吃光**。
+        #: 这个数只要不是 0，就说明裁判预算该加或者该换更稳的模型 ——
+        #: 合并进 `retries` 就看不出这一点了。
+        self.parse_retries = 0
 
     @property
     def available(self) -> bool:
@@ -269,11 +274,28 @@ class LLMJudge:
 
         prompt = self._build_prompt(rubric, persona, scene, player, reply)
 
-        # 调用失败要重试。**注意别把"重试"和"没判"混起来**：
-        # `Verdict.unjudged` 是合法返回值（比如"没有台词可判"），
-        # 那种情况**不该重试** —— 重试一万次结果也一样。
-        # 只有"这次调用本身失败了"才值得再试一次。
+        # 两种情况都要重试，**但原因不同，所以要分开计数**：
+        #
+        #   调用失败（超时/连接断开）—— 显然是瞬时的，早就该重试。
+        #   解析失败（空内容 / 没有 score 字段）—— 这个曾经被判为"确定性失败，
+        #       重试只是白烧钱"，**实测证明那个判断是错的**：
+        #       长跑里出现过一条思维链 **14440 字**，是之前实测最长值（4043）的
+        #       3.5 倍，预算被吃光 → 返回空内容。思维链长度在不同调用之间
+        #       波动极大，所以"被预算截断"是**随机事件**，不是这句话的属性。
+        #       实测代价：跑批里 1/792 条命中，而重试的成本上限是
+        #       0.25% × 2 次额外调用 —— 便宜得多。
+        #
+        # 不重试的只有一种：进来之前就返回的那些（模型不可用 / 没有台词可判）。
+        # 它们是真的确定性，重试一万次结果一样。
         last_error = ""
+        #: 只要**任何一次**尝试是解析失败，就优先报它。
+        #:
+        #: 为什么不能直接报最后一次的错误：重试会把原始原因盖掉。
+        #: 比如模型第一次返回了"没有 score 字段"（模型答了，但格式不对），
+        #: 第二三次恰好撞上网络抖动 —— 最后报出来的是"连接断开"，
+        #: 而真正的问题是输出格式。解析失败说明**模型回应了**，
+        #: 它比"连不上"更接近真相，所以优先。
+        parse_error = ""
         for attempt in range(self.max_retries + 1):
             try:
                 raw = self.llm.complete(
@@ -283,15 +305,25 @@ class LLMJudge:
                 )
             except LLMUnavailable as exc:
                 last_error = f"模型调用失败：{exc}"
+                kind = "call"
             except Exception as exc:  # 网络/鉴权/超时都算"没判"，不该让跑批崩掉
                 last_error = f"模型调用异常：{type(exc).__name__}: {exc}"
+                kind = "call"
             else:
                 self.calls += 1
-                return self._parse(rubric_key, raw)
+                verdict = self._parse(rubric_key, raw)
+                if verdict.judged:
+                    return verdict
+                # 解析失败：记下原因，走下一轮
+                last_error = verdict.error or "解析失败"
+                parse_error = last_error
+                kind = "parse"
             if attempt < self.max_retries:
                 self.retries += 1
+                if kind == "parse":
+                    self.parse_retries += 1
                 self._sleep(self.backoff * (2 ** attempt))
-        return Verdict.unjudged(rubric_key, last_error)
+        return Verdict.unjudged(rubric_key, parse_error or last_error)
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -1160,6 +1192,9 @@ def judge_report_cases(
     # 重试次数要报出来：它回答"这次判分有多不稳"，
     # 和 `unjudged`（最后真没判成的）是两个问题。
     stats["judge_retries"] = judge.retries
+    # 其中解析失败导致的。这个数不是 0 = 裁判预算被思维链吃穿过，
+    # 是"该加预算 / 该换模型"的直接证据，所以单独报。
+    stats["judge_parse_retries"] = judge.parse_retries
     return judgements, stats
 
 
