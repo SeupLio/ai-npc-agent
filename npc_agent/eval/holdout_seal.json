@@ -1,0 +1,29 @@
+{
+  "protocol": "标签写好时没见过裁判输出，之后不再回头改 rubric。跑批时若 holdout_digest 或 rubric_digest 对不上，这份留出集就不再能当作留出结果引用。",
+  "created": "2026-09-17 20:17",
+  "note": "32 条，标签写好时未见过任何裁判输出（这批样本从未发给模型）。注：作者阶段改过 ho_rs_10 的 note（原 note 太短、没说清依据，被 test_holdout.py 拦下后补写），但 holdout_digest 没有变 —— 摘要只覆盖标签和输入，不覆盖 note，所以补文档不会把留出集作废。这是设计意图，不是漏网。",
+  "items": 32,
+  "holdout_digest": "878e44c2ea85b51e",
+  "rubric_digest": "342440f72b7431f6",
+  "label_balance": {
+    "pass": 15,
+    "fail": 17
+  },
+  "per_rubric": {
+    "in_character": {
+      "n": 11,
+      "pass": 4,
+      "fail": 7
+    },
+    "responsive": {
+      "n": 11,
+      "pass": 6,
+      "fail": 5
+    },
+    "grounded": {
+      "n": 10,
+      "pass": 5,
+      "fail": 5
+    }
+  }
+}

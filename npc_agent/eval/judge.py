@@ -48,6 +48,17 @@ from ..llm.base import LLM, LLMUnavailable
 #: 人工标注的校准集。**没有它，裁判的分数就只是"另一个模型的意见"。**
 CALIBRATION_FILE = Path(__file__).resolve().parent / "calibration.jsonl"
 
+#: 留出集：写好标签时**没见过裁判输出**，之后也不再回头改 rubric。
+#:
+#: 为什么要有第二份：`calibration.jsonl` 那 24 条被用来改过三次 rubric，
+#: 所以在它上面算出来的 kappa 里有一部分是**拟合**，不是泛化能力。
+#: 往同一份里继续加样本也没用 —— 新样本马上又会参与调 rubric。
+#: 唯一能拿到干净数字的办法是：先写好、封存、不碰，再一次性算。
+HOLDOUT_FILE = Path(__file__).resolve().parent / "calibration_holdout.jsonl"
+
+#: 留出集的封条。记下文件摘要 + 评分标准摘要 + 标签分布。
+HOLDOUT_SEAL_FILE = Path(__file__).resolve().parent / "holdout_seal.json"
+
 #: 裁判的默认温度。判分要的是稳定，不是创造力。
 JUDGE_TEMPERATURE = 0.0
 
@@ -534,6 +545,142 @@ def load_calibration(path: str | Path | None = None) -> list[dict[str, Any]]:
     return items
 
 
+# --------------------------------------------------------------------------- #
+# 留出集的封条
+# --------------------------------------------------------------------------- #
+def rubric_digest() -> str:
+    """把评分标准的**文本**哈希一遍。
+
+    改 rubric 会让留出集失效 —— 因为标签是照着**当时的**标准写的。
+    比如把「句数是硬约束」改成「句数是风格建议」，那些原本标 0 的样本
+    就不再是"正确答案"了，可它们看上去还在那里，算出来的 kappa 会变成
+    一个没人能解释的数。所以这个摘要必须进封条。
+    """
+    blob = json.dumps(
+        [
+            [key, RUBRICS[key].name, RUBRICS[key].question,
+             RUBRICS[key].pass_when, RUBRICS[key].fail_when]
+            for key in sorted(RUBRICS)
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def items_digest(items: Iterable[dict[str, Any]]) -> str:
+    """对**解析后的样本**取摘要，而不是对文件字节。
+
+    这样修一个错别字、补一句注释不会把留出集作废 —— 摘要盯的是
+    「标签和输入有没有变」，那才是会让 kappa 变味的唯一原因。
+    """
+    blob = json.dumps(
+        [[i.get("id"), i.get("rubric"), i.get("persona"), i.get("scene"),
+          i.get("player"), i.get("reply"), i.get("label")] for i in items],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def seal_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+    per_rubric: dict[str, dict[str, int]] = {}
+    for item in items:
+        bucket = per_rubric.setdefault(str(item.get("rubric")), {"n": 0, "pass": 0, "fail": 0})
+        bucket["n"] += 1
+        bucket["pass" if int(item.get("label", 0)) == 1 else "fail"] += 1
+    return {
+        "items": len(items),
+        "holdout_digest": items_digest(items),
+        "rubric_digest": rubric_digest(),
+        "label_balance": {
+            "pass": sum(1 for i in items if int(i.get("label", 0)) == 1),
+            "fail": sum(1 for i in items if int(i.get("label", 0)) == 0),
+        },
+        "per_rubric": per_rubric,
+    }
+
+
+def build_seal(
+    items: list[dict[str, Any]] | None = None,
+    *,
+    note: str = "",
+    created: str = "",
+) -> dict[str, Any]:
+    """给留出集打封条。`created` 由调用方传（这里不取系统时间，测试才好写）。"""
+    items = items if items is not None else load_calibration(HOLDOUT_FILE)
+    seal = {
+        "protocol": (
+            "标签写好时没见过裁判输出，之后不再回头改 rubric。"
+            "跑批时若 holdout_digest 或 rubric_digest 对不上，"
+            "这份留出集就不再能当作留出结果引用。"
+        ),
+        "created": created,
+        "note": note,
+    }
+    seal.update(seal_summary(items))
+    return seal
+
+
+def load_seal(path: str | Path | None = None) -> dict[str, Any]:
+    target = Path(path) if path else HOLDOUT_SEAL_FILE
+    if not target.exists():
+        return {}
+    return json.loads(target.read_text(encoding="utf-8"))
+
+
+def verify_seal(
+    seal: dict[str, Any],
+    items: list[dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
+    """检查留出集还能不能当留出集用。返回问题列表，空列表 = 通过。
+
+    分成两种**性质不同**的问题，因为补救办法不一样：
+
+      - `rubric_changed`：标签是照旧标准写的，现在标准变了。
+        重封条**没用** —— 需要重新标注，或者承认这份只能当开发集。
+      - `holdout_changed`：样本本身被改过。
+        重封条同样没用 —— 改过就说明可能看过裁判输出再回头调了标签，
+        这个可能性一旦存在，数字就不再可信。只能新攒一份。
+
+    换句话说：**封条不是"确认一下"，是"一旦破了就不可修复"。**
+    把它做成可以随手重置的按钮，等于没做。
+    """
+    items = items if items is not None else load_calibration(HOLDOUT_FILE)
+    problems: list[dict[str, str]] = []
+    if not seal:
+        problems.append({
+            "kind": "no_seal",
+            "detail": "没有封条文件，无法判断这份样本是不是「没见过裁判输出」就写好的。",
+        })
+        return problems
+
+    if seal.get("rubric_digest") != rubric_digest():
+        problems.append({
+            "kind": "rubric_changed",
+            "detail": (
+                f"评分标准变过（封条 {seal.get('rubric_digest')} → 现在 {rubric_digest()}）。"
+                "标签是照旧标准写的，这份留出集对当前 rubric 已经不再是留出集，"
+                "只能当开发集用；重新封条不能修复它。"
+            ),
+        })
+    if seal.get("holdout_digest") != items_digest(items):
+        problems.append({
+            "kind": "holdout_changed",
+            "detail": (
+                f"留出集内容变过（封条 {seal.get('holdout_digest')} → 现在 {items_digest(items)}）。"
+                "样本被改过之后，「改标签前有没有看过裁判输出」就无法自证了，"
+                "这个数字不能再当留出结果。重新封条也不能修复。"
+            ),
+        })
+    if int(seal.get("items", -1)) != len(items):
+        problems.append({
+            "kind": "count_changed",
+            "detail": f"条数变过（封条 {seal.get('items')} → 现在 {len(items)}）。",
+        })
+    return problems
+
+
 def calibrate(
     judge: LLMJudge,
     items: Optional[list[dict[str, Any]]] = None,
@@ -606,6 +753,65 @@ def calibrate(
             },
         }
     return report
+
+
+def run_holdout(
+    judge: LLMJudge,
+    *,
+    items: Optional[list[dict[str, Any]]] = None,
+    seal: Optional[dict[str, Any]] = None,
+    progress: Any = None,
+) -> dict[str, Any]:
+    """跑留出集，返回一块可以直接进 payload 的结果。
+
+    **封条破了也照跑。** 不跑就等于把诊断信息也一起扔掉；
+    关键是结果必须被标成 `quotable: False`，并且把破在哪里原样带上 ——
+    这样数字不会丢，也不可能被当成"泛化能力"引用。
+    """
+    items = items if items is not None else load_calibration(HOLDOUT_FILE)
+    seal = seal if seal is not None else load_seal()
+    problems = verify_seal(seal, items)
+    report = calibrate(judge, items, progress=progress)
+    block: dict[str, Any] = report.to_dict()
+    block["quotable"] = not problems
+    block["problems"] = problems
+    block["seal"] = seal_summary(items)
+    block["sealed_rubric_digest"] = seal.get("rubric_digest", "")
+    return block
+
+
+def contrast_rows(
+    dev: CalibrationReport, holdout: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """把「开发集」和「留出集」的 kappa 摆在一起。
+
+    两个数的差就是**拟合的量**。只有一个数的时候，你没法判断它有多少是
+    真本事 —— 这正是要另起一份留出集的原因。
+    """
+    per_holdout = holdout.get("per_rubric") or {}
+    rows: list[dict[str, Any]] = []
+    for key in sorted(set(dev.per_rubric) | set(per_holdout)):
+        d = dev.per_rubric.get(key) or {}
+        h = per_holdout.get(key) or {}
+        dev_kappa = d.get("kappa")
+        hold_kappa = h.get("kappa")
+        gap = (
+            round(float(dev_kappa) - float(hold_kappa), 3)
+            if dev_kappa is not None and hold_kappa is not None
+            else None
+        )
+        rows.append({
+            "rubric": key,
+            "name": RUBRICS[key].name if key in RUBRICS else key,
+            "dev_n": d.get("n"),
+            "dev_kappa": dev_kappa,
+            "holdout_n": h.get("n"),
+            "holdout_kappa": hold_kappa,
+            "gap": gap,
+            "holdout_reading": h.get("reading", ""),
+            "quotable": bool(holdout.get("quotable")),
+        })
+    return rows
 
 
 def render_calibration(report: CalibrationReport) -> str:

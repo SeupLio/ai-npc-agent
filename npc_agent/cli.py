@@ -727,6 +727,76 @@ def cmd_gencases(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+def cmd_seal_holdout(args: argparse.Namespace) -> int:
+    """给留出集打封条。
+
+    封条记两样东西：**样本摘要**（标签和输入有没有被改过）和
+    **评分标准摘要**（rubric 有没有被改过）。两者任一变化，
+    留出集就不再是留出集 —— 跑批时会拒绝引用它的数字。
+
+    为什么 `--force` 要单独给：如果封条破了就能随手重封，
+    那"标签是改之前写的"这个前提就永远无法自证，封条也就白封了。
+    """
+    import json as _json
+    from datetime import datetime
+
+    from rich.console import Console
+
+    from .eval.judge import (
+        HOLDOUT_FILE,
+        HOLDOUT_SEAL_FILE,
+        build_seal,
+        load_calibration,
+        load_seal,
+        verify_seal,
+    )
+
+    console = Console()
+    if not HOLDOUT_FILE.exists():
+        console.print(f"[red]找不到留出集 {HOLDOUT_FILE}[/red]")
+        return 2
+    items = load_calibration(HOLDOUT_FILE)
+
+    existing = load_seal()
+    if existing:
+        problems = verify_seal(existing, items)
+        if not problems and not args.force:
+            console.print(
+                f"[green]封条已经是对的[/green]（{existing.get('items')} 条，"
+                f"摘要 {existing.get('holdout_digest')} / {existing.get('rubric_digest')}），"
+                "不需要重打。"
+            )
+            return 0
+        if problems:
+            console.print("[yellow]当前封条已经对不上：[/yellow]")
+            for problem in problems:
+                console.print(f"  [red]{problem['kind']}[/red] {problem['detail']}")
+            if not args.force:
+                console.print(
+                    "\n[red]拒绝重封。[/red]留出集的可信度来自「标签写好后没再动过」"
+                    "这个前提 —— 破了之后重封，只是把破过的事实藏起来。\n"
+                    "正确做法是：承认这份只能当开发集，另攒一份新的留出集。\n"
+                    "确实要重封（例如只是补了个错别字、摘要却变了）请显式给 --force。"
+                )
+                return 2
+
+    seal = build_seal(
+        items,
+        note=args.note,
+        created=datetime.now().strftime("%Y-%m-%d %H:%M"),
+    )
+    HOLDOUT_SEAL_FILE.write_text(
+        _json.dumps(seal, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    console.print(f"[green]封条已写入 {HOLDOUT_SEAL_FILE.name}[/green]")
+    console.print(f"  样本 {seal['items']} 条｜摘要 {seal['holdout_digest']}")
+    console.print(f"  评分标准摘要 {seal['rubric_digest']}")
+    for key, bucket in sorted(seal["per_rubric"].items()):
+        console.print(f"  {key}: n={bucket['n']} 通过 {bucket['pass']} / 不通过 {bucket['fail']}")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 def cmd_judge(args: argparse.Namespace) -> int:
     """LLM-as-judge：先校准裁判，再（可选）用它判一份跑批报告。
 
@@ -816,6 +886,54 @@ def cmd_judge(args: argparse.Namespace) -> int:
         )
     console.print(table)
     payload["calibration"] = report.to_dict()
+
+    # ---- 1b) 留出集：这个数才接近泛化能力 ----
+    if getattr(args, "holdout", True):
+        from .eval.judge import HOLDOUT_FILE, contrast_rows, load_seal, run_holdout
+
+        if not HOLDOUT_FILE.exists():
+            console.print("[dim]没有留出集，跳过（开发集上的 kappa 含拟合成分）[/dim]")
+        else:
+            hold_items = load_calibration(HOLDOUT_FILE)
+            console.print(
+                f"\n在留出集（{len(hold_items)} 条，标签写好时没见过裁判输出）上再校准一次 …"
+            )
+            hold = run_holdout(judge, items=hold_items, seal=load_seal())
+            payload["holdout"] = hold
+
+            htable = Table(title="留出集校准（可引用的那个数）", header_style="bold")
+            htable.add_column("评判标准")
+            htable.add_column("留出 n", justify="right")
+            htable.add_column("留出 kappa", justify="right")
+            htable.add_column("开发 kappa", justify="right")
+            htable.add_column("差值", justify="right")
+            htable.add_column("结论")
+            for row in contrast_rows(report, hold):
+                gap = row["gap"]
+                htable.add_row(
+                    str(row["name"]),
+                    str(row["holdout_n"]),
+                    "—" if row["holdout_kappa"] is None else f"{row['holdout_kappa']:.2f}",
+                    "—" if row["dev_kappa"] is None else f"{row['dev_kappa']:.2f}",
+                    "—" if gap is None else f"{gap:+.2f}",
+                    row["holdout_reading"],
+                )
+            console.print(htable)
+            console.print(
+                "[dim]差值 = 开发集 kappa − 留出集 kappa，就是**拟合的量**。"
+                "差得多不代表裁判差，只代表那个数不能再当泛化能力用。[/dim]"
+            )
+
+            if not hold.get("quotable"):
+                console.print("[red]⛔ 这份留出集的封条对不上，上面的 kappa 不可引用：[/red]")
+                for problem in hold.get("problems") or []:
+                    console.print(f"  [red]{problem['kind']}[/red] {problem['detail']}")
+            else:
+                console.print(
+                    "[green]留出集封条校验通过[/green] —— "
+                    "这个 kappa 可以引用（但仍然只是**上界**：样本是手写的，"
+                    "比真实转写干净，而且每个维度只有十条上下，差一条就动 0.1 量级）"
+                )
 
     # ---- 2) 可选：判一份跑批报告 ----
     if args.report:
@@ -1320,8 +1438,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="从 --checkpoint 指的文件里复用已判完的用例，只补判剩下的"
              "（裁判配置或台词内容对不上会拒绝）",
     )
+    p_judge.add_argument(
+        "--holdout",
+        dest="holdout",
+        action="store_true",
+        default=True,
+        help="额外在**留出集**上校准一次（默认开）。开发集上的 kappa 里有一部分是"
+             "拟合，只有留出集上的那个数才接近泛化能力；关掉它的理由只有"
+             "「我正在调 rubric」",
+    )
+    p_judge.add_argument(
+        "--no-holdout",
+        dest="holdout",
+        action="store_false",
+        help="跳过留出集校准（只在改 rubric 的迭代里用 —— 那时的数字本来就不能引用）",
+    )
     _add_llm_args(p_judge)
     p_judge.set_defaults(func=cmd_judge)
+
+    p_seal = sub.add_parser(
+        "seal-holdout",
+        help="给留出集打封条（记录样本摘要 + 评分标准摘要），之后改动会被跑批拒绝",
+    )
+    p_seal.add_argument("--force", action="store_true",
+                        help="覆盖已有封条。**改过样本再重封条并不能让它重新可信** —— "
+                             "封条不是「确认一下」，是「破了就不可修复」")
+    p_seal.add_argument("--note", default="", help="写进封条的说明")
+    p_seal.set_defaults(func=cmd_seal_holdout)
 
     p_rb = sub.add_parser(
         "report-batch", help="把一次跑批（可带裁判结果）渲染成自包含 HTML 报告"
