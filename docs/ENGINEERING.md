@@ -1,3 +1,18 @@
+# ai-npc-agent —— 详细工程记录
+
+> 📌 **这份文件是过程记录，不是项目介绍。**
+> 想看"这是什么、怎么用、效果如何"，请回 **[项目 README](../README.md)**。
+>
+> 这里保留的是**开发过程本身**：为什么这么设计、踩了哪些坑、
+> 每个数字是怎么量出来的、哪些结论只在小样本上成立。
+> 它的价值恰恰在于"不加工"—— 所以篇幅长、细节多，而且**按时间顺序**记录。
+>
+> ⚠️ 文中出现的历史数字（例如"228/228""12 条用例时代"）是**当时**的读数，
+> 有意保留原样：它们是"这个数字曾经错过"的证据。
+> **当前**的读数以 [README](../README.md) 为准。
+
+---
+
 # ai-npc-agent
 
 > 面向游戏场景的可控 AI NPC 智能体框架 —— 让 NPC **不只是会说，而是真的会玩**。
@@ -960,7 +975,7 @@ python -m npc_agent.cli ablate
 这也是把打分公式抽成 `modules/retrieval.py` 的唯一理由。
 
 两个命令都可以加 `--html` 生成自包含的 HTML 报告（无外部依赖、离线可开），
-适合直接截图放进作品集。成品都在 [`docs/`](docs/)。
+适合直接截图放进作品集。成品都在 [`docs/`](./)。
 
 **这里要先分清两种报告 —— 它们"新不新鲜"的含义完全不同：**
 
@@ -973,9 +988,9 @@ python -m npc_agent.cli ablate
 
 | 报告 | 覆盖 | 内容 | 重新生成 |
 |---|---|---|---|
-| [`docs/ablation.html`](docs/ablation.html) | **231 条** | 五种记忆检索策略的消融 | `python scripts/regen_docs.py --only ablation` |
-| [`docs/worlds.html`](docs/worlds.html) | **231 条**（2 个世界） | 跨世界覆盖报告（同一套 Agent 跑在两个世界上） | `python scripts/regen_docs.py --only worlds` |
-| [`docs/sensitivity.html`](docs/sensitivity.html) | **231 条** | 评测敏感性：注入 6 个缺陷，证明满分不是「护栏从不报警」 | `python scripts/regen_docs.py --only sensitivity` |
+| [`docs/ablation.html`](ablation.html) | **231 条** | 五种记忆检索策略的消融 | `python scripts/regen_docs.py --only ablation` |
+| [`docs/worlds.html`](worlds.html) | **231 条**（2 个世界） | 跨世界覆盖报告（同一套 Agent 跑在两个世界上） | `python scripts/regen_docs.py --only worlds` |
+| [`docs/sensitivity.html`](sensitivity.html) | **231 条** | 评测敏感性：注入 6 个缺陷，证明满分不是「护栏从不报警」 | `python scripts/regen_docs.py --only sensitivity` |
 
 > 这三份由 `tests/test_docs_freshness.py` 钉住：和当前代码生成的结果不一致就红。
 > `worlds` 与 `sensitivity` 是秒级、默认就跑；`ablation` 约 2 分钟，设 `NPC_AGENT_DOC_FRESHNESS=1` 才跑。
@@ -990,10 +1005,10 @@ python -m npc_agent.cli ablate
 
 | 报告 | 覆盖 | 内容 | 重新生成 |
 |---|---|---|---|
-| [`docs/batch_model.html`](docs/batch_model.html) | **228 条** | 真实模型的跑批报告（含裁判校准与留出集） | `compare --models kimi-k2.7-code` → `report-batch` |
-| [`docs/batch_planner.html`](docs/batch_planner.html) | **228 条** | 同一个跑批、**规划也交给模型** —— 掉 11 个点，且报告自己标了"这批不干净" | 同上，把规划也交给模型（见「对照实验五」） |
-| [`docs/comparison.html`](docs/comparison.html) | **12 条** ⚠️ | 离线启发式 vs 真实模型的对照 | `compare --models kimi-k2.7-code` |
-| [`docs/multi_npc.html`](docs/multi_npc.html) | **2 条** ⚠️ | 多 NPC 场景接上模型的对话样本 | `compare --models kimi-k2.7-code --category multi_npc` |
+| [`docs/batch_model.html`](batch_model.html) | **228 条** | 真实模型的跑批报告（含裁判校准与留出集） | `compare --models kimi-k2.7-code` → `report-batch` |
+| [`docs/batch_planner.html`](batch_planner.html) | **228 条** | 同一个跑批、**规划也交给模型** —— 掉 11 个点，且报告自己标了"这批不干净" | 同上，把规划也交给模型（见「对照实验五」） |
+| [`docs/comparison.html`](comparison.html) | **12 条** ⚠️ | 离线启发式 vs 真实模型的对照 | `compare --models kimi-k2.7-code` |
+| [`docs/multi_npc.html`](multi_npc.html) | **2 条** ⚠️ | 多 NPC 场景接上模型的对话样本 | `compare --models kimi-k2.7-code --category multi_npc` |
 
 > ⚠️ **标了记号的两份只覆盖 12 条 / 2 条** —— 它们是**用例集还小的时候**跑的，
 > 和那两份 228 条的跑批**不可比**。留着它们的价值是"当时机制能跑通"的存档，
@@ -2122,4 +2137,4 @@ Minecraft 适配器另有 54 条，其中三条是结构性断言：
 
 ## License
 
-[MIT](LICENSE)
+[MIT](../LICENSE)

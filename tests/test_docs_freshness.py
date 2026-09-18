@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -234,3 +235,71 @@ def test_the_freshness_check_itself_can_fail(tmp_path: Path) -> None:
         shutil.copy2(backup, committed)
     # 恢复之后必须又能通过 —— 否则这条测试本身是坏的
     _assert_matches_code(name, tmp_path / "out2")
+
+
+# --------------------------------------------------------------------------- #
+# 文档里的相对链接必须指向真的存在的东西
+# --------------------------------------------------------------------------- #
+
+#: 要检查相对链接的文档。搬动文件时最容易坏的就是这里。
+_LINKED_DOCS = ("README.md", "docs/ENGINEERING.md")
+
+_MD_LINK = re.compile(r"\]\(([^)\s#]+)(?:#[^)]*)?\)")
+
+
+def _broken_links(doc: Path) -> list[str]:
+    """返回这份文档里指向不存在文件的相对链接。"""
+    text = doc.read_text(encoding="utf-8")
+    broken = []
+    for target in _MD_LINK.findall(text):
+        if target.startswith(("http://", "https://", "mailto:", "#")):
+            continue
+        # 链接是相对**文档自己**解析的 —— 这正是搬文件时会坏掉的原因
+        if not (doc.parent / target).exists():
+            broken.append(target)
+    return broken
+
+
+@pytest.mark.parametrize("rel", _LINKED_DOCS)
+def test_relative_links_in_docs_resolve(rel: str) -> None:
+    """文档里每个相对链接都要能打开。
+
+    **这条是一次真实事故换来的。** 我把根目录的 `README.md` 搬成
+    `docs/ENGINEERING.md` 时，它里面 9 个相对链接全坏了 ——
+    `docs/ablation.html` 从 `docs/` 里解析会变成 `docs/docs/ablation.html`，
+    `LICENSE` 也会指到 `docs/LICENSE`。
+
+    而**当时没有任何测试会红**：`test_every_doc_report_is_documented_in_the_readme`
+    只检查 README 里有没有那串字符，不检查链接能不能打开。
+    一个搬文件的操作就这样静默毁掉了一堆链接 —— 和这个仓库里
+    "改了名没人发现"的那类问题一模一样。
+    """
+    doc = ROOT / rel
+    assert doc.exists(), f"{rel} 不存在 —— 文件被搬走了却没更新这份名单"
+    broken = _broken_links(doc)
+    assert not broken, (
+        f"{rel} 里有指向不存在文件的相对链接：{sorted(set(broken))}。"
+        "注意链接是相对**文档自己**解析的 —— 文件搬过位置就得跟着改。"
+    )
+
+
+def test_the_link_guard_can_actually_fail(tmp_path: Path) -> None:
+    """反向测试：判据必须真的抓得到坏链接。
+
+    只证明"当前文档是绿的"不够 —— 那可能只是因为判据什么都没在查。
+    """
+    doc = tmp_path / "sub" / "doc.md"
+    doc.parent.mkdir()
+    (tmp_path / "there.md").write_text("x", encoding="utf-8")
+
+    # 从 sub/ 里指上级目录的文件：存在 -> 不该报
+    doc.write_text("[ok](../there.md)", encoding="utf-8")
+    assert _broken_links(doc) == []
+
+    # 同一个目标，但从 sub/ 里**没有**往上一层 -> 解析成 sub/there.md，不存在
+    doc.write_text("[bad](there.md)", encoding="utf-8")
+    assert _broken_links(doc) == ["there.md"]
+
+    # 外链和纯锚点不归这条管
+    doc.write_text("[a](https://example.com) [b](#sec)", encoding="utf-8")
+    assert _broken_links(doc) == []
