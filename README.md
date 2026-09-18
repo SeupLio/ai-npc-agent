@@ -924,16 +924,45 @@ python -m npc_agent.cli ablate
 这也是把打分公式抽成 `modules/retrieval.py` 的唯一理由。
 
 两个命令都可以加 `--html` 生成自包含的 HTML 报告（无外部依赖、离线可开），
-适合直接截图放进作品集。成品都在 [`docs/`](docs/)：
+适合直接截图放进作品集。成品都在 [`docs/`](docs/)。
 
-| 报告 | 内容 |
-|---|---|
-| [`docs/batch_model.html`](docs/batch_model.html) | **228 条 × 真实模型的跑批报告**（含裁判校准与留出集） |
-| [`docs/batch_planner.html`](docs/batch_planner.html) | 同一个跑批、**规划也交给模型** —— 掉 11 个点，且报告自己标了"这批不干净" |
-| [`docs/multi_npc.html`](docs/multi_npc.html) | 多 NPC 场景接上模型的对话样本 |
-| [`docs/comparison.html`](docs/comparison.html) | 离线启发式 vs 真实模型的对照 |
-| [`docs/ablation.html`](docs/ablation.html) | 五种记忆检索策略的消融 |
-| [`docs/worlds.html`](docs/worlds.html) | 跨世界覆盖报告（同一套 Agent 跑在两个世界上） |
+**这里要先分清两种报告 —— 它们"新不新鲜"的含义完全不同：**
+
+| 种类 | 谁能重生成 | 和代码不一致意味着什么 |
+|---|---|---|
+| **离线可复现** | 任何人，不需要模型、不需要网络 | **它在说谎** —— 读者会以为是当前代码的输出 |
+| **一次跑批的快照** | 要有模型 + 额度 | 正常 —— 它本来就是某个时间点的存档 |
+
+#### 离线可复现（有护栏，过期会红）
+
+| 报告 | 内容 | 重新生成 |
+|---|---|---|
+| [`docs/ablation.html`](docs/ablation.html) | 五种记忆检索策略的消融 | `python scripts/regen_docs.py --only ablation` |
+| [`docs/worlds.html`](docs/worlds.html) | 跨世界覆盖报告（同一套 Agent 跑在两个世界上） | `python scripts/regen_docs.py --only worlds` |
+
+> 这两份由 `tests/test_docs_freshness.py` 钉住：和当前代码生成的结果不一致就红。
+> `worlds` 是秒级、默认就跑；`ablation` 约 2 分钟，设 `NPC_AGENT_DOC_FRESHNESS=1` 才跑。
+> 报告里嵌了每条的**耗时**（`0.18s` / `14s`），所以比的是**除时长外**逐字节一致 ——
+> 归一化只抹时长，别的数字一个都不抹，否则这条护栏就成了永真式。
+>
+> **为什么值得单独加护栏**：入库的 `ablation.html` 曾经还是 12 条用例时代的产物
+> （5 列指标、没有「发言调度」），而代码早就是 228 条 / 6 列了。
+> 一份离线报告和代码不一致，就是在说谎 —— 而且没人会发现。
+
+#### 一次跑批的快照（需要模型 + 额度，故意不自动化）
+
+| 报告 | 内容 | 重新生成 |
+|---|---|---|
+| [`docs/batch_model.html`](docs/batch_model.html) | **228 条 × 真实模型的跑批报告**（含裁判校准与留出集） | `compare --models kimi-k2.7-code` → `report-batch` |
+| [`docs/batch_planner.html`](docs/batch_planner.html) | 同一个跑批、**规划也交给模型** —— 掉 11 个点，且报告自己标了"这批不干净" | 同上，把规划也交给模型（见「对照实验五」） |
+| [`docs/comparison.html`](docs/comparison.html) | 离线启发式 vs 真实模型的对照 | `compare --models kimi-k2.7-code` |
+| [`docs/multi_npc.html`](docs/multi_npc.html) | 多 NPC 场景接上模型的对话样本 | `compare --models kimi-k2.7-code --category multi_npc` |
+
+> 这四份冻结在生成它们的那一刻，**重生成要烧额度**（这批跑批约 8,500 次调用），
+> 所以故意不做成自动的。但**也不许靠"没人注意"来归类**：
+> `scripts/regen_docs.py` 里显式列了它们，
+> `tests/test_docs_freshness.py` 会检查每个 `docs/*.html` 都被归到两类之一 ——
+> 新加报告却不说它属于哪一类，护栏会红。
 
 ### 对照实验三：多 NPC 场景下接上模型
 
@@ -1469,7 +1498,7 @@ game-npc-agent/
 │   ├── wait_for_batch.py       等跑批：区分「跑完了 / 跑死了 / 还在跑」
 │   └── rescore_safety.py       用新口径离线重算安全维度（要求先逐字复现旧口径）
 ├── package.json            桥的 node 依赖（mineflayer 等）；node_modules 不入库
-└── tests/                  579 个单元与端到端测试
+└── tests/                  585 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -1645,7 +1674,7 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 579 个测试
+- [x] 六维评测 harness + 585 个测试
 - [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
 - [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [x] **多 NPC 协作**：Cast 导演层 + 双 NPC 场景 + 发言调度评测维度
@@ -1719,13 +1748,16 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 ```bash
 python -m pytest tests -q
-# 578 passed, 1 skipped
+# 583 passed, 2 skipped
 ```
 
-> 收集到的是 **579** 条 —— 差的这一条是 `tests/test_minecraft_e2e.py`，
-> 它需要真实 Minecraft 服务端，默认跳过（`NPC_AGENT_MC_E2E=1` 才跑）。
+> 收集到的是 **585** 条，默认跳过 **2** 条：
+> `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）
+> 和 `tests/test_docs_freshness.py` 里那条慢速报告校验
+> （约 2 分钟，`NPC_AGENT_DOC_FRESHNESS=1` 才跑）。
 > **"收集数"和"通过数"是两个量**，这里分开写：目录树和路线图里写的是收集数，
-> 这里写的是实跑输出，两个数对不上不代表有问题，前提是你知道差在哪。
+> 这里写的是实跑输出。两个数对不上不代表有问题 —— 前提是你知道差在哪，
+> 所以这条差值是**被测试钉住**的（见 `tests/test_test_hygiene.py`）。
 
 覆盖：环境护栏、记忆检索与巩固、**五种检索策略的语义差异**、多人发言权判定、
 **多 NPC 的发言权调度与协作**（同轮不撞车 / 被点名者优先 / 安静 NPC 不被饿死 /

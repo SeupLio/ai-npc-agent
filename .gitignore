@@ -10,7 +10,11 @@ venv/
 
 # ---- 测试与缓存 ----
 .pytest_cache/
+# pytest 的 --basetemp：**每次跑给一个新目录**，别复用 ——
+# 复用一个被前几轮污染过的 basetemp 会触发 pytest 内部的
+# `assert not self._finalizers`，看起来像"我的测试坏了"。
 .pytest_tmp/
+.pytest_bt_*/
 .pytest_out.txt
 .coverage
 htmlcov/

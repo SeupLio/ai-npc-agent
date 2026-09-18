@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import os
 import re
 import subprocess
 import sys
@@ -28,6 +29,39 @@ import pytest
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
+
+# 这些环境变量会把"默认跳过"的用例打开（慢速 / 需要外部依赖）。
+# 数"默认跳过几条"时必须把它们摘掉，否则：
+# 外层带着 `NPC_AGENT_DOC_FRESHNESS=1` 跑整套时，子进程会真的去跑那 2 分钟，
+# 于是既慢、又数出 0 条跳过，护栏反而红 —— 一个"因为环境太全"而失败的护栏。
+OPT_IN_ENV_VARS = ("NPC_AGENT_DOC_FRESHNESS", "NPC_AGENT_MC_E2E")
+
+
+def _default_env() -> dict[str, str]:
+    """去掉所有 opt-in 开关之后的环境 —— 也就是"默认环境"。"""
+    env = dict(os.environ)
+    for key in OPT_IN_ENV_VARS:
+        env.pop(key, None)
+    return env
+
+
+def _pytest_subprocess_args() -> list[str]:
+    """跑子进程 pytest 时统一带的参数。
+
+    ⚠️ **`--basetemp` 不是可有可无的。** 不给它，子进程会用 pytest 的
+    全局临时根（`%TEMP%/pytest-of-<user>`）。那个目录会攒下几百个
+    `garbage-*` 条目，pytest 在会话结束时清理它们 —— 在这个环境里，
+    一次删 208 个条目会撞上沙箱的批量删除保护，**进程被杀掉**。
+
+    症状极具误导性：测试其实跳过了（进度条上是 `s`），但进程死在
+    `-rs` 摘要**之前**，于是 stdout 里一条 `SKIPPED [n]` 都没有，
+    调用方数出 0 条跳过，报出来的是"README 的跳过数对不上" ——
+    **完全指向错误的方向**。给一个自己的 basetemp 就绕开了全局状态。
+    """
+    return [
+        "-q", "-rs", "-p", "no:cacheprovider",
+        f"--basetemp={REPO_ROOT / '.pytest_bt_skipcount'}",
+    ]
 README = REPO_ROOT / "README.md"
 
 
@@ -140,10 +174,18 @@ README_COUNT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # 一个把标签和数值配错的护栏，比没有护栏更糟 —— 它会给假话盖章。
 _PASSED_LINE = re.compile(r"#\s*(\d+) passed(?:,\s*(\d+) skipped)?")
 
-# 默认会被跳过的文件 —— README 里那句 "1 skipped" 说的就是它。
+# 默认会被跳过的目标 —— README 里那句 "2 skipped" 说的就是它们。
+# 可以写整个文件，也可以写到具体用例（node id）。
+#
 # 这份名单**故意写死**：它是"默认环境下哪些测试不跑"的唯一真相来源。
-# 新增一个默认跳过的文件时，这里要改，README 也要改 —— 这正是想要的。
-DEFAULT_SKIPPED_FILES: tuple[str, ...] = ("tests/test_minecraft_e2e.py",)
+# 新增一个默认跳过的用例时，这里要改，README 也要改 —— 这正是想要的。
+# 忘了改不会静默通过：`skipped` 对不上就会红，逼你回来看这份名单。
+DEFAULT_SKIPPED_TARGETS: tuple[str, ...] = (
+    # 整个文件都跳过（需要真实 Minecraft 服务端）
+    "tests/test_minecraft_e2e.py",
+    # 只有这条跳过（跑一次约 2 分钟，所以默认不跑）
+    "tests/test_docs_freshness.py::test_slow_offline_reports_match_the_code",
+)
 
 # `-rs` 会给每个跳过组印一行 `SKIPPED [n] 路径:行号: 原因`
 _SKIPPED_MARK = re.compile(r"SKIPPED \[(\d+)\]")
@@ -154,21 +196,40 @@ def _default_skip_count() -> int:
 
     为什么不能从 `--collect-only` 得到：跳过是在 **fixture 体内**调的
     `pytest.skip()`，收集期看不到（`--setup-plan` 也看不到，因为它不执行
-    fixture 体）。所以只能真跑一遍这几个文件 —— 而它们本来就是
+    fixture 体）。所以只能真跑一遍这些目标 —— 而它们本来就是
     "跑起来立刻跳过"，代价是秒级，不是分钟级。
+
+    为什么要支持 node id 而不只是文件：慢速用例**和快用例在同一个文件里**
+    （`test_docs_freshness.py` 里只有一条是默认跳过的）。
+    按文件粒度算，会把同文件里那些正常跑的用例也当成跳过，于是数出 6 而不是 2。
     """
     total = 0
-    for rel in DEFAULT_SKIPPED_FILES:
+    for target in DEFAULT_SKIPPED_TARGETS:
         proc = subprocess.run(
-            [
-                sys.executable, "-m", "pytest", rel,
-                "-q", "-rs", "-p", "no:cacheprovider",
-            ],
+            [sys.executable, "-m", "pytest", target, *_pytest_subprocess_args()],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            env=_default_env(),
         )
-        total += sum(int(m) for m in _SKIPPED_MARK.findall(proc.stdout))
+        marks = _SKIPPED_MARK.findall(proc.stdout)
+        # 目标跑挂了却静默算 0 条，会让"跳过数对不上"报成一句看不懂的错。
+        # 这里必须把子进程的失败原样带出来 —— 否则查这个错要花掉一整个下午。
+        if proc.returncode != 0:
+            pytest.fail(
+                f"数跳过条数时，目标 {target!r} 自己跑挂了"
+                f"（退出码 {proc.returncode}）：\n"
+                f"stdout:\n{proc.stdout[-1500:]}\n"
+                f"stderr:\n{proc.stderr[-1500:]}"
+            )
+        if not marks:
+            pytest.fail(
+                f"目标 {target!r} 一条 SKIPPED 都没有 —— "
+                "要么它其实跑了（那就该从 DEFAULT_SKIPPED_TARGETS 里去掉），"
+                "要么它根本没被收集到（node id 写错了）：\n"
+                f"stdout:\n{proc.stdout[-1500:]}"
+            )
+        total += sum(int(m) for m in marks)
     return total
 
 
@@ -181,15 +242,17 @@ def _collected_test_count() -> int:
 
     用**子进程**而不是在当前进程里调 pytest：在收集期再嵌套触发一次收集，
     pytest 的行为不保证（而且当前进程里已经有一份 session）。
+    也带 `--basetemp`，理由见 `_pytest_subprocess_args`（别用全局临时根）。
     """
     proc = subprocess.run(
         [
             sys.executable, "-m", "pytest", "tests",
-            "-p", "no:cacheprovider", "--collect-only", "-q",
+            "--collect-only", *_pytest_subprocess_args(),
         ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        env=_default_env(),
     )
     if proc.returncode != 0:
         pytest.fail(
@@ -268,7 +331,7 @@ def test_readme_test_counts_match_reality() -> None:
         if skipped != real_skips:
             wrong["测试一节的跳过数"] = (
                 f"README 说跳过 {skipped} 条，默认环境实际跳过 {real_skips} 条"
-                f"（{', '.join(DEFAULT_SKIPPED_FILES)}）"
+                f"（{', '.join(DEFAULT_SKIPPED_TARGETS)}）"
             )
 
     assert not wrong, (
