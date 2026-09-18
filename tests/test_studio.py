@@ -27,6 +27,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -337,6 +342,251 @@ def test_page_has_no_hardcoded_case_count() -> None:
     assert str(total) not in PAGE, (
         f"页面里出现了用例总数 {total} —— 这个数会变，必须从 /api/meta 读，不能硬编码"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 5b. 页面真的能渲染吗
+#
+# 这一段是"我没有浏览器也要验证前端"的替代方案。缺了它，我交付的是一个
+# **从来没被打开过**的页面 —— 一个拼错的字段名不会让任何测试变红，
+# 只会让某一栏永远空白，而且看起来像"数据没准备好"。
+# --------------------------------------------------------------------------- #
+def _page_script() -> str:
+    return PAGE.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+
+def _strip_js_literals(src: str) -> str:
+    """去掉字符串字面量和注释。
+
+    不去掉的话，`document.querySelectorAll(".panel")` 里的 `.panel`
+    会被当成"页面读了字段 `panel`" —— 于是护栏被 CSS 选择器逼着加白名单，
+    慢慢变成噪音。**先剥掉，再谈字段。**
+    """
+    out: list[str] = []
+    index, size = 0, len(src)
+    while index < size:
+        char = src[index]
+        if char in "\"'`":
+            quote, index = char, index + 1
+            while index < size:
+                if src[index] == "\\":
+                    index += 2
+                    continue
+                if src[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            out.append(" ")
+            continue
+        if char == "/" and index + 1 < size and src[index + 1] == "/":
+            while index < size and src[index] != "\n":
+                index += 1
+            continue
+        if char == "/" and index + 1 < size and src[index + 1] == "*":
+            index += 2
+            while index + 1 < size and not (src[index] == "*" and src[index + 1] == "/"):
+                index += 1
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _property_names(script: str) -> set[str]:
+    return {
+        match.group(1)
+        for match in re.finditer(r"\.([A-Za-z_$][\w$]*)", _strip_js_literals(script))
+    }
+
+
+#: 页面读到的属性名，要么是**真实响应里出现过的字段**，要么是下面这些
+#: JS / DOM 内置成员。**故意写死**：它是"这条护栏不误报"的唯一依据。
+#: 新增一个内置成员时这里要改 —— 这正是想要的，
+#: 否则白名单会被一条条放宽，直到护栏变成永真式。
+JS_BUILTINS: frozenset[str] = frozenset(
+    {
+        # String / Array
+        "length", "join", "map", "filter", "find", "forEach", "includes",
+        "push", "pop", "replace", "trim", "toFixed", "entries",
+        # Math / JSON
+        "abs", "round", "max", "min", "stringify",
+        # fetch / Promise
+        "catch", "json", "status",
+        # Error
+        "message",
+        # KeyboardEvent
+        "key",
+        # DOM
+        "body", "classList", "className", "click", "dataset", "disabled",
+        "innerHTML", "insertAdjacentHTML", "onchange", "onclick", "onkeydown",
+        "placeholder", "querySelector", "querySelectorAll", "scrollHeight",
+        "scrollTop", "tab", "textContent", "toggle", "value",
+    }
+)
+
+
+def _api_field_vocabulary(cfg: RuntimeConfig) -> set[str]:
+    """真实响应里出现过的**所有**键名（递归收集，含错误体）。
+
+    拿真响应当词表，而不是手写一份"前端需要哪些字段" ——
+    手写的那份会和后端一起漂移，而它恰恰是用来发现漂移的。
+    """
+    payloads = [
+        S.build_meta(cfg),
+        S.run_chat(
+            cfg,
+            {
+                "scenario": "tutorial",
+                "events": [{"kind": "say", "speaker": "player_a", "text": "你好"}],
+            },
+        ),
+        S.run_eval(cfg, {"category": "safety", "limit": 2}),
+        S.run_mutant(cfg, {"mutant": "floor_control_disabled", "limit": 3}),
+        # 错误体也是真实响应的一种形状（`{"error": "..."}`）
+        {"error": "x"},
+    ]
+    names: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                names.add(str(key))
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    for payload in payloads:
+        walk(payload)
+    return names
+
+
+def _unknown_property_names(script: str, vocabulary: set[str]) -> set[str]:
+    """页面读的字段里，既不是内置成员、也不在真实响应里的那些。"""
+    return _property_names(script) - vocabulary - JS_BUILTINS
+
+
+@pytest.fixture(scope="module")
+def api_vocabulary(cfg: RuntimeConfig) -> set[str]:
+    return _api_field_vocabulary(cfg)
+
+
+def test_page_only_reads_fields_the_api_actually_returns(
+    api_vocabulary: set[str],
+) -> None:
+    """页面读的每个字段，必须真的出现在 API 的响应里。
+
+    **这条测试替代的是"用浏览器打开看一眼"。** 一个拼错的字段名
+    （`d.sumary`）不会让任何别的测试变红：页面照常加载、照常发出请求，
+    只是那一栏永远空白，而空白看起来像"数据没准备好"。
+
+    判据不靠猜：词表是**递归收集真实响应**得到的，不是手写的
+    "前端需要哪些字段"。
+    """
+    unknown = _unknown_property_names(_page_script(), api_vocabulary)
+    assert not unknown, (
+        f"页面读了这些字段，但 API 响应里没有：{sorted(unknown)}。"
+        "要么是拼错了，要么后端改了字段名 —— 两种都会让界面静默空白。"
+        "如果它其实是 JS/DOM 内置成员，请加进 JS_BUILTINS 并写清理由。"
+    )
+
+
+def test_the_field_guard_can_actually_fail() -> None:
+    """反向测试：上面那条必须真的抓得到拼错的字段名。
+
+    只证明"当前代码是绿的"不够 —— 那可能只是因为判据什么都没在查。
+
+    **这条测试刻意不读真实页面、也不读真实词表。** 用真实页面就等于把
+    "页面是干净的"又断言了一遍：页面一旦有拼错，这条会跟着红，
+    于是失败信息指向上一条测试，而你看不出判据本身是否还在工作。
+    这里只喂合成输入，验的是**判据的区分能力**。
+    """
+    vocab = {"summary", "cases", "name"}
+
+    # 正例：合法字段不该被误报（否则判据就是"凡读必错"的永真式）
+    assert _unknown_property_names("const x = d.summary;", vocab) == set()
+
+    # 反例：拼错的字段必须被抓出来
+    assert _unknown_property_names("const x = d.sumary;", vocab) == {"sumary"}
+    assert _unknown_property_names("x.lengh", vocab) == {"lengh"}
+
+    # 白名单不能顺手放过：内置成员与拼错同时出现时，只报拼错的那个
+    got = _unknown_property_names("const n = list.length; const m = d.sumary;", vocab)
+    assert got == {"sumary"}
+
+    # 字符串字面量里的"字段名"不算读取，否则词表会被噪声撑大，
+    # 白名单就不得不一条条放宽，直到判据失去意义
+    got = _property_names('x.setAttribute("data-x", "d.bogus");')
+    assert "bogus" not in got, "字符串字面量被当成了字段读取"
+
+
+def test_the_field_guard_actually_parses_the_page(api_vocabulary: set[str]) -> None:
+    """判据必须真的从页面里读出了东西。
+
+    这是上一条测试自身的"空转检查"：如果 `_property_names` 哪天因为
+    正则失效而返回空集，那么"未知字段为空"会**静默通过**，
+    而判据已经什么都不查了 —— 这正是这个项目里反复出现的那类
+    "永远是绿的断言"。
+
+    不用"至少 N 个"这种阈值，而是点名几个页面**一定**会读的字段：
+    阈值会在某次合法重构时被顺手调小，点名不会。
+    """
+    props = _property_names(_page_script())
+
+    # 点名：页面渲染评测结果时必然要读这些（`/api/eval` 的响应字段）
+    for expected in ("summary", "cases", "by_category"):
+        assert expected in props, f"判据没能从页面里解析出 {expected!r}"
+        assert expected in api_vocabulary, f"{expected!r} 不在真实响应词表里"
+
+    # 词表本身也得是活的：真响应里字段很多，不该只剩三五个
+    assert len(api_vocabulary) > 20, "API 词表太小，判据可能已经失效"
+
+
+def test_the_builtin_whitelist_never_shadows_a_real_field(
+    api_vocabulary: set[str],
+) -> None:
+    """白名单里不能出现任何**真实存在的** API 字段。
+
+    这条堵的是"遇到红灯就改白名单"这条后门。它挡不住全部
+    （把一个拼错的字段名加进白名单仍能溜过去），但能挡住最容易发生的一种：
+    某个字段确实存在、只是页面把它写错了，于是顺手加进白名单 ——
+    那等于把断言改成永真式，还留下了"这个字段是内置成员"的假注释。
+
+    剩下的一半靠人工：白名单每次变长都应该是**显式**的、有理由的改动，
+    在 code review 里看得见。所以这里不设"白名单最多 N 条"这种阈值 ——
+    阈值只会在某次合法新增时被顺手调大，然后失去意义。
+    """
+    shadowed = JS_BUILTINS & api_vocabulary
+    assert not shadowed, (
+        f"这些名字既是真实 API 字段、又在内置白名单里：{sorted(shadowed)}。"
+        "从白名单里删掉它们 —— 页面读这些字段时应该拿真实响应来核对。"
+    )
+
+
+def test_page_script_is_syntactically_valid() -> None:
+    """页面的 JS 必须能过 `node --check`。
+
+    一个语法错误会让**整个页面**死掉（连 `boot()` 都跑不到），
+    而 `PAGE` 只是 Python 里的一段字符串 —— 没有任何东西会告诉你它坏了。
+    没有 node 就跳过（和真实桥那两条测试同一个处理方式）。
+    """
+    node = os.environ.get("NPC_AGENT_NODE") or shutil.which("node")
+    if not node:
+        pytest.skip("找不到 node（装 Node.js，或用 NPC_AGENT_NODE 指定路径）")
+
+    handle, path = tempfile.mkstemp(suffix=".js", text=True)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            fh.write(_page_script())
+        proc = subprocess.run(
+            [node, "--check", path], capture_output=True, text=True, timeout=60
+        )
+        assert proc.returncode == 0, (
+            f"页面 JS 有语法错误：\n{proc.stdout}\n{proc.stderr}"
+        )
+    finally:
+        os.unlink(path)
 
 
 # --------------------------------------------------------------------------- #
