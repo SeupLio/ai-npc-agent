@@ -17,6 +17,17 @@ htmlcov/
 reports/
 *.log
 
+# ---- Node（只给 scripts/mineflayer_bridge.js 用）----
+node_modules/
+# package.json / package-lock.json **要入库** —— 它们声明了桥的依赖版本，
+# 是复现端到端测试的一部分。只有 node_modules 是产物。
+
+# ---- Minecraft 服务端（端到端测试用，体积大，不入库）----
+.mcserver/
+world/
+server.jar
+eula.txt
+
 # ---- 编辑器 ----
 .vscode/
 .idea/

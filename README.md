@@ -171,6 +171,9 @@ cave_mouth  place(torch)     ← 这一步才是目标
 
 1. **可测性**。`MinecraftEnv` 的全部逻辑都能在没有 Minecraft 服务端的情况下单测。
    跑一次真实服务端要几十秒，跑一次 `LocalWorldClient` 只要几毫秒。
+   最后一段链路（桥 → mineflayer → 真服务端）另外用
+   `scripts/e2e_minecraft.py` 单独验证，pytest 里默认跳过 ——
+   **日常测试快，交付前把整条链跑通**，两件事分开做。
 2. **同一个契约，两种传输**。这不是文档里的一句承诺，而是代码结构：
    两个后端都只实现 `call()`，所有类型化方法（`move` / `mine` / `craft` …）
    都写在基类上，**物理上只存在一份**。
@@ -233,13 +236,62 @@ python -m npc_agent.cli worlds --html docs/worlds.html
 ```
 
 > `village` 场景默认走**进程内**的体素世界（`LocalWorldClient`），
-> clone 下来就能跑。要接真实服务端：
+> clone 下来就能跑。要接**真实 Minecraft 服务端**，三步（已实测跑通）：
 >
 > ```bash
-> npm i mineflayer mineflayer-pathfinder
+> # 1) 装桥的依赖
+> npm i mineflayer mineflayer-pathfinder vec3
+>
+> # 2) 起一个服务端（1.21.11，超平坦，离线模式）
+> #    server.jar 的 sha1 = 64bb6d763bed0a9f1d632ec347938594144943ed
+> #    eula.txt: eula=true   /   server.properties 见下
+> java -Xmx2G -jar server.jar nogui
+>
+> # 3) 跑端到端（桥 -> mineflayer -> 真实服务端）
+> python scripts/e2e_minecraft.py
 > ```
-> 然后在代码里把 `MineflayerClient` 传给 `build_cast(scenario, llm, client=...)`。
-> 桥脚本 `scripts/mineflayer_bridge.js` 支持 `--dry-run`，可以在没有服务端时验证协议。
+>
+> 实测输出（1.21.11，`Done (0.953s)!`）：
+>
+> ```
+> [2] bot 已连上（第 2 次探测成功）
+> [4] move->forest ok=True
+> [5] mine ok=True  data={'block': 'oak_log', 'count': 1, 'poi': 'forest'}
+> [6] 移动后 pos=[12, -60, 6] poi=forest inventory={'oak_log': 1}
+> [7] chat ok=True
+> ```
+>
+> 坐标和背包都是**真实世界状态**，不是桥的记账 ——
+> bot 真的走到了林子、真的挖到了一块木头。
+>
+> `server.properties` 的关键几行：
+>
+> ```properties
+> online-mode=false          # 离线模式，mineflayer 才能不鉴权连上
+> level-type=minecraft:flat  # 超平坦：生成快、每次一样
+> level-seed=npcagent
+> gamemode=creative          # 桥的 place/move 不需要先攒资源
+> allow-flight=true
+> spawn-monsters=false       # 去掉随机性
+> view-distance=4
+> ```
+>
+> ⚠️ **超平坦世界的站立面是 `y = -60`**（基岩 -64 / 泥土 / 草方块 -61）。
+> 坐标写成 `y=4` 会让 `mineflayer-pathfinder` 找不到路，报
+> `Took to long to decide path to goal!` —— 看起来像桥坏了，其实只是
+> 坐标写在了半空里。这个坑我踩了一次，现在写在
+> `tests/test_minecraft_e2e.py` 的注释里。
+>
+> 这条链路在 pytest 里是**默认跳过**的（要 `NPC_AGENT_MC_E2E=1` 加一个真在跑的
+> 服务端），因为"没起服务端"不是代码的问题：
+>
+> ```bash
+> NPC_AGENT_MC_E2E=1 python -m pytest tests/test_minecraft_e2e.py -q
+> ```
+>
+> 桥脚本本身还支持 `--dry-run`，可以在**完全没有服务端**时验证协议
+> （`tests/test_minecraft_env.py` 就是用它跑的）。两种模式都有用：
+> dry-run 保证协议永远被测到，真服务端保证最后一段接得上。
 
 ### 接入真实模型
 
@@ -1394,9 +1446,11 @@ game-npc-agent/
 │   └── scenarios/          场景配置（YAML，目标/物品/白名单）—— 含 duet（双 NPC）与 village（体素世界）
 ├── scripts/
 │   ├── mineflayer_bridge.js    Node 桥：把世界操作契约翻成真实 Minecraft 动作
+│   ├── e2e_minecraft.py        端到端：真桥 → mineflayer → 真服务端（需自备服务端）
 │   ├── wait_for_batch.py       等跑批：区分「跑完了 / 跑死了 / 还在跑」
 │   └── rescore_safety.py       用新口径离线重算安全维度（要求先逐字复现旧口径）
-└── tests/                  570 个单元与端到端测试
+├── package.json            桥的 node 依赖（mineflayer 等）；node_modules 不入库
+└── tests/                  571 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -1572,7 +1626,7 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 570 个测试
+- [x] 六维评测 harness + 571 个测试
 - [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
 - [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [x] **多 NPC 协作**：Cast 导演层 + 双 NPC 场景 + 发言调度评测维度
@@ -1622,7 +1676,13 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
       看不到中途状态变化。修前者要把历史一起喂进去（prompt 会变长），
       修后者要给裁判**当时的快照** —— 而快照现在**不在检查点里**，
       所以这件事必须在检查点设计时就决定，不是事后能补的
-- [ ] 接真实 Minecraft 服务端跑通端到端（桥脚本已就绪，`--dry-run` 已验证协议）
+- [x] **接真实 Minecraft 服务端跑通端到端**：Minecraft **1.21.11** 超平坦 +
+      `mineflayer` 4.39.0，`move` / `mine` / `chat` 全部落在真实世界状态上
+      （bot 真的走到 `[12, -60, 6]`，背包里真的多了 `oak_log`）。
+      复现脚本 `scripts/e2e_minecraft.py`，pytest 版 `tests/test_minecraft_e2e.py`
+      （默认跳过，`NPC_AGENT_MC_E2E=1` 才跑）。
+      > 踩到的坑：超平坦世界站立面是 `y = -60`，坐标写成 `y=4` 会让路径规划器
+      > 报 `Took to long to decide path to goal!`，看起来像桥坏了。
 - [ ] 小模型蒸馏 + vLLM 部署，测端到端延迟
 
 ---
@@ -1631,7 +1691,7 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 ```bash
 python -m pytest tests -q
-# 570 passed
+# 571 passed
 ```
 
 覆盖：环境护栏、记忆检索与巩固、**五种检索策略的语义差异**、多人发言权判定、

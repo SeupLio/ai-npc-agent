@@ -1,0 +1,15 @@
+{
+  "name": "npc-agent-minecraft-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ai-npc-agent 的 Mineflayer 桥：把世界操作契约翻译成真实的 Minecraft 动作。只被 scripts/mineflayer_bridge.js 使用。",
+  "scripts": {
+    "bridge": "node scripts/mineflayer_bridge.js",
+    "bridge:dry-run": "node scripts/mineflayer_bridge.js --dry-run"
+  },
+  "dependencies": {
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "vec3": "^0.2.0"
+  }
+}
