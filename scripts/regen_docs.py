@@ -48,6 +48,30 @@ def normalize_report(html: str) -> str:
         lambda m: f"{m.group(1)}{DURATION_PLACEHOLDER}{m.group(2)}", html
     )
 
+
+# 报告里"覆盖了多少条用例"有三种写法 —— 都是历史原因，不统一。
+# 这里按顺序试，**解析不出来就返回 None**，绝不返回 0：
+# 0 会被下游当成一个合法的覆盖数，而"我没解析出来"必须被当成错误。
+_CASE_COUNT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(\d+)\s*条自建用例"),          # 跑批报告：副标题
+    re.compile(r"共\s*(\d+)\s*条用例"),          # 跨世界报告：副标题
+    re.compile(r"通过\s*<strong>(\d+)/\d+</strong>"),  # 对照/消融：头条的分母
+)
+
+
+def case_count(html: str) -> int | None:
+    """从报告里解析出它覆盖的用例数。
+
+    为什么值得解析而不是写死：README 里写了不少"这份是 12 条""那份是 2 条"，
+    但**没有任何东西把这些说法和报告本身绑在一起**。报告哪天被重新生成、
+    用例集变了，那些说法就会静默变成假话 —— 和 `ablation.html` 那次一模一样。
+    """
+    for pattern in _CASE_COUNT_PATTERNS:
+        match = pattern.search(html)
+        if match:
+            return int(match.group(1))
+    return None
+
 # 离线可复现的报告：命令 → 输出文件名
 OFFLINE_REPORTS: dict[str, tuple[tuple[str, ...], str]] = {
     "ablation": (("ablate",), "ablation.html"),

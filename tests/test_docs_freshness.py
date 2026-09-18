@@ -112,6 +112,69 @@ def test_the_classification_does_not_drift_from_reality() -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# README 里对每份报告"覆盖多少条用例"的说法，必须和报告自己印的一致
+# --------------------------------------------------------------------------- #
+
+def _all_report_files() -> dict[str, str]:
+    """报告文件名 → 种类标签（两类都收，覆盖数对两类都成立）。"""
+    out: dict[str, str] = {}
+    for name, (_, filename) in regen_docs.OFFLINE_REPORTS.items():
+        out[filename] = f"离线可复现（{name}）"
+    for filename in regen_docs.SNAPSHOT_REPORTS:
+        out[filename] = "一次跑批的快照"
+    return out
+
+
+def test_case_count_reads_all_three_shapes() -> None:
+    """报告里"覆盖多少条"有三种写法（历史原因，不统一），都要能读出来。
+
+    这条把三种写法**钉死在这里**，所以文件换了、结构改了，
+    失败的是这条而不是下游那条"README 和报告对不上"——
+    后者的报错会把人往文档那边引，实际坏的是解析。
+    """
+    assert regen_docs.case_count("<div>228 条自建用例</div>") == 228
+    assert regen_docs.case_count("<div>2 个世界、共 228 条用例、228/228 通过</div>") == 228
+    assert regen_docs.case_count("通过 <strong>12/12</strong>，自由台词 0%") == 12
+
+
+def test_case_count_returns_none_not_zero() -> None:
+    """读不出来必须返回 None。
+
+    返回 0 的话，下游会把 0 当成一个**合法的覆盖数**，
+    于是"README 说 228 条、报告说 0 条"这种错会以最难看的方式报出来。
+    """
+    assert regen_docs.case_count("<html>这里没有任何用例数</html>") is None
+
+
+@pytest.mark.parametrize("filename", sorted(_all_report_files()))
+def test_readme_states_each_reports_coverage(filename: str) -> None:
+    """README 里每份报告那一行，都要写出它覆盖多少条 —— 且数字要和报告一致。
+
+    为什么要这条：README 的表格原来只写"内容"，不写覆盖规模，
+    于是 `comparison.html`（**12 条**）和 `multi_npc.html`（**2 条**）
+    和两份 228 条的跑批看起来是同一个量级。读者会拿 2 条的结果当结论。
+    """
+    html = (DOCS / filename).read_text(encoding="utf-8")
+    count = regen_docs.case_count(html)
+    assert count is not None, (
+        f"{filename} 里读不出覆盖的用例数 —— "
+        "三种写法（`N 条自建用例` / `共 N 条用例` / `通过 N/M`）都不匹配了。"
+    )
+
+    rows = [
+        line for line in README.read_text(encoding="utf-8").splitlines()
+        if f"docs/{filename}" in line
+    ]
+    assert rows, f"README 里找不到指向 {filename} 的行"
+    assert any(f"{count} 条" in row for row in rows), (
+        f"README 里 {filename} 那一行没写「{count} 条」这个覆盖数。\n"
+        f"报告自己印的是 {count} 条，README 要跟着写 —— "
+        "否则读者会以为它和别的报告是同一个量级。\n"
+        f"实际那几行：\n" + "\n".join(rows)
+    )
+
+
 def _assert_matches_code(name: str, tmp_path: Path) -> None:
     committed = DOCS / regen_docs.OFFLINE_REPORTS[name][1]
     assert committed.exists(), f"{committed} 不存在"

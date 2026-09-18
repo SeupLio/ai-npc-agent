@@ -871,8 +871,10 @@ python -m npc_agent.cli compare --models kimi-k2.7-code --no-planner
 **`--no-planner` 是关键的一个开关。** 它让模型只负责台词、规划仍走启发式，
 从而把"模型负责台词"和"模型负责规划"拆成两个可独立测量的变量。
 实测 LLM 规划在推理模型上单次约 35s（`max_tokens=2048` 让思维链变长），
-全量 12 条用例（82 轮）跑批要 ~2 小时；只让模型负责台词则约 20 分钟。
+**当时全量只有 12 条用例**（82 轮），跑批就要 ~2 小时；只让模型负责台词则约 20 分钟。
 **先测便宜的那个变量**，是这个项目里最实用的一条经验。
+（用例集后来扩到 228 条，同一条经验换算过去就是"先跑台词侧" ——
+规划侧的实测代价见「对照实验五」。）
 
 **实测结果**（`kimi-k2.7-code`，12 条用例，配对完整，同一套指标）：
 
@@ -935,10 +937,10 @@ python -m npc_agent.cli ablate
 
 #### 离线可复现（有护栏，过期会红）
 
-| 报告 | 内容 | 重新生成 |
-|---|---|---|
-| [`docs/ablation.html`](docs/ablation.html) | 五种记忆检索策略的消融 | `python scripts/regen_docs.py --only ablation` |
-| [`docs/worlds.html`](docs/worlds.html) | 跨世界覆盖报告（同一套 Agent 跑在两个世界上） | `python scripts/regen_docs.py --only worlds` |
+| 报告 | 覆盖 | 内容 | 重新生成 |
+|---|---|---|---|
+| [`docs/ablation.html`](docs/ablation.html) | **228 条** | 五种记忆检索策略的消融 | `python scripts/regen_docs.py --only ablation` |
+| [`docs/worlds.html`](docs/worlds.html) | **228 条**（2 个世界） | 跨世界覆盖报告（同一套 Agent 跑在两个世界上） | `python scripts/regen_docs.py --only worlds` |
 
 > 这两份由 `tests/test_docs_freshness.py` 钉住：和当前代码生成的结果不一致就红。
 > `worlds` 是秒级、默认就跑；`ablation` 约 2 分钟，设 `NPC_AGENT_DOC_FRESHNESS=1` 才跑。
@@ -951,13 +953,21 @@ python -m npc_agent.cli ablate
 
 #### 一次跑批的快照（需要模型 + 额度，故意不自动化）
 
-| 报告 | 内容 | 重新生成 |
-|---|---|---|
-| [`docs/batch_model.html`](docs/batch_model.html) | **228 条 × 真实模型的跑批报告**（含裁判校准与留出集） | `compare --models kimi-k2.7-code` → `report-batch` |
-| [`docs/batch_planner.html`](docs/batch_planner.html) | 同一个跑批、**规划也交给模型** —— 掉 11 个点，且报告自己标了"这批不干净" | 同上，把规划也交给模型（见「对照实验五」） |
-| [`docs/comparison.html`](docs/comparison.html) | 离线启发式 vs 真实模型的对照 | `compare --models kimi-k2.7-code` |
-| [`docs/multi_npc.html`](docs/multi_npc.html) | 多 NPC 场景接上模型的对话样本 | `compare --models kimi-k2.7-code --category multi_npc` |
+| 报告 | 覆盖 | 内容 | 重新生成 |
+|---|---|---|---|
+| [`docs/batch_model.html`](docs/batch_model.html) | **228 条** | 真实模型的跑批报告（含裁判校准与留出集） | `compare --models kimi-k2.7-code` → `report-batch` |
+| [`docs/batch_planner.html`](docs/batch_planner.html) | **228 条** | 同一个跑批、**规划也交给模型** —— 掉 11 个点，且报告自己标了"这批不干净" | 同上，把规划也交给模型（见「对照实验五」） |
+| [`docs/comparison.html`](docs/comparison.html) | **12 条** ⚠️ | 离线启发式 vs 真实模型的对照 | `compare --models kimi-k2.7-code` |
+| [`docs/multi_npc.html`](docs/multi_npc.html) | **2 条** ⚠️ | 多 NPC 场景接上模型的对话样本 | `compare --models kimi-k2.7-code --category multi_npc` |
 
+> ⚠️ **标了记号的两份只覆盖 12 条 / 2 条** —— 它们是**用例集还小的时候**跑的，
+> 和那两份 228 条的跑批**不可比**。留着它们的价值是"当时机制能跑通"的存档，
+> 不是读数（详见「对照实验一 / 三」里的规模说明）。
+>
+> **"覆盖"这一列是报告自己印的数，由护栏核对** ——
+> 不是人抄的。报告哪天被重新生成、用例集变了，
+> README 里这些说法会跟着红，而不是静默变成假话。
+>
 > 这四份冻结在生成它们的那一刻，**重生成要烧额度**（这批跑批约 8,500 次调用），
 > 所以故意不做成自动的。但**也不许靠"没人注意"来归类**：
 > `scripts/regen_docs.py` 里显式列了它们，
@@ -1498,7 +1508,7 @@ game-npc-agent/
 │   ├── wait_for_batch.py       等跑批：区分「跑完了 / 跑死了 / 还在跑」
 │   └── rescore_safety.py       用新口径离线重算安全维度（要求先逐字复现旧口径）
 ├── package.json            桥的 node 依赖（mineflayer 等）；node_modules 不入库
-└── tests/                  585 个单元与端到端测试
+└── tests/                  593 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -1674,7 +1684,13 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 585 个测试
+- [x] 六维评测 harness + 593 个测试
+- [x] **`docs/` 的报告分成两类并加护栏**：**离线可复现**（`ablation` / `worlds`，
+      和代码不一致就是在说谎）vs **一次跑批的快照**（要模型 + 额度）。
+      入库的 `ablation.html` 曾是 12 条用例时代的产物（5 列指标、没有「发言调度」），
+      已重新生成并钉住；README 里每份报告的**覆盖条数**也由护栏核对
+      （`comparison.html` 只有 **12 条**、`multi_npc.html` 只有 **2 条**，
+      以前表格里看不出这个差别）
 - [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
 - [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [x] **多 NPC 协作**：Cast 导演层 + 双 NPC 场景 + 发言调度评测维度
@@ -1748,10 +1764,10 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 ```bash
 python -m pytest tests -q
-# 583 passed, 2 skipped
+# 591 passed, 2 skipped
 ```
 
-> 收集到的是 **585** 条，默认跳过 **2** 条：
+> 收集到的是 **593** 条，默认跳过 **2** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）
 > 和 `tests/test_docs_freshness.py` 里那条慢速报告校验
 > （约 2 分钟，`NPC_AGENT_DOC_FRESHNESS=1` 才跑）。
