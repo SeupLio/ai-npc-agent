@@ -203,6 +203,30 @@ Minecraft 的不同之处全部被适配器吸收了。
 
 ## 快速开始
 
+**最直观的入口是一个网页控制台**（离线、不需要模型、不需要网络）：
+
+```bash
+python -m npc_agent.cli studio
+```
+
+一条命令起一个本地页面，四件事在同一屏上：
+
+| 标签 | 能做什么 |
+|---|---|
+| ① 对话演示 | 选场景和身份说话；右边实时显示**世界状态 / 记忆库 / 发言统计**；「空转一轮」看 NPC 会不会自己找事做 |
+| ② 跑评测 | 跑六维离线基线，看每个维度、每个类别的通过率，以及**没过的是哪几条、为什么** |
+| ③ 变异测试 | 往 Agent 里**注入一个故意的缺陷**再重跑 —— 评测必须掉分。这就是「满分是不是『护栏从不报警』」的答案 |
+| ④ 报告门户 | `docs/` 里全部报告的入口，带**覆盖多少条**（12 条和 231 条不是一个量级） |
+
+> 它**不重写任何逻辑**，只是把 `Cast` / `EvalHarness` / `run_sensitivity`
+> 包了一层 HTTP。所以控制台里的数字和命令行**必然一致** ——
+> 这件事有测试钉住（`tests/test_studio.py` 里是**差分测试**：
+> 控制台的 summary 必须等于直接调库的 summary）。
+> 默认只绑 `127.0.0.1`：它是自测工具，不是对外服务。
+> 配了 `NPC_AGENT_PROVIDER=openai-compat` 会自动切成真实模型。
+
+下面是等价的命令行入口。
+
 ```bash
 pip install -r requirements.txt
 
@@ -1477,7 +1501,9 @@ game-npc-agent/
 │   ├── config.py           运行时配置 + YAML 加载
 │   ├── agent.py            单 NPC 主循环：把七大模块串成一条决策链
 │   ├── cast.py             多 NPC 导演：共享世界 + 每个 NPC 一个 Agent
-│   ├── cli.py              demo / chat / eval / compare / ablate / tools / info
+│   ├── cli.py              studio / demo / chat / eval / compare / ablate / tools / info
+│   ├── studio.py           自测控制台的 HTTP 外壳（只用标准库，无 Web 框架）
+│   ├── studio_ui.py        控制台页面（自包含，无外链、无 CDN、无构建步骤）
 │   ├── llm/                模型抽象层
 │   │   ├── base.py             基类 + 容错 JSON 解析
 │   │   ├── null.py             离线占位（显式声明模型不可用）
@@ -1507,6 +1533,7 @@ game-npc-agent/
 │       ├── batch_report.py     跑批 + 裁判结果 → 自包含 HTML（含饱和/可信度护栏）
 │       ├── judge.py            LLM-as-judge：校准、kappa、位置偏见、留出集封条
 │       ├── sensitivity.py      评测敏感性：注入缺陷，证明满分不是"护栏从不报警"
+│       ├── report_index.py     报告清单（唯一真相来源：重生成 / 过期护栏 / 门户共用）
 │       ├── calibration.jsonl       开发集（24 条，被用来调过 rubric）
 │       ├── calibration_holdout.jsonl  留出集（32 条，标签写好时未见过裁判输出）
 │       ├── holdout_seal.json        留出集封条（样本摘要 + rubric 摘要）
@@ -1520,7 +1547,7 @@ game-npc-agent/
 │   ├── wait_for_batch.py       等跑批：区分「跑完了 / 跑死了 / 还在跑」
 │   └── rescore_safety.py       用新口径离线重算安全维度（要求先逐字复现旧口径）
 ├── package.json            桥的 node 依赖（mineflayer 等）；node_modules 不入库
-└── tests/                  626 个单元与端到端测试
+└── tests/                  650 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -1845,7 +1872,7 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 626 个测试
+- [x] 六维评测 harness + 650 个测试
 - [x] **`docs/` 的报告分成两类并加护栏**：**离线可复现**（`ablation` / `worlds` / `sensitivity`，
       和代码不一致就是在说谎）vs **一次跑批的快照**（要模型 + 额度）。
       入库的 `ablation.html` 曾是 12 条用例时代的产物（5 列指标、没有「发言调度」），
@@ -1863,7 +1890,7 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
       报告（`docs/sensitivity.html`）与 `tests/test_sensitivity.py`（10 条）都已入库。
       详见「设计取舍 14 / 15」
 - [x] **`memory` 维度的覆盖率**：报告里 `retrieval_disabled` 只掉 **0.007** 很难看，
-      追下去发现 34 条记忆用例里 **31 条**断言 `memory_contains`（读记忆库原始列表，
+      追下去发现 37 条记忆用例里 **31 条**断言 `memory_contains`（读记忆库原始列表，
       **结构上看不见检索**），只有 **3 条**断言 `recall_in_speech`。
       补了 3 条 needle 只有检索才能得到的用例（3 → 6 条），
       掉分 **−0.007 → −0.013**；新增 `tests/test_memory_coverage.py`（5 条护栏）：
@@ -1873,6 +1900,15 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
       （「你之前提过**我**特别喜欢偏酸的咖啡」）、NPC 把玩家的**当前问句**
       引回来当成过去的事。两个都修了，回归测试在 `tests/test_memory_hint.py`。
       详见「设计取舍 16」
+- [x] **自测控制台 `studio`**：一条命令起一个本地网页，把「对话 / 评测 / 变异测试 /
+      报告门户」放在同一屏上。它**不重写任何逻辑**，只是把 `Cast` /
+      `EvalHarness` / `run_sensitivity` 包了一层 HTTP —— 所以控制台的数字和
+      命令行**必然一致**，`tests/test_studio.py` 用**差分测试**钉住这件事
+      （控制台的 summary 必须等于直接调库的 summary）。
+      只用标准库（无 Web 框架），页面自包含（无外链 / 无 CDN / 无构建步骤），
+      且**页面里不许出现用例条数**（写死就会像文档里的数字一样过期）。
+      报告清单收拢到 `npc_agent/eval/report_index.py`：重生成、过期护栏、
+      报告门户三个消费方原来各抄一份 —— 抄的东西必然漂移。
 - [x] **README 里那条测试命令，印不出它承诺的输出**：`pyproject.toml` 里已经有
       `addopts = "-q"`，命令里再写一个 `-q` 就叠成 **`-qq`** —— 而 `-qq` 会把
       **最后那行汇总整个吞掉**，只剩进度点和 `[100%]`，**退出码还是 0**。
@@ -1959,7 +1995,7 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
 
 ```bash
 python -m pytest tests
-# 624 passed, 2 skipped
+# 648 passed, 2 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -1970,7 +2006,7 @@ python -m pytest tests
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**
 > （见 `tests/test_test_hygiene.py`），改了命令不改输出会红。
 
-> 收集到的是 **626** 条，默认跳过 **2** 条：
+> 收集到的是 **650** 条，默认跳过 **2** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）
 > 和 `tests/test_docs_freshness.py` 里那条慢速报告校验
 > （约 2 分钟，`NPC_AGENT_DOC_FRESHNESS=1` 才跑）。

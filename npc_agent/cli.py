@@ -1,5 +1,6 @@
 """命令行入口。
 
+    python -m npc_agent.cli studio                        # 自测控制台（网页，最直观）
     python -m npc_agent.cli demo  --scenario icebreaker   # 看一段完整交互
     python -m npc_agent.cli chat  --scenario tutorial     # 自己上手玩
     python -m npc_agent.cli eval                          # 跑评测出数字
@@ -1443,7 +1444,7 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
 def cmd_sensitivity(args: argparse.Namespace) -> int:
     """评测敏感性：往 agent 里注入缺陷，看评测掉不掉分。
 
-    这是"离线 228/228 全绿"这句话的**证据**。因为：
+    这是"离线基线满分（231/231）"这句话的**证据**。因为：
 
     > 一个从不失败的评测，和一个没有评测，在报告上长得一模一样。
 
@@ -1487,6 +1488,37 @@ def cmd_sensitivity(args: argparse.Namespace) -> int:
         console.print(f"敏感性 HTML 已写入 {out}")
 
     return 0 if report.ok else 1
+
+
+# --------------------------------------------------------------------------- #
+def cmd_studio(args: argparse.Namespace) -> int:
+    """本地自测控制台：一条命令，一个网页，不用模型也能玩。
+
+    这个项目原来的入口全是命令行，每个都要记参数，而且
+    `chat` 只能对终端打字、`eval` 只印一张表、`sensitivity` 只告诉你
+    "全被抓到" —— **能证明结论的东西都在，但不好看**。
+
+    所以这里做的是同一批能力的**可视化外壳**：对话 + 世界状态 + 记忆
+    + 六维分数 + 一键注入缺陷，全在一个页面里。
+
+    ⚠️ 它**不重写任何逻辑**，只是把 `cast` / `EvalHarness` / `run_sensitivity`
+    包了一层 HTTP。所以控制台里看到的数字和命令行**必然一致** ——
+    不一致就说明有人在这里抄了一份逻辑，那是 bug。
+
+    默认 `127.0.0.1`：它是自测工具，不是要给外网访问的服务。
+    """
+    from .studio import serve_studio
+
+    return serve_studio(
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_open,
+        provider=getattr(args, "provider", None),
+        model=getattr(args, "model", None),
+        base_url=getattr(args, "base_url", None),
+        api_key=getattr(args, "api_key", None),
+        verbose=bool(getattr(args, "verbose", False)),
+    )
 
 
 
@@ -1571,6 +1603,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_sens.add_argument("--json", default="", help="把敏感性报告写成 JSON")
     p_sens.add_argument("--html", default="", help="把敏感性报告写成 HTML")
     p_sens.set_defaults(func=cmd_sensitivity)
+
+    p_studio = sub.add_parser(
+        "studio",
+        help="本地自测控制台：一个网页，能对话、跑评测、一键注入缺陷",
+    )
+    p_studio.add_argument("--host", default="127.0.0.1", help="绑定地址（默认只绑本机）")
+    p_studio.add_argument("--port", type=int, default=8765, help="端口；0 = 让系统挑一个")
+    p_studio.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+    p_studio.set_defaults(func=cmd_studio)
 
     p_gen = sub.add_parser("gencases", help="生成用例集（指纹去重 + 离线可达性门禁）")
     p_gen.add_argument("--target", type=int, default=240, help="用例数上限（不是配额，实际由结构数决定）")

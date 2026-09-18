@@ -19,79 +19,46 @@
     python scripts/regen_docs.py                     # 写回 docs/
     python scripts/regen_docs.py --out /tmp/x        # 写到别处（给护栏比对用）
     python scripts/regen_docs.py --only worlds       # 只生成一个
+
+## 清单在哪
+
+报告清单（谁是谁、哪些能重生成）住在 **`npc_agent/eval/report_index.py`**。
+它原来只活在这个脚本里，于是"报告门户"和"过期护栏"各自抄了一份 ——
+手抄的清单必然漂移。这里只是**转出**那几个名字，保持
+`regen_docs.OFFLINE_REPORTS` 这些老入口不变（测试在用）。
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# `scripts/` 不是包，直接 `python scripts/regen_docs.py` 时 sys.path[0] 是
+# `scripts/` 而不是仓库根 —— 不插这一行，下面的 `npc_agent` 导入会失败。
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-# 报告里会嵌**时长**（`0.18s` / `14s` / `1184s`），它天然每次都不一样。
-# 所以"离线可复现"只能定义成"**除时长外**逐字节一致"。
-# 不把时长抠掉，护栏就只能常年红着 —— 于是没人再看它，等于没有护栏。
-_DURATION_CELL = re.compile(r'(<td class="num[^"]*">)\s*\d+(?:\.\d+)?s\s*(</td>)')
-DURATION_PLACEHOLDER = "⟨时长⟩"
-
-
-def normalize_report(html: str) -> str:
-    """把报告里天然会变的字段抹平，只留下**应该稳定**的内容。
-
-    ⚠️ **只抹时长。** 别顺手把别的数字也抹掉 —— 那些数字正是要守的东西
-    （通过数、指标均值、用例名）。抹多了这条护栏就变成永真式。
-    """
-    return _DURATION_CELL.sub(
-        lambda m: f"{m.group(1)}{DURATION_PLACEHOLDER}{m.group(2)}", html
-    )
-
-
-# 报告里"覆盖了多少条用例"有三种写法 —— 都是历史原因，不统一。
-# 这里按顺序试，**解析不出来就返回 None**，绝不返回 0：
-# 0 会被下游当成一个合法的覆盖数，而"我没解析出来"必须被当成错误。
-_CASE_COUNT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(\d+)\s*条自建用例"),          # 跑批报告：副标题
-    re.compile(r"共\s*(\d+)\s*条用例"),          # 跨世界报告：副标题
-    re.compile(r"通过\s*<strong>(\d+)/\d+</strong>"),  # 对照/消融：头条的分母
+# 转出（re-export）：清单的唯一真相来源在库里，不在脚本里。
+from npc_agent.eval.report_index import (  # noqa: E402
+    DURATION_PLACEHOLDER,
+    OFFLINE_REPORTS,
+    SNAPSHOT_REPORTS,
+    case_count,
+    normalize_report,
 )
 
-
-def case_count(html: str) -> int | None:
-    """从报告里解析出它覆盖的用例数。
-
-    为什么值得解析而不是写死：README 里写了不少"这份是 12 条""那份是 2 条"，
-    但**没有任何东西把这些说法和报告本身绑在一起**。报告哪天被重新生成、
-    用例集变了，那些说法就会静默变成假话 —— 和 `ablation.html` 那次一模一样。
-    """
-    for pattern in _CASE_COUNT_PATTERNS:
-        match = pattern.search(html)
-        if match:
-            return int(match.group(1))
-    return None
-
-# 离线可复现的报告：命令 → 输出文件名
-OFFLINE_REPORTS: dict[str, tuple[tuple[str, ...], str]] = {
-    "ablation": (("ablate",), "ablation.html"),
-    "worlds": (("worlds",), "worlds.html"),
-    # 敏感性报告也是离线可复现的：它只跑启发式路径，不调模型。
-    # 它比另外两份更该被钉住 —— 它是「基线全绿」这句话的**证据**，
-    # 过期了就等于在给一个已经不准的结论背书。
-    # ⚠️ 这里**不写用例条数**：条数会变（15 → 228 → 231），
-    # 写死在注释里就会像文档里的数字一样过期。要读就读报告自己印的那一行。
-    "sensitivity": (("sensitivity",), "sensitivity.html"),
-}
-# 一次跑批的快照：需要模型 + 额度，**故意不自动化**。
-# 列在这里是为了让"哪些不能重生成"变成一个可被测试读取的事实，
-# 而不是散落在文档里的口头说明。
-SNAPSHOT_REPORTS: dict[str, str] = {
-    "batch_model.html": "compare --models kimi-k2.7-code（228 条跑批 + 裁判）",
-    "batch_planner.html": "compare --models kimi-k2.7-code（规划也交给模型）",
-    "comparison.html": "compare --models kimi-k2.7-code（离线 vs 模型对照）",
-    "multi_npc.html": "compare --models kimi-k2.7-code --category multi_npc",
-}
+__all__ = [
+    "OFFLINE_REPORTS",
+    "SNAPSHOT_REPORTS",
+    "DURATION_PLACEHOLDER",
+    "case_count",
+    "normalize_report",
+    "regen",
+    "main",
+]
 
 
 def regen(only: str | None, out_dir: Path) -> list[Path]:
