@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import json
 import os
 import re
 import subprocess
@@ -26,6 +27,10 @@ import sys
 from pathlib import Path
 
 import pytest
+
+# 六个维度从 `_METRIC_LABELS` 取，**不手抄** ——
+# 将来加第七个维度时，README 那段输出和这条护栏会一起长出来。
+from npc_agent.eval.report import _METRIC_LABELS
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
@@ -501,5 +506,162 @@ def test_the_quiet_flag_check_can_actually_fail() -> None:
     ]
     offenders = [cmd for cmd in sample if _QUIET_FLAGS & set(cmd.split())]
     assert len(offenders) == 2, f"漏检或误报：{offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# README 里手抄的离线基线
+# --------------------------------------------------------------------------- #
+
+# README「评测」一节里那段基线输出。它和 `docs/*.html` 里"覆盖"那一列是
+# 同一个毛病：**数字不是从代码里长出来的，是人手打上去的**。
+#
+# 而它比那几份报告更该被钉住 —— 它是**离线可复现**的：
+# 任何人跑一遍 `python -m npc_agent.cli eval` 就能拿到真值。
+# 一份离线可复现的文档却停在几个月前，就是在说谎，而且没人会发现。
+#
+# ⚠️ 只钉**确定性**的字段（通过率、六维均值、每类条数）。
+# `墙钟 2s` / `实测加速 3.97×` **故意不钉** —— 它们随机器和负载变，
+# 钉住只会逼着文档写一个假的固定值。一条把噪声也钉死的护栏，
+# 最后一定会被 `--force` 掉。
+_BASELINE_BLOCK = re.compile(
+    r"通过率\s*(?P<passed>\d+)/(?P<total>\d+)\s*（(?P<pct>\d+)%）\s*各维度均值\s*"
+    r"task=(?P<task>[\d.]+)\s*tools=(?P<tools>[\d.]+)\s*memory=(?P<memory>[\d.]+)\s*"
+    r"persona=(?P<persona>[\d.]+)\s*safety=(?P<safety>[\d.]+)\s*"
+    r"turn_taking=(?P<turn_taking>[\d.]+)"
+)
+
+# `分布：`task 76 / persona 39 / memory 34 / safety 31 / multi_npc 27 / minecraft 21`。`
+_BASELINE_DIST = re.compile(
+    r"分布：`task (?P<task>\d+) / persona (?P<persona>\d+) / memory (?P<memory>\d+) / "
+    r"safety (?P<safety>\d+) / multi_npc (?P<multi_npc>\d+) / minecraft (?P<minecraft>\d+)`"
+)
+
+# 六个维度从 `_METRIC_LABELS` 取（import 在文件顶部），**不手抄**。
+_BASELINE_DIMS: tuple[str, ...] = tuple(_METRIC_LABELS)
+
+
+def _baseline_mismatches(text: str, summary: dict) -> dict[str, object]:
+    """README 里那段基线输出和**实际跑出来**的 summary 对不上的地方。
+
+    拆成纯函数是为了能给它写反向测试（见 `..._can_actually_fail`）：
+    一个只会返回空字典的护栏，和不存在没区别。
+    """
+    wrong: dict[str, object] = {}
+
+    block = _BASELINE_BLOCK.search(text)
+    if not block:
+        return {"基线输出段": "README 里找不到，正则过期了"}
+
+    dist = _BASELINE_DIST.search(text)
+    if not dist:
+        wrong["分布行"] = "README 里找不到，正则过期了"
+
+    total = int(summary["total"])
+    passed = int(summary["passed"])
+
+    if (int(block["passed"]), int(block["total"])) != (passed, total):
+        wrong["通过率"] = (
+            f"README 写 {block['passed']}/{block['total']}，"
+            f"实际 {passed}/{total}"
+        )
+    expected_pct = round(passed / total * 100) if total else 0
+    if int(block["pct"]) != expected_pct:
+        wrong["百分比"] = f"README 写 {block['pct']}%，实际 {expected_pct}%"
+
+    means = summary["metric_means"]
+    for dim in _BASELINE_DIMS:
+        shown = float(block[dim])
+        real = float(means.get(dim, 0.0))
+        # README 印的是三位小数（`1.000`），所以比到 1e-9 就够。
+        if abs(shown - real) > 1e-9:
+            wrong[f"维度 {dim}"] = f"README 写 {shown:.3f}，实际 {real:.3f}"
+
+    if dist:
+        by_cat = {k: int(v["total"]) for k, v in summary["by_category"].items()}
+        for cat in ("task", "persona", "memory", "safety", "multi_npc", "minecraft"):
+            shown = int(dist[cat])
+            real = by_cat.get(cat)
+            if real is None:
+                wrong[f"分布 {cat}"] = "这次跑批里根本没有这一类用例（用例集被改了？）"
+            elif shown != real:
+                wrong[f"分布 {cat}"] = f"README 写 {shown} 条，实际 {real} 条"
+
+    return wrong
+
+
+def _offline_eval_summary(tmp_path: Path) -> dict:
+    """跑一遍 README 里那条命令，拿回真实的 summary。
+
+    用**子进程**而不是在当前进程里调 harness：README 承诺的是
+    "敲这行命令你会看到这些数字"，那验证的就该是**那行命令**，
+    不是一段碰巧等价的库调用。
+    """
+    out = tmp_path / "eval_offline.json"
+    proc = subprocess.run(
+        [sys.executable, "-m", "npc_agent.cli", "eval", "--json", str(out)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env=_default_env(),
+    )
+    if proc.returncode != 0:
+        pytest.fail(
+            f"跑 README 里的离线基线命令失败（退出码 {proc.returncode}）：\n"
+            f"stdout:\n{proc.stdout[-1500:]}\nstderr:\n{proc.stderr[-1500:]}"
+        )
+    if not out.exists():
+        pytest.fail(f"命令退出码 0，但没写出 JSON：{out}")
+    return json.loads(out.read_text(encoding="utf-8"))["summary"]
+
+
+def test_readme_offline_baseline_matches_reality(tmp_path: Path) -> None:
+    r"""README 里那段手抄的基线输出，必须和真跑一遍的结果逐字一致。
+
+    ## 为什么值得单独加一条
+
+    这段输出是**离线可复现**的（不调模型、不联网、秒级），
+    所以它和 `docs/` 里那几份离线报告是一个性质：
+    **和代码不一致就是在说谎** —— 读者会以为这是当前代码的成绩。
+
+    它已经过期过一次：用例集从 12 条长到 228 条，而这类"手抄块"
+    没有任何机制会跟着动。加这条护栏之后，任何让六维均值或分布
+    发生变化的改动（比如某条断言被写松了、用例集被重新生成），
+    都会先把 README 顶红 —— 而不是静默留下一句假话。
+    """
+    text = README.read_text(encoding="utf-8")
+    summary = _offline_eval_summary(tmp_path)
+    wrong = _baseline_mismatches(text, summary)
+
+    assert not wrong, (
+        f"README 里的离线基线和实际对不上：{wrong}。"
+        "跑 `python -m npc_agent.cli eval --json reports/eval_offline.json` "
+        "拿到真值，把「评测」一节那段输出和 `分布：` 那一行一起改掉。"
+    )
+
+
+def test_the_readme_baseline_check_can_actually_fail(tmp_path: Path) -> None:
+    """上面那条的判据必须真的抓得到过期数字，否则它和不存在没区别。
+
+    做法：拿真跑出来的 summary，配一份**被人改坏**的 README 文本，
+    断言每类改动都被点名。只测"改一个数"不够 —— 那只能证明某一条分支活着。
+    """
+    text = README.read_text(encoding="utf-8")
+    summary = _offline_eval_summary(tmp_path)
+    assert not _baseline_mismatches(text, summary), "原文本本来就对不上，先修 README"
+
+    broken = text.replace("通过率 228/228（100%）", "通过率 227/228（100%）")
+    broken = broken.replace("task=1.000 tools=1.000", "task=0.900 tools=1.000")
+    broken = broken.replace("分布：`task 76", "分布：`task 99")
+    wrong = _baseline_mismatches(broken, summary)
+
+    assert "通过率" in wrong, f"改了通过率却没抓到：{wrong}"
+    assert "维度 task" in wrong, f"改了六维均值却没抓到：{wrong}"
+    assert "分布 task" in wrong, f"改了分布却没抓到：{wrong}"
+
+    # 正则过期是最隐蔽的失效方式：抓不到就静默返回空字典。
+    assert _baseline_mismatches("这里没有基线输出", summary), (
+        "文本里没有基线块时必须报错，不能静默通过"
+    )
+
 
 

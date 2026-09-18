@@ -59,7 +59,7 @@ def _load_regen():
 regen_docs = _load_regen()
 
 # 秒级，默认就跑
-FAST_OFFLINE = ("worlds",)
+FAST_OFFLINE = ("worlds", "sensitivity")
 # 约 2 分钟，默认跳过；设 NPC_AGENT_DOC_FRESHNESS=1 才跑
 SLOW_OFFLINE = ("ablation",)
 

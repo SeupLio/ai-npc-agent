@@ -1440,6 +1440,57 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
 
 
 # --------------------------------------------------------------------------- #
+def cmd_sensitivity(args: argparse.Namespace) -> int:
+    """评测敏感性：往 agent 里注入缺陷，看评测掉不掉分。
+
+    这是"离线 228/228 全绿"这句话的**证据**。因为：
+
+    > 一个从不失败的评测，和一个没有评测，在报告上长得一模一样。
+
+    所以这里逐个注入明确的缺陷（记不住 / 不规划 / 抢话 / 绕过护栏说话），
+    要求评测把它们抓出来。**注入缺陷却不掉分的，就是盲点清单。**
+
+    退出码：全部抓住 → 0；有变异活着 → 1（可以拿来卡 CI）。
+    """
+    import json
+    from pathlib import Path
+
+    from rich.console import Console
+
+    from .config import RuntimeConfig
+    from .eval.sensitivity import render_sensitivity, render_sensitivity_html, run_sensitivity
+
+    console = Console()
+    categories = args.category or None
+    limit = getattr(args, "limit", 0) or 0
+    if limit:
+        console.print(
+            f"[yellow]--limit {limit}：只跑前 {limit} 条用例，"
+            "这里只做机制自检，不是全量数字[/yellow]"
+        )
+
+    report = run_sensitivity(categories=categories, limit=limit, config=RuntimeConfig())
+    render_sensitivity(report, console)
+
+    if getattr(args, "json", ""):
+        target = Path(args.json)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        console.print(f"敏感性报告已写入 {target}")
+
+    if getattr(args, "html", ""):
+        out = Path(args.html)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(render_sensitivity_html(report), encoding="utf-8")
+        console.print(f"敏感性 HTML 已写入 {out}")
+
+    return 0 if report.ok else 1
+
+
+
+# --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="npc_agent", description="游戏 AI NPC 智能体框架"
@@ -1510,6 +1561,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_worlds.add_argument("--json", default="reports/worlds.json", help="报告输出路径")
     p_worlds.add_argument("--html", default="reports/worlds.html", help="HTML 报告路径，空串则不生成")
     p_worlds.set_defaults(func=cmd_worlds)
+
+    p_sens = sub.add_parser(
+        "sensitivity",
+        help="评测敏感性：注入缺陷，证明满分不是'护栏从不报警'",
+    )
+    p_sens.add_argument("--category", action="append", help="只跑某一类用例（可重复）")
+    p_sens.add_argument("--limit", type=int, default=0, help="只跑前 N 条（机制自检用）")
+    p_sens.add_argument("--json", default="", help="把敏感性报告写成 JSON")
+    p_sens.add_argument("--html", default="", help="把敏感性报告写成 HTML")
+    p_sens.set_defaults(func=cmd_sensitivity)
 
     p_gen = sub.add_parser("gencases", help="生成用例集（指纹去重 + 离线可达性门禁）")
     p_gen.add_argument("--target", type=int, default=240, help="用例数上限（不是配额，实际由结构数决定）")

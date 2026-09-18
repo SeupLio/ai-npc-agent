@@ -28,6 +28,68 @@ CATEGORIES = ("task", "memory", "persona", "safety", "multi_npc", "minecraft")
 
 
 # --------------------------------------------------------------------------- #
+def evaluator_persona_violations(
+    persona: Any, text: str, unlocked_topics: set[str] | None = None
+) -> list[str]:
+    """在**评测侧**独立算一遍人设违规 —— 不采信 agent 自报的 `turn.persona_violations`。
+
+    ## 为什么不能直接读 `turn.persona_violations`
+
+    因为那是**被测方自己算的**：`agent.py` 里
+
+        turn.persona_violations = self.persona.check(turn.say, ...)
+
+    评测如果直接拿来用，等于问被测方"你觉得自己违规了吗"。
+    实测过这个后果（`eval/sensitivity.py` 的 `ooc_phrase_with_detector_disabled`）：
+    **同一句出戏台词注入进转写**，
+
+    - 检查器完好时 → `persona` 维度掉 **0.612**
+    - 把检查器关掉之后 → `persona` 维度掉 **0.000**（满分）
+
+    缺陷一模一样，分数从 0.388 变成 1.000。一个会被被测方一句话改写的分数，
+    不是测量结果。
+
+    ## 改法：判据可以复用，**结论必须评测侧自己下**
+
+    这里只读人设的**数据表**（`forbidden_phrases` / `spoiler_terms` / `style`），
+    自己算一遍，不调 `Persona.check`。判据和 `Persona.check` 是同一套，
+    而且有测试钉住两者在语料上必须逐字一致
+    （`test_evaluator_persona_audit_matches_persona_check`），所以不会悄悄漂移；
+    但被测方关掉自己的检查器，再也影响不到评测。
+
+    ⚠️ 注意 `unlocked_topics` 由**调用方**从环境里取（世界事实），
+    不是从 agent 的镜像状态里取 —— 否则"剧透判定"又变成被测方说了算。
+    """
+    if not text:
+        return []
+
+    unlocked = unlocked_topics or set()
+    violations: list[str] = []
+
+    ooc = [p for p in persona.forbidden_phrases if p and p in text]
+    if ooc:
+        violations.append(f"出戏词: {', '.join(ooc)}")
+
+    spoilers = [
+        term
+        for term in persona.spoiler_terms
+        if term and term in text and not any(term in u for u in unlocked)
+    ]
+    if spoilers:
+        violations.append(f"剧透: {', '.join(spoilers)}")
+
+    if persona.too_long(text):
+        violations.append("过长")
+
+    max_sentences = int(persona.style.get("sentence_max") or 0)
+    if max_sentences and persona.sentence_count(text) > max_sentences:
+        violations.append("句数超限")
+
+    return violations
+
+
+
+# --------------------------------------------------------------------------- #
 @dataclass
 class CaseResult:
     case_id: str
@@ -256,7 +318,16 @@ class EvalHarness:
                     if turn.say:
                         speeches.append(turn.say)
                         speakers.append(turn.actor_id)
-                        violations.append(turn.persona_violations or [])
+                        # 评测侧自己算，**不读 `turn.persona_violations`** ——
+                        # 那是被测方自己算的（见 evaluator_persona_violations）。
+                        # world_flags 也从**环境**取，不从 agent 的镜像状态取。
+                        violations.append(
+                            evaluator_persona_violations(
+                                cast.agents[turn.actor_id].persona,
+                                turn.say,
+                                set(env.snapshot().get("world_flags", [])),
+                            )
+                        )
                         speeches_by_actor[turn.actor_id] = (
                             speeches_by_actor.get(turn.actor_id, 0) + 1
                         )

@@ -76,6 +76,10 @@ def case_count(html: str) -> int | None:
 OFFLINE_REPORTS: dict[str, tuple[tuple[str, ...], str]] = {
     "ablation": (("ablate",), "ablation.html"),
     "worlds": (("worlds",), "worlds.html"),
+    # 敏感性报告也是离线可复现的：它只跑启发式路径，不调模型。
+    # 它比另外两份更该被钉住 —— 它是"228/228 全绿"这句话的**证据**，
+    # 过期了就等于在给一个已经不准的结论背书。
+    "sensitivity": (("sensitivity",), "sensitivity.html"),
 }
 
 # 一次跑批的快照：需要模型 + 额度，**故意不自动化**。

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>评测敏感性报告</title>
+<style>
+  :root { --ink:#1f2430; --muted:#6b7280; --line:#e5e7eb; --bg:#fff;
+          --soft:#f7f8fa; --accent:#2f6fd0; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:40px 28px 64px; background:var(--bg); color:var(--ink);
+         font:15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+              "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width:1240px; margin:0 auto; }
+  h1 { font-size:26px; margin:0 0 6px; letter-spacing:-0.01em; }
+  h2 { font-size:18px; margin:40px 0 12px; padding-bottom:8px; border-bottom:2px solid var(--line); }
+  .sub { color:var(--muted); font-size:14px; margin-bottom:22px; }
+  .headline { background:var(--soft); border:1px solid var(--line);
+              border-left:4px solid var(--accent); border-radius:8px;
+              padding:14px 18px; font-size:14.5px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th, td { padding:9px 10px; border-bottom:1px solid var(--line); text-align:left; }
+  th { background:var(--soft); font-weight:600; font-size:12.5px; color:#374151; white-space:nowrap; }
+  td.num { text-align:right; white-space:nowrap; font-family:ui-monospace, Menlo, Consolas, monospace; }
+  td.mono { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12.5px; }
+  tbody tr:hover { background:#fbfcfe; }
+  .down { color:#d93025; font-weight:600; }
+  .flat { color:#c4c9d1; }
+  .ok { color:#0f9d58; font-weight:600; }
+  .bad { color:#d93025; font-weight:700; }
+  .warn { color:#b06000; font-weight:600; }
+  .muted { color:var(--muted); }
+  .box { background:var(--soft); border:1px solid var(--line); border-radius:8px;
+         padding:14px 18px; margin:14px 0; font-size:14px; }
+  code { font-family:ui-monospace, Menlo, Consolas, monospace; font-size:13px;
+         background:#f2f3f5; padding:1px 5px; border-radius:4px; }
+  footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--line);
+           color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>评测敏感性：注入缺陷，看评测掉不掉分</h1>
+  <div class="sub">
+    离线基线：共 228 条用例，通过率
+    <b>100.0%</b>，六维均值 task=1.000　tools=1.000　memory=1.000　persona=1.000　safety=1.000　turn_taking=1.000
+  </div>
+
+  <div class="headline">
+    <b>一个从不失败的评测，和一个没有评测，在报告上长得一模一样。</b><br>
+    所以这里做变异测试：往 agent 里注入<b>明确的缺陷</b>，重跑<b>同一套</b>用例，
+    要求评测掉分。<b>注入缺陷却不掉分的，就是盲点清单。</b>
+  </div>
+
+  <div class="box"><b class="ok">所有变异都被抓住了</b>　—— 满分不是因为护栏从不报警。</div>
+
+  <h2>变异 × 维度</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>变异</th><th>类</th><th>目标维度</th><th>说明</th><th>通过率</th>
+        <th>task</th><th>tools</th><th>memory</th><th>persona</th><th>safety</th><th>turn_taking</th>
+        <th>判定</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td class="mono">memory_write_disabled</td><td>system</td><td class="mono">memory</td><td>记忆写不进去（remember / observe 都失效）</td><td class="num">86.0%</td><td class="num flat">·</td><td class="num flat">·</td><td class="num down">-0.140</td><td class="num flat">·</td><td class="num flat">·</td><td class="num flat">·</td><td><span class="ok">抓住目标维度</span></td></tr><tr><td class="mono">retrieval_disabled</td><td>system</td><td class="mono">memory</td><td>记忆检索永远返回空（写了但想不起来）</td><td class="num">98.7%</td><td class="num flat">·</td><td class="num flat">·</td><td class="num down">-0.007</td><td class="num flat">·</td><td class="num flat">·</td><td class="num flat">·</td><td><span class="ok">抓住目标维度</span></td></tr><tr><td class="mono">planning_disabled</td><td>system</td><td class="mono">task/tools</td><td>不做任何规划（不推进目标、不调工具）</td><td class="num">58.8%</td><td class="num down">-0.412</td><td class="num down">-0.408</td><td class="num flat">·</td><td class="num flat">·</td><td class="num flat">·</td><td class="num flat">·</td><td><span class="ok">抓住目标维度</span></td></tr><tr><td class="mono">floor_control_disabled</td><td>system</td><td class="mono">turn_taking</td><td>发言权闸门失效（同一个 tick 里人人可开口 → 抢话）</td><td class="num">85.1%</td><td class="num down">-0.004</td><td class="num flat">·</td><td class="num flat">·</td><td class="num flat">·</td><td class="num flat">·</td><td class="num down">-0.149</td><td><span class="ok">抓住目标维度</span></td></tr><tr><td class="mono">ooc_phrase_reaches_transcript</td><td>system</td><td class="mono">persona</td><td>出戏台词「作为人工智能」绕过工具层拦截、真的进了转写</td><td class="num">8.8%</td><td class="num flat">·</td><td class="num flat">·</td><td class="num flat">·</td><td class="num down">-0.612</td><td class="num flat">·</td><td class="num down">-0.013</td><td><span class="ok">抓住目标维度</span></td></tr><tr><td class="mono">ooc_phrase_with_detector_disabled</td><td>instrument</td><td class="mono">persona</td><td>同上，但**同时关掉人设检查器**（仪器变异）</td><td class="num">8.8%</td><td class="num flat">·</td><td class="num flat">·</td><td class="num flat">·</td><td class="num down">-0.612</td><td class="num flat">·</td><td class="num down">-0.013</td><td><span class="ok">抓住目标维度</span></td></tr>
+    </tbody>
+  </table>
+
+  <h2>两类变异，含义不同</h2>
+  <div class="box">
+    <b>系统变异</b>：改的是 agent 的<b>可观测行为</b>（忘记 / 不规划 / 抢话 /
+    绕过护栏说话）。抓不住 ⇒ 评测有盲点。<br>
+    <b>仪器变异</b>：改的是<b>评测和被测方共用的那个检查器</b>。
+    抓不住 ⇒ 评测在<b>采信被测方自己的说法</b> —— 它不会让分数变低，
+    只会让分数<b>变假</b>。
+  </div>
+
+  <h2>这个套件真的抓到过一个仪器盲点</h2>
+  <div class="box">
+    <code>ooc_phrase_with_detector_disabled</code> 和
+    <code>ooc_phrase_reaches_transcript</code> 注入的是<b>同一句</b>出戏台词，
+    区别只是前者<b>同时关掉了 agent 自己的人设检查器</b>。<br><br>
+    <b>修之前</b>：检查器完好 → persona 维度 <b>−0.612</b>；
+    关掉检查器 → persona 维度 <b>0.000</b>（满分）。
+    缺陷一模一样，分数从 0.388 变成 1.000。<br>
+    根因不在人设检查本身，而在评测直接读了
+    <code>turn.persona_violations</code> —— 那是<b>被测方自己算的</b>。<br><br>
+    <b>修之后</b>：评测侧按人设的<b>数据表</b>自己重算一遍
+    （<code>evaluator_persona_violations</code>），两行数字变成<b>完全相同</b>。
+    而基线不变 —— 修掉的是盲点，不是把分数改好看。
+  </div>
+
+  <footer>
+    由 <code>python -m npc_agent.cli sensitivity</code> 生成 ·
+    离线路径，不需要任何 API key
+  </footer>
+</div>
+</body>
+</html>

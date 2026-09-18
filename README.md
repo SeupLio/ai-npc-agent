@@ -233,6 +233,9 @@ python -m npc_agent.cli demo --scenario village
 
 # 跨世界覆盖报告：同一套 Agent 在两个世界上的成绩
 python -m npc_agent.cli worlds --html docs/worlds.html
+
+# 评测敏感性：往 Agent 里注入缺陷，证明满分不是"护栏从不报警"
+python -m npc_agent.cli sensitivity --html docs/sensitivity.html
 ```
 
 > `village` 场景默认走**进程内**的体素世界（`LocalWorldClient`），
@@ -489,6 +492,13 @@ persona=1.000 safety=1.000 turn_taking=1.000
 ```
 
 分布：`task 76 / persona 39 / memory 34 / safety 31 / multi_npc 27 / minecraft 21`。
+
+> **上面这段输出是被护栏钉住的**，不是手抄完就不管的。
+> 它是**离线可复现**的（秒级、不调模型），所以"和代码不一致"就是在说谎 ——
+> 和 `docs/` 里那几份离线报告一个性质。`tests/test_test_hygiene.py` 会真的跑一遍
+> `python -m npc_agent.cli eval`，把**通过率、六维均值、每类条数**逐项对回来。
+> 只钉确定性的字段：`墙钟 2s` / `实测加速 3.97×` 随机器变，**故意不钉** ——
+> 把噪声也钉死，最后只会逼着文档写一个假的固定值。
 
 其中 21 条 `minecraft` 用例跑在体素世界上，它们和咖啡屋的用例**走同一套 `expect` 词汇表** ——
 这是"环境无关"在评测层的体现：加一个世界不需要加一套新的断言语言。
@@ -941,9 +951,10 @@ python -m npc_agent.cli ablate
 |---|---|---|---|
 | [`docs/ablation.html`](docs/ablation.html) | **228 条** | 五种记忆检索策略的消融 | `python scripts/regen_docs.py --only ablation` |
 | [`docs/worlds.html`](docs/worlds.html) | **228 条**（2 个世界） | 跨世界覆盖报告（同一套 Agent 跑在两个世界上） | `python scripts/regen_docs.py --only worlds` |
+| [`docs/sensitivity.html`](docs/sensitivity.html) | **228 条** | 评测敏感性：注入 6 个缺陷，证明满分不是「护栏从不报警」 | `python scripts/regen_docs.py --only sensitivity` |
 
-> 这两份由 `tests/test_docs_freshness.py` 钉住：和当前代码生成的结果不一致就红。
-> `worlds` 是秒级、默认就跑；`ablation` 约 2 分钟，设 `NPC_AGENT_DOC_FRESHNESS=1` 才跑。
+> 这三份由 `tests/test_docs_freshness.py` 钉住：和当前代码生成的结果不一致就红。
+> `worlds` 与 `sensitivity` 是秒级、默认就跑；`ablation` 约 2 分钟，设 `NPC_AGENT_DOC_FRESHNESS=1` 才跑。
 > 报告里嵌了每条的**耗时**（`0.18s` / `14s`），所以比的是**除时长外**逐字节一致 ——
 > 归一化只抹时长，别的数字一个都不抹，否则这条护栏就成了永真式。
 >
@@ -1495,6 +1506,7 @@ game-npc-agent/
 │       ├── report.py           自包含 HTML 报告渲染
 │       ├── batch_report.py     跑批 + 裁判结果 → 自包含 HTML（含饱和/可信度护栏）
 │       ├── judge.py            LLM-as-judge：校准、kappa、位置偏见、留出集封条
+│       ├── sensitivity.py      评测敏感性：注入缺陷，证明满分不是"护栏从不报警"
 │       ├── calibration.jsonl       开发集（24 条，被用来调过 rubric）
 │       ├── calibration_holdout.jsonl  留出集（32 条，标签写好时未见过裁判输出）
 │       ├── holdout_seal.json        留出集封条（样本摘要 + rubric 摘要）
@@ -1508,7 +1520,7 @@ game-npc-agent/
 │   ├── wait_for_batch.py       等跑批：区分「跑完了 / 跑死了 / 还在跑」
 │   └── rescore_safety.py       用新口径离线重算安全维度（要求先逐字复现旧口径）
 ├── package.json            桥的 node 依赖（mineflayer 等）；node_modules 不入库
-└── tests/                  597 个单元与端到端测试
+└── tests/                  611 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -1678,25 +1690,107 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 > 取决于你想重算哪个指标 —— 这件事要在设计检查点的时候就想清楚，
 > 而不是等改了口径才发现。
 
+**14. 一份满分报告，怎么证明它不是"护栏从来不报警"？**
+
+前面十二条讲的全是"断言写错了"。但还有一个更根本的问题没人回答：
+**这套评测自己，有没有被测过？**
+
+一个六维全 1.000 的报告，有两种截然不同的成因：
+
+- 被测的 Agent 真的没犯错；
+- 评测**根本看不见**这类错误 —— 护栏是死的，只是没人发现。
+
+这两种在报告上长得一模一样。所以本项目加了一条命令，专门干这件事：
+
+```bash
+python -m npc_agent.cli sensitivity --html docs/sensitivity.html
+```
+
+它往 Agent 里**注入缺陷**（把记忆写入关掉、把检索关掉、把规划器拆掉、
+把发言调度旁路掉、让一句出戏台词进转写），然后**用同一套 228 条用例重跑**，
+要求评测**掉分**。某个缺陷注入后分数纹丝不动 —— 那个缺陷就"活"了，
+它暴露的不是 Agent 的 bug，而是**评测的盲区**。
+
+**它真的抓到了一个，而且是致命的：**
+
+| 注入的缺陷 | 修之前 persona 掉分 | 修之后 persona 掉分 |
+|---|---|---|
+| 出戏台词进转写（检查器完好） | −0.612 | −0.612 |
+| 出戏台词进转写 + **把 Agent 自己的检查器关掉** | **0.000（满分！）** | −0.612 |
+
+第二行就是盲区。根因是 `harness.run_case` 里读了 `turn.persona_violations` ——
+**而那个字段是 Agent 自己算的**（`agent.py` 里 `self.persona.check(...)`）。
+也就是说：**评测在采信被测方的自述。** 同一句出戏台词，
+只要被测方把自查开关一关，评测就判它满分。
+
+一句话概括这个教训：**能被"设置"的分数不是测量。**
+评测侧现在**独立重算**一遍人设违规（`evaluator_persona_violations`），
+`world_flags` 也从**环境**取而不是从 Agent 的镜像状态取 —— 否则"剧透判定"
+又变成被测方说了算。修完之后，上面两行的数字**完全一致**，
+而基线仍然是 228/228、六维全 1.000 —— 说明这次改的是**盲区**，不是把分数做高。
+
+> 两个概念要分清，它们的严重性不一样：
+> - **系统变异**：改了 Agent 的**可观测行为**。没被抓到 = 评测漏了一类错误。
+> - **仪器变异**：改的是**双方共用的那个探测器**。没被抓到 = 评测在**说假话** ——
+>   分数不是"偏低"，而是**失真**。上面那行加粗的 0.000 就是这一类。
+>
+> `tests/test_sensitivity.py` 里有一条**回归测试**直接钉住这件事：
+> 两个 persona 变异的掉分和通过率**必须完全相同**。哪一天有人把
+> "读 Agent 自报"改回来，这条测试会红。
+
+**盲区之外还有一层：仪器自己也要被差分校验。** 评测侧的重新推导
+（`evaluator_persona_violations`）和产品里的 `Persona.check` 是**两份独立实现**。
+两份实现迟早会漂移，所以有一条测试拿三个人设的语料同时喂给两者，
+断言它们**逐条一致** —— 这样一次正当的重构会**同时**改动两边、测试仍绿；
+而只改一边的"顺手优化"会被抓住。
+
+**15. 一个"抓到了盲区"的工具，怎么证明它抓的不是假阳性？**
+
+`sensitivity` 命令如果对任何注入都报"抓到"，那它和没有一样。
+所以它自己也有一条反向测试：手工构造一个**零变化**的结局
+（每个维度都掉 0 分），断言判据**确实返回"没抓住"**；
+再构造一个"目标维度掉了 0.5"的结局，断言它**确实返回"抓住"**。
+两条都过，才说明这个判据**既能说"抓到"也能说"没抓到"** ——
+一个只会报"抓到"的检查器，和死断言是一回事。
+
+`reports/sensitivity.json` 里的 `survivors: []` 是这么来的，
+不是把 `ok: true` 硬写进去的。
+
 ---
 
 ## 路线图
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 597 个测试
-- [x] **`docs/` 的报告分成两类并加护栏**：**离线可复现**（`ablation` / `worlds`，
+- [x] 六维评测 harness + 611 个测试
+- [x] **`docs/` 的报告分成两类并加护栏**：**离线可复现**（`ablation` / `worlds` / `sensitivity`，
       和代码不一致就是在说谎）vs **一次跑批的快照**（要模型 + 额度）。
       入库的 `ablation.html` 曾是 12 条用例时代的产物（5 列指标、没有「发言调度」），
       已重新生成并钉住；README 里每份报告的**覆盖条数**也由护栏核对
       （`comparison.html` 只有 **12 条**、`multi_npc.html` 只有 **2 条**，
       以前表格里看不出这个差别）
+- [x] **评测敏感性：证明满分不是"护栏从不报警"**。`sensitivity` 命令往 Agent 里
+      注入 6 个缺陷（记忆写入 / 检索 / 规划器 / 发言调度 / 出戏台词 ×2），
+      用同一套 228 条用例重跑，要求评测**掉分**。它抓到了一个**真盲区**：
+      `persona` 维度原来读的是**被测方自己算**的 `turn.persona_violations` ——
+      同一句出戏台词，把被测方的自查开关一关，分数就从 **0.388 回到 1.000**。
+      评测侧现在**独立重算**（`evaluator_persona_violations`），
+      `world_flags` 也从**环境**取而非被测方的镜像状态；
+      修完后两个变异结果**完全一致**，基线仍是 228/228 六维全 1.000。
+      报告（`docs/sensitivity.html`）与 `tests/test_sensitivity.py`（10 条）都已入库。
+      详见「设计取舍 14 / 15」
 - [x] **README 里那条测试命令，印不出它承诺的输出**：`pyproject.toml` 里已经有
       `addopts = "-q"`，命令里再写一个 `-q` 就叠成 **`-qq`** —— 而 `-qq` 会把
       **最后那行汇总整个吞掉**，只剩进度点和 `[100%]`，**退出码还是 0**。
       照着文档敲的人会以为套件崩了。两处都改了（主命令 + Minecraft 那条），
       并加了两条护栏：一条把**命令和它承诺的输出**钉在一起（真跑一个小靶子，
       确认汇总行会印），一条扫**全部**文档化命令、禁止自带 `-q`
+- [x] **README 里手抄的离线基线，也加上了护栏**。那段 `228/228（100%）` +
+      六维均值 + `分布：` 是**离线可复现**的（秒级、不调模型），
+      却一直没人核对 —— 它已经过期过一次（用例集 12 → 228）。
+      现在 `tests/test_test_hygiene.py` 会真跑一遍那条命令，
+      把通过率 / 六维均值 / 每类条数逐项对回来；只钉确定性字段，
+      耗时和加速比**故意不钉**（钉噪声只会逼文档写假值）
 - [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
 - [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [x] **多 NPC 协作**：Cast 导演层 + 双 NPC 场景 + 发言调度评测维度
@@ -1770,7 +1864,7 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 ```bash
 python -m pytest tests
-# 595 passed, 2 skipped
+# 609 passed, 2 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -1781,7 +1875,7 @@ python -m pytest tests
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**
 > （见 `tests/test_test_hygiene.py`），改了命令不改输出会红。
 
-> 收集到的是 **597** 条，默认跳过 **2** 条：
+> 收集到的是 **609** 条，默认跳过 **2** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）
 > 和 `tests/test_docs_freshness.py` 里那条慢速报告校验
 > （约 2 分钟，`NPC_AGENT_DOC_FRESHNESS=1` 才跑）。
