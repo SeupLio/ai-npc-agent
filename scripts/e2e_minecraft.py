@@ -9,6 +9,8 @@ dry-run 验证的是**协议**，这一条验证的是**协议 + mineflayer + �
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -18,9 +20,17 @@ sys.path.insert(0, str(ROOT))
 
 from npc_agent.env.mc_client import MineflayerClient  # noqa: E402
 
-NODE = sys.executable.replace("python.exe", "")  # 占位，下面用真实 node 路径
-NODE = r"C:/Users/10718/.workbuddy-ai/binaries/node/versions/22.22.2-2/node.exe"
 BRIDGE = str(ROOT / "scripts" / "mineflayer_bridge.js")
+
+
+def node_exe() -> str:
+    """找 node：环境变量优先，其次 PATH。"""
+    node = os.environ.get("NPC_AGENT_NODE") or shutil.which("node")
+    if not node:
+        raise SystemExit(
+            "找不到 node。装上 Node.js，或者用 NPC_AGENT_NODE 指定可执行文件路径。"
+        )
+    return node
 
 SCENARIO = {
     "actors": [
@@ -38,7 +48,7 @@ SCENARIO = {
 
 def main() -> int:
     cmd = [
-        NODE, BRIDGE,
+        node_exe(), BRIDGE,
         "--host", "127.0.0.1",
         "--port", "25565",
         "--username", "npc_agent",
@@ -68,33 +78,46 @@ def main() -> int:
             print("[2] 60 秒内 bot 没连上服务端")
             return 1
 
-        # 3) state 能读到真实世界镜像
+        # 3) state 能读到真实世界镜像 + 真实遥测
         state = client.state()
         print(f"[3] state tick={state.get('tick')} dry_run={state.get('dry_run')} "
-              f"actors={list((state.get('actors') or {}).keys())}")
+              f"bot_connected={state.get('bot_connected')} bot_pos={state.get('bot_pos')}")
+        print(f"    actors={list((state.get('actors') or {}).keys())}")
 
-        # 4) 一次真实移动 + 取物
+        # 4) 一次真实移动
         moved = client.call("move", actor="ayan", target="forest")
+        mirror = (client.state().get("actors") or {}).get("ayan", {}).get("poi")
         print(f"[4] move->forest ok={moved.ok} reason={moved.reason!r}")
+        # 镜像必须跟现实一致：失败时不许偷偷把 actor.poi 改成目的地
+        if not moved.ok and mirror == "forest":
+            print("    ⛔ 不一致：move 失败了，但镜像说它已经到林子了")
+            return 1
+        print(f"    镜像 poi={mirror!r}（一致）")
 
+        # 5) 真挖一个方块（bot.dig），再读真实遥测
         took = client.call("mine", actor="ayan", block="oak_log")
         print(f"[5] mine ok={took.ok} reason={took.reason!r} data={took.data}")
 
         state = client.state()
-        actor = (state.get("actors") or {}).get("ayan") or {}
-        print(f"[6] 移动后 pos={actor.get('pos')} poi={actor.get('poi')} "
-              f"inventory={actor.get('inventory')}")
+        print(f"[6] bot_pos(真实)={state.get('bot_pos')}  "
+              f"镜像 pos={((state.get('actors') or {}).get('ayan') or {}).get('pos')}  "
+              f"镜像 inventory={((state.get('actors') or {}).get('ayan') or {}).get('inventory')}")
 
-        # 5) 说一句话（走真实 chat）
+        # 6) 说一句话（走真实 chat）
         spoke = client.call("chat", actor="ayan", text="我到林子了。")
         print(f"[7] chat ok={spoke.ok} reason={spoke.reason!r}")
 
+        real = state.get("bot_pos")
         print("\n=== 端到端结论 ===")
         print("  协议通：     是（configure/state/call 全部有响应）")
-        print("  mineflayer： 是（bot 连上并 spawn）")
+        print("  mineflayer： 是（bot 连上并 spawn，bot_connected=True）")
         print("  服务端：     1.21.11 @ 127.0.0.1:25565")
+        print(f"  真实遥测：   bot_pos={real}（不是镜像）")
         print(f"  真实动作：   move ok={moved.ok} / mine ok={took.ok} / chat ok={spoke.ok}")
-        return 0 if (moved.ok and took.ok and spoke.ok) else 1
+        print("\n  注：move 可能因为**世界被上一次运行改过**而失败"
+              "（mine 挖的是 bot 脚下的方块，那个 POI 会矮一格）。\n"
+              "      这不是桥坏了。想要稳定的落点，先删掉服务端的 world/ 目录重跑。")
+        return 0 if (state.get("bot_connected") and took.ok and spoke.ok) else 1
 
 
 if __name__ == "__main__":

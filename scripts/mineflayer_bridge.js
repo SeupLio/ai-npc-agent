@@ -188,6 +188,15 @@ const ops = {
     for (const [id, entry] of world.pois) pois[id] = { name: entry.name, pos: entry.pos };
     const resources = {};
     for (const [poi, table] of world.resources) resources[poi] = Object.assign({}, table);
+    // ⚠️ `actors[*].pos` 是**镜像**（我们记的账），不是真实 bot 的位置。
+    // 两者会不一致：`move` 里镜像在动作成功后才更新，但 dry-run、
+    // 或者别的地方改了世界，都可能让账和现实对不上。
+    // 所以这里额外报一份**真实遥测** `bot_pos`，让测试有东西可以断言在真状态上。
+    let botPos = null;
+    if (bot && bot.entity && bot.entity.position) {
+      const p = bot.entity.position;
+      botPos = [Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)];
+    }
     return ok({
       tick: world.tick,
       day: Math.floor(world.tick / DAY_TICKS),
@@ -199,6 +208,8 @@ const ops = {
       flags: Array.from(world.flags).sort(),
       utterances: world.utterances,
       dry_run: opts.dryRun,
+      bot_connected: botReady,
+      bot_pos: botPos,
     });
   },
 
@@ -212,8 +223,6 @@ const ops = {
       const known = Array.from(world.pois.keys()).join('、') || '（没有地点）';
       return fail(`没有叫「${params.target}」的地方。能去的地方：${known}`);
     }
-    actor.poi = params.target;
-    actor.pos = poi.pos;
     if (bot) {
       // 真实路径：用 pathfinder 走过去。走不到就如实报告，不要假装成功 ——
       // NPC 以为自己到了、其实没到，后面每一步都会错。
@@ -223,11 +232,24 @@ const ops = {
         const movements = new Movements(bot);
         bot.pathfinder.setMovements(movements);
         const [x, y, z] = poi.pos;
-        await bot.pathfinder.goto(new goals.GoalBlock(x, y, z));
+        // 用 GoalNear 而不是 GoalBlock：GoalBlock 要求"恰好站在这个方块上"，
+        // 于是**世界只要被改过一次就永远走不到** —— 比如 mine 挖掉了 POI 脚下
+        // 那块方块，站立面矮了一格，GoalBlock(12,-60,6) 就成了一个悬空坐标，
+        // pathfinder 只能超时（报 "Took to long to decide path to goal!"）。
+        // 而"走到某个地方"本来就是"靠近它"，不是"像素级对齐"。
+        await bot.pathfinder.goto(new goals.GoalNear(x, y, z, 2));
       } catch (err) {
         return fail(`走不到${poi.name}：${err.message}`);
       }
     }
+    // ⚠️ 镜像**必须在动作成功之后**才更新。
+    // 原来这两行写在 try 前面，于是走不到目的地时：
+    //   - 返回值是 ok=false（对的）
+    //   - 但镜像里 actor.poi / actor.pos 已经变成目的地了（错的）
+    // 结果 state() 报告"它在林子"，实际它还在营地。
+    // 这条注释原本就写着"不要假装成功"，而代码正好在假装 —— 只是假装在镜像里。
+    actor.poi = params.target;
+    actor.pos = poi.pos;
     return ok({ poi: params.target, pos: poi.pos });
   },
 

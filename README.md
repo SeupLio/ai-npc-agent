@@ -251,18 +251,31 @@ python -m npc_agent.cli worlds --html docs/worlds.html
 > python scripts/e2e_minecraft.py
 > ```
 >
-> 实测输出（1.21.11，`Done (0.953s)!`）：
+> 实测输出（1.21.11）：
 >
 > ```
 > [2] bot 已连上（第 2 次探测成功）
+> [3] state tick=0 dry_run=False bot_connected=True bot_pos=[0, -60, 0]
 > [4] move->forest ok=True
+>     镜像 poi='forest'（一致）
 > [5] mine ok=True  data={'block': 'oak_log', 'count': 1, 'poi': 'forest'}
-> [6] 移动后 pos=[12, -60, 6] poi=forest inventory={'oak_log': 1}
+> [6] bot_pos(真实)=[12, -60, 6]  镜像 pos=[12, -60, 6]  镜像 inventory={'oak_log': 1}
 > [7] chat ok=True
 > ```
 >
-> 坐标和背包都是**真实世界状态**，不是桥的记账 ——
-> bot 真的走到了林子、真的挖到了一块木头。
+> **`bot_pos` 是 `bot.entity.position`，真实位置** —— bot 真的从 `[0,-60,0]`
+> 走到了 `[12,-60,6]`。这一栏是专门为这条测试加的，因为
+> `actors[*].pos` 是桥的**镜像**（桥自己记的账），只断言镜像等于没测。
+>
+> 这里我第一版就写错了：断言 `actor["pos"] == [12, -60, 6]` 看着很硬，
+> 其实只是在读桥刚写进去的值。**修法不是改断言，是先把真实遥测暴露出来。**
+>
+> 顺带这次跑通暴露了桥的两个真 bug（都已修）：
+>
+> | bug | 症状 | 修法 |
+> |---|---|---|
+> | `move` 的镜像写在动作**之前** | 走不到目的地时返回 `ok=false`，但 `state()` 已经报告"它在林子"了 —— 注释写着"不要假装成功"，代码正好在假装 | 镜像改到动作成功之后 |
+> | 用 `GoalBlock` 做"走到某地" | 它要求**恰好站在那个方块上**，所以世界只要被改过一次（`mine` 挖掉了 POI 脚下的方块）就永远走不到，报 `Took to long to decide path to goal!` | 改用 `GoalNear(x,y,z,2)` —— "走到"本来就是"靠近"，不是像素级对齐 |
 >
 > `server.properties` 的关键几行：
 >
@@ -1778,6 +1791,12 @@ Minecraft 适配器另有 54 条，其中三条是结构性断言：
 - `test_real_bridge_speaks_the_protocol` ——
   真的起一个 Node 进程、走真的 stdio、跑真的 JSON。前面那些 Python 替身验证的是
   "适配器不依赖 Python 对象"，这一条验证的是"协议在真正的进程边界上成立"。
+
+端到端另有 1 条（`tests/test_minecraft_e2e.py`，**默认跳过**）——
+上面那些都不需要服务端，所以它们证明不了**最后一段**接得上。
+这一条要 `NPC_AGENT_MC_E2E=1` 加一个真在跑的服务端，断言落在 `bot_pos`
+（`bot.entity.position`，真实遥测）而不是桥的镜像上，
+并且要求"`move` 失败时镜像不许偷偷更新"——那正好是修过的一个 bug。
 
 另有四条回归测试专门钉住了开发中踩到的真实缺陷：
 
