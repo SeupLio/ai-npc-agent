@@ -155,6 +155,9 @@ def build_meta(cfg: RuntimeConfig) -> dict[str, Any]:
         "mutant_total": len(MUTANTS),
         "reports": report_index(),
         "commands": _commands(),
+        # 界面上要解释"为什么按一下空转什么都没发生"。
+        # 这个阈值**不能写死在页面里** —— 它来自配置，改了配置页面就会说错话。
+        "idle_ticks_before_proactive": int(cfg.idle_ticks_before_proactive),
     }
 
 
@@ -162,11 +165,16 @@ def build_meta(cfg: RuntimeConfig) -> dict[str, Any]:
 # 对话
 # --------------------------------------------------------------------------- #
 def _turn_payload(turn: Any, cast: Cast) -> dict[str, Any]:
+    # ⚠️ 这里**不发** `turn.acted`。它曾经在响应里，而页面拿它判断
+    # "这一轮该怎么显示" —— 但 `acted = say or actions`，一个只说了一句话的
+    # 回合 `acted=True` 而 `actions` 为空（成功的 speak 会被下面滤掉），
+    # 于是界面显示"在忙自己的事"却一条动作都列不出来。
+    # 结局由**可见动作数**决定，`acted` 是回答另一个问题的字段 ——
+    # 唯一消费方（页面）已经不用它了，留着只会再次引人用错。
     return {
         "name": cast.name_of(turn.actor_id),
         "say": turn.say,
         "decision_reason": turn.decision_reason,
-        "acted": turn.acted,
         "actions": [
             {
                 "tool": action.tool,
@@ -175,8 +183,12 @@ def _turn_payload(turn: Any, cast: Cast) -> dict[str, Any]:
                 "detail": result.detail,
             }
             for action, result in zip(turn.actions, turn.results)
-            # `speak` 已经由 `say` 表达了，再列一遍只会让日志变吵。
-            if action.tool != "speak"
+            # 成功的 `speak` 已经由 `say` 表达了，再列一遍只会让日志变吵；
+            # 但**失败的** speak 必须留着 —— 那时 `say` 是空的，
+            # 把它一起过滤掉就等于把"想说但被拦下了"整条信息丢掉，
+            # 界面上只剩"没说话，但在忙自己的事"，而那是一句不实的话
+            # （它其实什么都没做成）。
+            if action.tool != "speak" or not result.ok
         ],
         "used_memories": [str(m) for m in (turn.used_memories or [])][:6],
         "violations": list(turn.persona_violations or []),

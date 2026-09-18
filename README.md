@@ -1547,7 +1547,7 @@ game-npc-agent/
 │   ├── wait_for_batch.py       等跑批：区分「跑完了 / 跑死了 / 还在跑」
 │   └── rescore_safety.py       用新口径离线重算安全维度（要求先逐字复现旧口径）
 ├── package.json            桥的 node 依赖（mineflayer 等）；node_modules 不入库
-└── tests/                  655 个单元与端到端测试
+└── tests/                  658 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -1872,7 +1872,7 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 655 个测试
+- [x] 六维评测 harness + 658 个测试
 - [x] **`docs/` 的报告分成两类并加护栏**：**离线可复现**（`ablation` / `worlds` / `sensitivity`，
       和代码不一致就是在说谎）vs **一次跑批的快照**（要模型 + 额度）。
       入库的 `ablation.html` 曾是 12 条用例时代的产物（5 列指标、没有「发言调度」），
@@ -1995,7 +1995,7 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
 
 ```bash
 python -m pytest tests
-# 653 passed, 2 skipped
+# 656 passed, 2 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -2006,7 +2006,7 @@ python -m pytest tests
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**
 > （见 `tests/test_test_hygiene.py`），改了命令不改输出会红。
 
-> 收集到的是 **655** 条，默认跳过 **2** 条：
+> 收集到的是 **658** 条，默认跳过 **2** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）
 > 和 `tests/test_docs_freshness.py` 里那条慢速报告校验
 > （约 2 分钟，`NPC_AGENT_DOC_FRESHNESS=1` 才跑）。

@@ -141,6 +141,7 @@ footer{color:var(--dim);font-size:12px;padding:0 24px 32px}
     <p class="sub" style="margin-top:10px">
       「空转一轮」= 没人说话，看 NPC 会不会自己找事做（冷场主动搭话 / 继续手里的活）。
       每轮所有 NPC 依次行动，但最多一个人开口 —— 这就是多 NPC 的发言权调度。
+      <span id="idleHint"></span>
     </p>
   </div>
 
@@ -264,6 +265,14 @@ async function boot(){
   $("#mode").className = "badge" + (META.llm_available ? " on" : "");
   $("#counts").textContent = META.case_total + " 条用例 · " + META.mutant_total + " 个变异 · 6 个维度";
 
+  // 阈值从 API 来，不写死在页面里 —— 它来自配置，写死就会在配置改动后说错话。
+  // 这条提示是必要的：只按一下「空转一轮」通常**什么都不会发生**，
+  // 而"什么都没发生"看起来像按钮坏了，其实是冷场还没攒够。
+  $("#idleHint").textContent = META.idle_ticks_before_proactive
+    ? ("⚠ 冷场要连续 " + META.idle_ticks_before_proactive +
+       " 轮 NPC 才会主动开口 —— 只按一下通常什么都看不到，连按两下才有效。")
+    : "";
+
   $("#scn").innerHTML = META.scenarios.map((s) =>
     '<option value="' + s.id + '">' + esc(s.name) + "（" + esc(s.world_label) + "，" +
     esc(s.npcs.join("/")) + "）</option>").join("");
@@ -340,11 +349,21 @@ function paint(d){
         ? "<div class='mem' style='color:var(--bad)'>人设违规：" + esc(t.violations.join("；")) + "</div>" : "";
       // 三种结局都要有可见的一行，否则"没轮到它"的 NPC 会**整条消失**，
       // 读者会以为它压根没参与 —— 而"谁被让出话头"正是多 NPC 最该看见的东西。
+      //
+      // ⚠️ 判据用**可见动作数**，不用 `t.acted`：后端会把成功的 `speak`
+      // 从 actions 里滤掉（`say` 已经表达了它），于是"只说了一句话"的回合
+      // `acted=true` 而 `actions` 为空 —— 用 acted 判断就会显示
+      // "在忙自己的事"，后面却一条动作都列不出来。
+      //
+      // 更不能把所有"没说话也没动作"的回合都写成"让出了话头"：
+      // 冷场首轮的真实原因是"没有需要回应的输入"，单人场景里根本没人可让。
+      // 那句解释由上面的 decision_reason 给出 —— 这里不重复，更不能写错。
+      const visible = (t.actions || []).length;
       const outcome = t.say
         ? "<div class='say'><b style='color:var(--warn)'>" + esc(t.name) + "</b>：" + esc(t.say) + "</div>"
-        : (t.acted
+        : (visible
             ? "<div class='meta'>" + esc(t.name) + " 没说话，但在忙自己的事</div>"
-            : "<div class='meta'>" + esc(t.name) + " 让出了话头</div>");
+            : "");
       return "<div class='turn'>" +
         (t.decision_reason ? "<div class='meta'>" + esc(t.name) + "：" + esc(t.decision_reason) + "</div>" : "") +
         acts + mems + viol + outcome +

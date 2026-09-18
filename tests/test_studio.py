@@ -228,6 +228,71 @@ def test_chat_reports_world_state_and_memories(cfg: RuntimeConfig) -> None:
     assert got["speech"], "发言统计不该是空的"
 
 
+def test_proactive_speech_needs_the_advertised_number_of_quiet_rounds(
+    cfg: RuntimeConfig,
+) -> None:
+    """冷场到第 N 轮才主动开口 —— 而「空转一轮」按钮**只发一轮**。
+
+    这条钉住的是按钮和阈值之间的关系。它曾经是一个静默的 UX 缺陷：
+    按钮发一个 idle 事件、阈值是 2，于是**第一次点永远什么都不发生**，
+    看起来像按钮坏了。页面现在把这个数字念出来（来自 `/api/meta`），
+    但念的数字必须是对的 —— 所以这里真跑一遍，而不是信任配置字段。
+
+    `threshold - 1` 轮内不该有人开口；从第 `threshold` 轮起必须有人开口。
+    """
+    threshold = S.build_meta(cfg)["idle_ticks_before_proactive"]
+    assert threshold >= 1, "阈值至少是 1，否则这条测试的前提不成立"
+
+    def said_in(rounds: list[dict[str, object]]) -> bool:
+        return any(t["say"] for ev in rounds for t in ev["turns"])
+
+    got = S.run_chat(cfg, {"scenario": "icebreaker", "events": [{"kind": "idle"}] * threshold})
+    events = got["events"]
+    assert len(events) == threshold
+
+    if threshold > 1:
+        assert not said_in(events[: threshold - 1]), (
+            f"冷场还不到 {threshold} 轮就开口了，但界面告诉用户要等 {threshold} 轮"
+        )
+    assert said_in(events[threshold - 1 :]), (
+        f"冷场到第 {threshold} 轮仍没开口 —— 界面那句提示是错的，用户会以为按钮坏了"
+    )
+
+
+def test_failed_speak_stays_visible_but_successful_speak_does_not() -> None:
+    """成功的 `speak` 不重复列（`say` 已经表达了它），**失败的必须留着**。
+
+    失败时 `say` 是空的，把它一起过滤掉就等于把"想说但被拦下了"
+    整条信息丢掉 —— 界面上只剩"没说话，但在忙自己的事"，
+    而它其实**什么都没做成**。那正是一句不实的话。
+    """
+    from npc_agent.studio import _turn_payload
+    from npc_agent.types import ActionCall, ActionResult, AgentTurn
+
+    class FakeCast:
+        def name_of(self, pid: str) -> str:
+            return pid
+
+    speak = ActionCall(tool="speak", args={"text": "你好"})
+
+    # 说成功了 -> 由 `say` 表达，actions 里不重复
+    ok_turn = AgentTurn(
+        tick=1, actor_id="a", say="你好",
+        actions=[speak], results=[ActionResult(True, "speak", "说了")],
+    )
+    assert _turn_payload(ok_turn, FakeCast())["actions"] == []
+
+    # 被拦下了 -> 必须留下，否则这一轮在界面上看起来像"没说话也没做事"
+    bad_turn = AgentTurn(
+        tick=2, actor_id="a", actions=[speak],
+        results=[ActionResult(False, "speak", "发言权已被收回")],
+    )
+    got = _turn_payload(bad_turn, FakeCast())["actions"]
+    assert len(got) == 1, "失败的 speak 被过滤掉了，界面上会看不到任何动作"
+    assert got[0]["ok"] is False
+    assert "发言权" in got[0]["detail"]
+
+
 # --------------------------------------------------------------------------- #
 # 4. 报告门户
 # --------------------------------------------------------------------------- #
@@ -341,6 +406,30 @@ def test_page_has_no_hardcoded_case_count() -> None:
     total = len(EvalHarness(RuntimeConfig()).load_cases())
     assert str(total) not in PAGE, (
         f"页面里出现了用例总数 {total} —— 这个数会变，必须从 /api/meta 读，不能硬编码"
+    )
+
+
+def test_page_does_not_claim_a_yield_when_nobody_yielded() -> None:
+    """页面不能再把"没说话也没动作"一律说成"让出了话头"。
+
+    冷场首轮的真实原因是"没有需要回应的输入"（`decision_reason` 已经写着），
+    而**单人场景里根本没人可让**。两句解释叠在一起，后一句是错的。
+
+    判据必须是**可见动作数**，不是 `t.acted`：后端会把成功的 `speak`
+    从 actions 里滤掉（`say` 已经表达了它），于是"只说了一句话"的回合
+    `acted=true` 而 `actions` 为空 —— 用 `acted` 判断就会显示
+    "在忙自己的事"，后面却一条动作都列不出来。
+    """
+    script = _page_script()
+    # 注释里会**提到**这句话（解释它为什么被删掉），所以先剥掉注释和字符串
+    # 再查 —— 否则这条护栏会被自己写的解释文字绊倒。
+    code = _strip_js_literals(script)
+    assert "让出了话头" not in code, (
+        "页面又出现了「让出了话头」这句**无条件**的判断 —— "
+        "它在「没有需要回应的输入」和单人场景里都是假话"
+    )
+    assert re.search(r"\(t\.actions \|\| \[\]\)\.length", code), (
+        "页面没有按**可见动作数**判断这一轮的结局（应该看 t.actions 的长度，不是 t.acted）"
     )
 
 
