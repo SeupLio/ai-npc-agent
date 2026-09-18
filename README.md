@@ -333,6 +333,10 @@ python -m npc_agent.cli demo --scenario tutorial \
 > 并在拿到空内容**或截断的残句**时抛出带诊断信息的异常，而不是静默返回。
 >
 > 调试单个模型是否可用：`python scripts/probe_model.py <model-name>`。
+> 它**失败时会把 HTTP 状态、响应体和限流响应头都打出来**，并给一句归因
+> （额度打满 / 鉴权失败 / 路径或模型不存在 / 连接层失败）——
+> 探针的用途就是回答"能不能用、不能用是为什么"，把 429 压成一行
+> `HTTP Error 429` 等于把唯一的证据扔掉。有 `tests/test_probe_model.py` 钉住。
 
 ---
 
@@ -1194,6 +1198,8 @@ python -u -m npc_agent.cli eval --concurrency 8 --retries 2 --backoff 3 \
    （`runner.py` 的指纹元组），改掉之后这批结果就不再对应仓库里的代码。
 2. **配额已经打满，改了也重测不了。** 探针现在返回的就是
    `{"type":"quota_error","code":"apikey_quota_exhausted"}`。
+   这个额度**按 key 计**（`GET /v1/models` 也一样 429），网关不返回
+   `Retry-After`，所以**没有"什么时候恢复"这个数可写** —— 只能靠探针测。
 
 所以它被记成**带证据的未修项**（见路线图），而不是一个"应该会更好"的猜测。
 **不发布没量过的改动** —— 这条规则对裁判的 prompt 成立，对规划的预算同样成立。
@@ -1463,7 +1469,7 @@ game-npc-agent/
 │   ├── wait_for_batch.py       等跑批：区分「跑完了 / 跑死了 / 还在跑」
 │   └── rescore_safety.py       用新口径离线重算安全维度（要求先逐字复现旧口径）
 ├── package.json            桥的 node 依赖（mineflayer 等）；node_modules 不入库
-└── tests/                  571 个单元与端到端测试
+└── tests/                  579 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -1639,7 +1645,7 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 571 个测试
+- [x] 六维评测 harness + 579 个测试
 - [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
 - [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [x] **多 NPC 协作**：Cast 导演层 + 双 NPC 场景 + 发言调度评测维度
@@ -1669,7 +1675,16 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
       没改的理由有两条，缺一不可：**改它会作废这批数字**
       （`max_tokens` 在跑批检查点的恢复关键字段里），
       **而且配额已经打满、改完也重测不了**（探针返回 `apikey_quota_exhausted`）。
-      配额恢复后要做的：先调大预算 → 重跑规划侧 → 再和这次比。
+      > **配额什么时候恢复，我不知道 —— 也不打算假装知道。**
+      > 探针（2026-09-18）仍是 `429` + `apikey_quota_exhausted`，
+      > 响应头里**没有 `Retry-After`、没有任何 `x-ratelimit-*`**，
+      > 网关**没有公开重置时间**；连 `GET /v1/models` 和 `gpt-4o-mini`
+      > 也一起 429，说明是**按 key 计的额度**，不是单模型限流。
+      > `server: istio-envoy` 说明它是第三方中转，额度由上游定，本机查不到。
+      > 唯一量到的一条边界：**隔了约 16 小时再探，仍然是 429**
+      > —— 所以它既不是按小时重置，也不是本地零点重置。
+      > 能承诺的只有一件事：**动预算之前先打一次单调用探针**，
+      > 通了才改 —— 不是"等它恢复"，是"恢复与否检测得到、预测不了"。
 - [x] **裁判预算**：`JUDGE_MAX_TOKENS` 4096 → **8192**。
       4096 会被 14440 字的思维链吃穿（1/792）。**它作废检查点**，
       所以这件事只能在开跑前定 —— 已在重判前调好
@@ -1704,8 +1719,13 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 ```bash
 python -m pytest tests -q
-# 571 passed
+# 578 passed, 1 skipped
 ```
+
+> 收集到的是 **579** 条 —— 差的这一条是 `tests/test_minecraft_e2e.py`，
+> 它需要真实 Minecraft 服务端，默认跳过（`NPC_AGENT_MC_E2E=1` 才跑）。
+> **"收集数"和"通过数"是两个量**，这里分开写：目录树和路线图里写的是收集数，
+> 这里写的是实跑输出，两个数对不上不代表有问题，前提是你知道差在哪。
 
 覆盖：环境护栏、记忆检索与巩固、**五种检索策略的语义差异**、多人发言权判定、
 **多 NPC 的发言权调度与协作**（同轮不撞车 / 被点名者优先 / 安静 NPC 不被饿死 /

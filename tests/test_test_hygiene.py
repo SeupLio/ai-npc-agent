@@ -130,8 +130,47 @@ def test_the_hygiene_check_itself_can_fail(tmp_path: Path) -> None:
 README_COUNT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("目录树里的测试数", re.compile(r"tests/\s+(\d+) 个单元与端到端测试")),
     ("路线图里的测试数", re.compile(r"六维评测 harness \+ (\d+) 个测试")),
-    ("测试一节的输出", re.compile(r"#\s*(\d+) passed")),
 )
+
+# 测试那一节印的是 pytest 的真实输出，给的是 **passed**，不是收集数。
+# 默认会跳过需要真实服务端的用例，所以 `passed + skipped == 收集数`。
+#
+# 这里以前直接拿收集数去比 `(\d+) passed`，于是护栏**逼着文档写一句假话**：
+# 579 条被收集、只有 578 条真的跑，README 却必须印 "# 579 passed"。
+# 一个把标签和数值配错的护栏，比没有护栏更糟 —— 它会给假话盖章。
+_PASSED_LINE = re.compile(r"#\s*(\d+) passed(?:,\s*(\d+) skipped)?")
+
+# 默认会被跳过的文件 —— README 里那句 "1 skipped" 说的就是它。
+# 这份名单**故意写死**：它是"默认环境下哪些测试不跑"的唯一真相来源。
+# 新增一个默认跳过的文件时，这里要改，README 也要改 —— 这正是想要的。
+DEFAULT_SKIPPED_FILES: tuple[str, ...] = ("tests/test_minecraft_e2e.py",)
+
+# `-rs` 会给每个跳过组印一行 `SKIPPED [n] 路径:行号: 原因`
+_SKIPPED_MARK = re.compile(r"SKIPPED \[(\d+)\]")
+
+
+def _default_skip_count() -> int:
+    """数默认环境下会跳过多少条。
+
+    为什么不能从 `--collect-only` 得到：跳过是在 **fixture 体内**调的
+    `pytest.skip()`，收集期看不到（`--setup-plan` 也看不到，因为它不执行
+    fixture 体）。所以只能真跑一遍这几个文件 —— 而它们本来就是
+    "跑起来立刻跳过"，代价是秒级，不是分钟级。
+    """
+    total = 0
+    for rel in DEFAULT_SKIPPED_FILES:
+        proc = subprocess.run(
+            [
+                sys.executable, "-m", "pytest", rel,
+                "-q", "-rs", "-p", "no:cacheprovider",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        total += sum(int(m) for m in _SKIPPED_MARK.findall(proc.stdout))
+    return total
+
 
 # `pytest --collect-only -q` 的每一行形如 `tests/test_x.py: 12`
 _COLLECT_LINE = re.compile(r"^tests/(\w+\.py): (\d+)$")
@@ -174,7 +213,7 @@ def _collected_test_count() -> int:
 
 
 def test_readme_test_counts_match_reality() -> None:
-    """README 里的测试数必须是真的。
+    r"""README 里的测试数必须是真的。
 
     这个仓库里这个数已经过期过五次（546 → 557 → 565 → 568 → 569），
     每次都是"加了测试、忘了改文档"。文档里的数字是**写给读者看的断言**，
@@ -183,6 +222,17 @@ def test_readme_test_counts_match_reality() -> None:
     注意这条测试**自己也计入总数**（它就是新加的那一条）。这是故意的：
     断言的是"README 等于实际收集数"，不是"README 等于实际数减一"。
     代价是每加一条测试都要顺手改 README —— 而这正是想要的。
+
+    ## 这条护栏自己出过一次错，记在这里
+
+    它一开始拿**收集数**去比 README 里的 `(\d+) passed`。加了默认跳过的
+    端到端测试之后，579 条被收集、只有 578 条真的跑，于是护栏
+    **逼着 README 印一句假话**：`# 579 passed`。
+
+    一个把标签和数值配错的护栏比没有护栏更糟 —— 它会给假话盖章。
+    现在的判据拆成两条：`passed + skipped == 收集数`，**而且**
+    `skipped` 必须等于默认环境里真正跳过的条数（见 `_default_skip_count`）。
+    只校验前者的话，`579 passed, 0 skipped` 照样能混过去。
     """
     actual = _collected_test_count()
     text = README.read_text(encoding="utf-8")
@@ -194,8 +244,35 @@ def test_readme_test_counts_match_reality() -> None:
         assert matches, f"README 里找不到「{label}」，正则过期了：{pattern.pattern}"
         found[label] = [int(m) for m in matches]
 
-    wrong = {k: v for k, v in found.items() if v != [actual] * len(v)}
+    wrong: dict[str, object] = {
+        k: v for k, v in found.items() if v != [actual] * len(v)
+    }
+
+    # 测试一节单独算：它印的是 passed，而 passed + skipped 才等于收集数。
+    # 直接拿收集数比 passed，会在有跳过用例时逼文档写错 —— 所以这里比的是关系。
+    passed_line = _PASSED_LINE.search(text)
+    assert passed_line, (
+        f"README 里找不到测试一节的输出行，正则过期了：{_PASSED_LINE.pattern}"
+    )
+    passed = int(passed_line.group(1))
+    skipped = int(passed_line.group(2) or 0)
+    if passed + skipped != actual:
+        wrong["测试一节的输出"] = (
+            f"{passed} passed + {skipped} skipped = {passed + skipped}，"
+            f"但收集到 {actual}"
+        )
+    else:
+        # 光校验"加起来对"还不够：`579 passed, 0 skipped` 也能凑出 579，
+        # 而那**正是**这条护栏以前逼出来的假话。所以跳过数要单独验一遍。
+        real_skips = _default_skip_count()
+        if skipped != real_skips:
+            wrong["测试一节的跳过数"] = (
+                f"README 说跳过 {skipped} 条，默认环境实际跳过 {real_skips} 条"
+                f"（{', '.join(DEFAULT_SKIPPED_FILES)}）"
+            )
+
     assert not wrong, (
-        f"README 里的测试数和实际收集到的不一致（实际 {actual}）：{wrong}。"
-        "改了测试就顺手把 README 里那三处数字一起改掉。"
+        f"README 里的测试数和实际对不上（实际收集 {actual}）：{wrong}。"
+        "改了测试就顺手把 README 里那几处数字一起改掉：目录树、路线图写收集数，"
+        "测试一节写 `passed, skipped`，且两者相加必须等于收集数。"
     )

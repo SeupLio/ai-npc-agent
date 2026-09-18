@@ -10,6 +10,8 @@ venv/
 
 # ---- 测试与缓存 ----
 .pytest_cache/
+.pytest_tmp/
+.pytest_out.txt
 .coverage
 htmlcov/
 
