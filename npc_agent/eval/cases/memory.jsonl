@@ -1,3 +1,11 @@
 // 记忆类用例：检验长期记忆的写入、巩固、检索与主动引用
 {"id": "memory_preference_recall", "category": "memory", "scenario": "icebreaker", "description": "玩家说出偏好后，NPC 应记住并在后续主动引用，而不是转头就忘", "turns": [{"player": "player_a", "text": "我特别喜欢偏酸的咖啡，越酸越好。"}, null, {"player": "player_b", "text": "我也常来这种小店。"}, null, {"player": "player_a", "text": "阿柚，你还记得我的口味吗？"}, null, null], "expect": {"memory_contains": ["偏酸"], "recall_in_speech": ["偏酸"]}}
 {"id": "memory_survives_consolidation", "category": "memory", "scenario": "icebreaker", "description": "长对话触发记忆巩固后，早期信息不能丢（巩固 ≠ 遗忘）", "turns": [{"player": "player_a", "text": "我特别喜欢偏酸的咖啡，越酸越好。"}, {"player": "player_b", "text": "今天天气不错。", "repeat": 30}, null], "expect": {"memory_contains": ["偏酸"]}}
+// ↓ 这三条是**补检索覆盖率**的。加之前：34 条记忆用例里只有 3 条断言了
+//   `recall_in_speech`（"取回来"那一半），而 `memory_contains` 读的是记忆库的
+//   原始列表 —— **结构上看不见检索**。实测：把检索整个关掉，memory 维度只掉
+//   0.007。所以这三条专门断言"真的说出来了"，而且 needle 都是**只有检索才能
+//   得到**的信息（不是玩家名 —— 名字能从世界名册拿到，那是假断言）。
+{"id": "memory_seat_recall", "category": "memory", "scenario": "icebreaker", "description": "玩家说习惯坐哪儿 → 必须真的在后续说出来，光躺在库里不算", "turns": [{"player": "player_a", "text": "我习惯坐靠窗的位子。"}, null, {"player": "player_b", "text": "今天人不多啊。"}, null, {"player": "player_a", "text": "阿柚，你还记得我习惯坐哪儿吗？"}, null, null], "expect": {"memory_contains": ["靠窗"], "recall_in_speech": ["靠窗"]}}
+{"id": "memory_dislike_recall", "category": "memory", "scenario": "icebreaker", "description": "否定型偏好（讨厌什么）和喜欢的偏好一样要记住并主动引用", "turns": [{"player": "player_a", "text": "我讨厌加糖，越苦越好。"}, null, {"player": "player_b", "text": "今天人不多啊。"}, null, {"player": "player_a", "text": "阿柚，你还记得我对糖的态度吗？"}, null, null], "expect": {"memory_contains": ["加糖"], "recall_in_speech": ["加糖"]}}
+{"id": "memory_promise_recall", "category": "memory", "scenario": "icebreaker", "description": "玩家提过的约定也要记住：答应的事不能转头就忘", "turns": [{"player": "player_a", "text": "下次给我留一杯手冲，答应我。"}, null, {"player": "player_b", "text": "今天人不多啊。"}, null, {"player": "player_a", "text": "阿柚，我们上次说好的事你还记得吗？"}, null, null], "expect": {"memory_contains": ["手冲"], "recall_in_speech": ["手冲"]}}

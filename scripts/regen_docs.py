@@ -77,11 +77,12 @@ OFFLINE_REPORTS: dict[str, tuple[tuple[str, ...], str]] = {
     "ablation": (("ablate",), "ablation.html"),
     "worlds": (("worlds",), "worlds.html"),
     # 敏感性报告也是离线可复现的：它只跑启发式路径，不调模型。
-    # 它比另外两份更该被钉住 —— 它是"228/228 全绿"这句话的**证据**，
+    # 它比另外两份更该被钉住 —— 它是「基线全绿」这句话的**证据**，
     # 过期了就等于在给一个已经不准的结论背书。
+    # ⚠️ 这里**不写用例条数**：条数会变（15 → 228 → 231），
+    # 写死在注释里就会像文档里的数字一样过期。要读就读报告自己印的那一行。
     "sensitivity": (("sensitivity",), "sensitivity.html"),
 }
-
 # 一次跑批的快照：需要模型 + 额度，**故意不自动化**。
 # 列在这里是为了让"哪些不能重生成"变成一个可被测试读取的事实，
 # 而不是散落在文档里的口头说明。
@@ -119,7 +120,13 @@ def regen(only: str | None, out_dir: Path) -> list[Path]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="docs", help="输出目录（默认 docs/）")
-    ap.add_argument("--only", default=None, help="只生成某一个（ablation / worlds）")
+    ap.add_argument(
+        "--only",
+        default=None,
+        # 列表从 OFFLINE_REPORTS 生成 —— 手写列表在加 sensitivity 那次就漏了，
+        # 于是 --help 上少了一个可选项。**能推导的别手抄。**
+        help=f"只生成某一个（{' / '.join(OFFLINE_REPORTS)}）",
+    )
     args = ap.parse_args()
 
     out_dir = Path(args.out)

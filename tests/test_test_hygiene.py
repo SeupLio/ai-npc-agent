@@ -640,18 +640,56 @@ def test_readme_offline_baseline_matches_reality(tmp_path: Path) -> None:
 
 
 def test_the_readme_baseline_check_can_actually_fail(tmp_path: Path) -> None:
-    """上面那条的判据必须真的抓得到过期数字，否则它和不存在没区别。
+    r"""上面那条的判据必须真的抓得到过期数字，否则它和不存在没区别。
 
     做法：拿真跑出来的 summary，配一份**被人改坏**的 README 文本，
     断言每类改动都被点名。只测"改一个数"不够 —— 那只能证明某一条分支活着。
+
+    ## 这条反向测试自己红过一次，原因记在这里
+
+    它一开始把**原值手抄**在测试里（`通过率 228/228（100%）`、`分布：`task 76`）。
+    用例集从 228 长到 231 之后，`str.replace` 找不到目标串，
+    于是"改坏"这一步**静默什么都没做**，断言报出来的是
+
+        AssertionError: 改了通过率却没抓到
+
+    —— 一句话指向护栏，而真凶是测试自己那份过期常量。
+
+    现在的做法：原值**全部从 summary 现算**，并且每次替换都断言
+    `old in text`。手抄一份常量就等于给测试埋一个会在用例集变化时引爆的雷，
+    而它炸出来的错会指向错误的方向。
     """
     text = README.read_text(encoding="utf-8")
     summary = _offline_eval_summary(tmp_path)
     assert not _baseline_mismatches(text, summary), "原文本本来就对不上，先修 README"
 
-    broken = text.replace("通过率 228/228（100%）", "通过率 227/228（100%）")
-    broken = broken.replace("task=1.000 tools=1.000", "task=0.900 tools=1.000")
-    broken = broken.replace("分布：`task 76", "分布：`task 99")
+    total = int(summary["total"])
+    passed = int(summary["passed"])
+    means = summary["metric_means"]
+    task_mean = float(means["task"])
+    tools_mean = float(means["tools"])
+    task_total = int(summary["by_category"]["task"]["total"])
+    # 换个值就行，方向不重要；避开 0.000 是因为 `-0.1` 会变成负数。
+    new_task_mean = task_mean - 0.1 if task_mean >= 0.1 else task_mean + 0.1
+
+    mutations = (
+        (f"通过率 {passed}/{total}", f"通过率 {passed - 1}/{total}"),
+        (
+            f"task={task_mean:.3f} tools={tools_mean:.3f}",
+            f"task={new_task_mean:.3f} tools={tools_mean:.3f}",
+        ),
+        (f"分布：`task {task_total}", f"分布：`task {task_total + 1}"),
+    )
+
+    broken = text
+    for old, new in mutations:
+        # 替换落空 = 这条反向测试在空转，必须先在这里炸，而不是在断言那里。
+        assert old in broken, (
+            f"反向测试自己过期了：README 里找不到 {old!r}。"
+            "原值必须从 summary 现算，手抄的常量会在用例集变化后静默失效。"
+        )
+        broken = broken.replace(old, new)
+
     wrong = _baseline_mismatches(broken, summary)
 
     assert "通过率" in wrong, f"改了通过率却没抓到：{wrong}"

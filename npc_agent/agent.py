@@ -40,22 +40,82 @@ _SUMMARY_PREFIX = "（早前对话摘要）"
 _EDGE_PUNCT = "。！？，、；:： "
 
 
-def extract_memory_hint(content: str, limit: int = 18) -> str:
+def swap_person(text: str) -> str:
+    """把「我/你」整体互换 —— 用于把**别人的话**转成可以直接说出口的第二人称。
+
+    为什么必须是**同时**互换，而不是「我→你」单向替换：
+
+    | 玩家原话 | 单向「我→你」 | 同时互换（正确） |
+    |---|---|---|
+    | 我喜欢偏酸的 | 你喜欢偏酸的 ✅ | 你喜欢偏酸的 ✅ |
+    | 我觉得你不错 | 你觉得你不错 ❌ | 你觉得我不错 ✅ |
+    | 我们常来 | 你们常来 ✅ | 你们常来 ✅ |
+
+    单向替换在第二种上会把自己绕进去（"你觉得你不错"）。同时互换用占位符
+    走一遍，`我们`/`我的`/`你们` 这些复合词会自动跟着对。
+
+    ⚠️ 只对**别人说的话**用。NPC 自己写的记忆（`remember` 工具）本来就是
+    第一人称，互换会把「小满说的我记下了」变成「小满说的你记下了」。
+    """
+    if not text:
+        return text
+    return text.replace("我", "\x00").replace("你", "我").replace("\x00", "你")
+
+
+def _split_speaker(text: str) -> tuple[str, str]:
+    """把 `某某说：…` 拆成（说话人, 内容）。没有前缀时说话人为空串。
+
+    ⚠️ **冒号前那一段结尾还有一个「说」字**（`observe` 写的是
+    ``f"{speaker_name}说：{text}"``）。忘了剥它，`speaker != own_name`
+    就永远成立 —— 于是 NPC **自己**说的话也被换人称，说出
+    「你觉得我不错」这种错位。这个 bug 是 `test_own_words_are_not_switched`
+    抓出来的（写完先跑测试，别等）。
+    """
+    if "：" not in text:
+        return "", text
+    speaker, _, body = text.partition("：")
+    speaker = speaker.strip()
+    if speaker.endswith("说"):
+        speaker = speaker[:-1].strip()
+    return speaker, body
+
+
+def extract_memory_hint(content: str, limit: int = 18, own_name: str = "") -> str:
     """从一条记忆里抽出可以直接说出口的短句。
 
-    三步：剥掉摘要前缀 → 剥掉「某某说：」前缀 → 在第一个句子边界处切断。
+    四步：剥掉摘要前缀 → 剥掉「某某说：」前缀 → **别人说的话换人称** →
+    在第一个句子边界处切断。
 
     早期实现是 ``content.split("：", 1)[-1][:18].rstrip(...)``。
     按字数硬截有两个问题：一是会截到半个词，二是对巩固后的摘要无效 ——
     ``阿澈说：我特别喜欢偏酸的咖啡，越酸越好。；小满说：…`` 截出来是
     ``我特别喜欢偏酸的咖啡，越酸越好。；小``，于是 NPC 说出
     「…越好。；小，是这个没错吧？」。**按语义边界切，不按字数切。**
+
+    ## 人称那一步是被一个真实跑批逼出来的
+
+    记忆存的是**玩家原话**（`observe` 写成 ``阿澈说：我喜欢偏酸的咖啡``）。
+    剥掉「阿澈说：」之后剩下第一人称，再塞进人设模板
+    ``对了，你之前提过{memory_hint}，是这个没错吧？``，就成了：
+
+        「对了，你之前提过**我**特别喜欢偏酸的咖啡，是这个没错吧？」
+
+    —— NPC 把玩家的话当成了自己的话。三个人设的 recall 模板全是这个形状，
+    所以这是**全量**的，不是某一句的偶发。而且六维评测给这些用例全打了
+    **1.000**：`recall_in_speech` 只查子串在不在，看不见人称对不对。
+
+    修法：剥掉「某某说：」时如果说话人**不是自己**，就把这段内容的人称换过来
+    （`swap_person`）。`own_name` 为空时保持原样 —— 老调用方（和纯函数测试）
+    不传就不改变行为。
     """
     text = (content or "").strip()
     if text.startswith(_SUMMARY_PREFIX):
         text = text[len(_SUMMARY_PREFIX) :]
-    if "：" in text:
-        text = text.split("：", 1)[-1]
+
+    speaker, body = _split_speaker(text)
+    if speaker and own_name and speaker != own_name:
+        body = swap_person(body)
+    text = body
 
     cut = len(text)
     for mark in _CLAUSE_BREAK:
@@ -484,8 +544,12 @@ class NPCAgent:
                 # 没什么可说的就保持安静，比复读一句"嗯"更像人
                 return
         elif utterance is not None and utterance.is_question:
-            intent = "recall" if self._has_recallable(memories, self.state.tick) else "answer_question"
-        elif self._has_recallable(memories, self.state.tick):
+            intent = (
+                "recall"
+                if self._has_recallable(memories, self.state.tick, utterance)
+                else "answer_question"
+            )
+        elif self._has_recallable(memories, self.state.tick, utterance):
             intent = "recall"
         else:
             intent = "acknowledge" if utterance is not None else "fallback"
@@ -653,10 +717,15 @@ class NPCAgent:
             topic_hint = "今天露台的星星不错"
 
         memory_hint = ""
-        for record in memories:
-            if any(hint in record.content for hint in RECALL_HINTS):
-                memory_hint = extract_memory_hint(record.content)
-                break
+        # 和 `_recallable` 用**同一份筛选结果** —— 两边各写一遍过滤条件，
+        # 就会出现"判定说可以回引，但抽出来的 hint 来自另一条记忆"。
+        for record in self._recallable(memories, self.state.tick, utterance):
+            # 传自己的名字进去：剥掉「某某说：」之后，**别人**说的话要换人称，
+            # 否则 NPC 会把玩家的第一人称当成自己的（见 extract_memory_hint）。
+            memory_hint = extract_memory_hint(
+                record.content, own_name=self.persona.name
+            )
+            break
 
         return self.persona.render_template(
             intent,
@@ -668,19 +737,47 @@ class NPCAgent:
         )
 
     @staticmethod
-    def _has_recallable(memories: list[Any], now: int) -> bool:
-        """判断有没有值得当面回引的记忆。
+    def _recallable(
+        memories: list[Any], now: int, utterance: Optional[Utterance] = None
+    ) -> list[Any]:
+        """筛出**值得当面回引**的记忆。回引和抽 hint 必须用同一份筛选结果。
 
-        必须排除**本轮刚写进去的**记忆 —— 否则玩家说"我第一次来"，
-        NPC 下一句就是"你之前提过你第一次来"，变成尴尬的复读。
-        回引的前提是"过去"确实存在。
+        两个条件缺一个都会说出坏话：
+
+        1. **是"过去"的事**（`m.tick < now`）。否则玩家说"我第一次来"，
+           NPC 下一句就是"你之前提过你第一次来"，尴尬的复读。
+        2. **不是本轮刚说的那句话本身**。
+
+        第 2 条是后来补的，因为 tick 判定挡不住它。实测（`memory_seat_recall`）：
+
+            玩家：阿柚，你还记得我习惯坐哪儿吗？
+            NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，是这个没错吧？
+
+        玩家**问句本身**含「习惯」这个线索词，于是它被当成"值得回引的记忆"，
+        NPC 把问题引回来当成了过去的事 —— 而且顺手把自己的名字说成了玩家的。
+        `utterance.tick` 和 `state.tick` 谁大取决于调度顺序，靠 tick 判不稳，
+        所以这里直接比对**当前这句话的文本**。
         """
-        return any(
-            m.tick < now
-            and m.importance >= 0.55
-            and any(hint in m.content for hint in RECALL_HINTS)
-            for m in memories
-        )
+        skip = (utterance.text or "").strip() if utterance is not None else ""
+        out = []
+        for m in memories:
+            if m.tick >= now:
+                continue
+            if m.importance < 0.55:
+                continue
+            if not any(hint in m.content for hint in RECALL_HINTS):
+                continue
+            if skip and skip in m.content:
+                continue
+            out.append(m)
+        return out
+
+    @classmethod
+    def _has_recallable(
+        cls, memories: list[Any], now: int, utterance: Optional[Utterance] = None
+    ) -> bool:
+        """有没有值得当面回引的记忆 —— 见 `_recallable`。"""
+        return bool(cls._recallable(memories, now, utterance))
 
     def _memory_query(self, utterance: Optional[Utterance], decision: Any) -> str:
         parts = []
