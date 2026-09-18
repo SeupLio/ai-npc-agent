@@ -339,3 +339,167 @@ def test_readme_test_counts_match_reality() -> None:
         "改了测试就顺手把 README 里那几处数字一起改掉：目录树、路线图写收集数，"
         "测试一节写 `passed, skipped`，且两者相加必须等于收集数。"
     )
+
+
+# --------------------------------------------------------------------------- #
+# README 里那条命令：它印出来的东西必须和文档写的一样
+# --------------------------------------------------------------------------- #
+
+# README 测试一节里的命令行。故意只认 `python -m pytest tests` 这一种写法 ——
+# 换成别的写法（`pytest -q tests` / `python -m pytest ./tests`）这条护栏会失效，
+# 所以**找不到就红**，而不是静默跳过。
+_README_TEST_CMD = re.compile(r"^python -m pytest tests(?P<flags>[^\n]*)$", re.M)
+
+# pytest 的汇总行：`42 passed in 0.11s` / `591 passed, 2 skipped in 234.56s`
+_SUMMARY_LINE = re.compile(r"^\d+ passed(?:, \d+ \w+)* in \d", re.M)
+
+# 拿它当靶子跑一遍：够小（几十条、0.1 秒），但足以让 pytest 走到"印汇总"那一步。
+_SUMMARY_PROBE_TARGET = "tests/test_conditions.py"
+
+
+def _documented_pytest_flags() -> list[str]:
+    """把 README 里那条命令的**参数**抠出来（`tests` 之后的部分）。"""
+    match = _README_TEST_CMD.search(README.read_text(encoding="utf-8"))
+    assert match, (
+        "README 的测试一节里找不到 `python -m pytest tests ...` 这行命令，"
+        f"正则过期了：{_README_TEST_CMD.pattern}"
+    )
+    return match.group("flags").split()
+
+
+def test_the_documented_test_command_prints_the_summary_it_promises() -> None:
+    """README 里那条命令，必须真的印出 README 承诺的那行汇总。
+
+    ## 为什么"数字对"还不够
+
+    上面那条护栏只管**数字**。但文档可以是另一种假话：
+    **数字是对的，而照着文档敲出来的命令根本印不出这行数字。**
+
+    这就是真发生过的事：README 写的是
+
+    ```bash
+    python -m pytest tests -q
+    # 591 passed, 2 skipped
+    ```
+
+    而 `pyproject.toml` 里已经有 `addopts = "-q"` —— 命令行那个 `-q` 叠上去
+    变成 **`-qq`**，而 `-qq` 会把汇总行**整个吞掉**。照着文档敲的人只看到
+    进度点和 `[100%]`，然后什么都没有，**退出码还是 0**。
+    看起来像"套件崩了"，其实全绿 —— 一个把读者往错误方向引的文档。
+
+    ## 做法
+
+    把 README 里的参数**原样抠出来**，套在一个小靶子上跑一遍。
+    靶子只要能让 pytest 走到"印汇总"那一步就够了，所以是秒级，
+    不是把整套跑一遍。
+    """
+    probe = REPO_ROOT / _SUMMARY_PROBE_TARGET
+    assert probe.exists(), (
+        f"这条护栏的靶子 {_SUMMARY_PROBE_TARGET} 不存在了 —— "
+        "换一个跑得快的测试文件，别把这条护栏一起删掉"
+    )
+
+    flags = _documented_pytest_flags()
+    proc = subprocess.run(
+        [
+            sys.executable, "-m", "pytest", _SUMMARY_PROBE_TARGET,
+            *flags, "-p", "no:cacheprovider",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env=_default_env(),
+    )
+
+    if not _SUMMARY_LINE.search(proc.stdout):
+        pytest.fail(
+            "照着 README 敲 `python -m pytest tests "
+            f"{' '.join(flags)}`，pytest 没有印出汇总行。\n"
+            "最常见的原因：README 里的参数和 `pyproject.toml` 的 `addopts` "
+            "叠成了 `-qq`，而 `-qq` 会吞掉汇总行。\n"
+            f"靶子 {_SUMMARY_PROBE_TARGET} 的实测输出（退出码 {proc.returncode}）：\n"
+            f"{proc.stdout[-1500:]}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# README 里**所有**被文档化的 pytest 命令
+# --------------------------------------------------------------------------- #
+
+# 允许三种前缀：Markdown 引用（`> `）、环境变量赋值（`FOO=bar `）、缩进。
+# 故意只认 `python -m pytest`：换成裸 `pytest` 这条护栏会静默失效，
+# 所以下面先断言"至少找到一条"，一条都找不到就红。
+_DOCUMENTED_PYTEST = re.compile(
+    r"(?m)^[>\s]*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*python -m pytest\b[^\n]*"
+)
+
+_QUIET_FLAGS = {"-q", "--quiet"}
+
+
+def _documented_pytest_commands() -> list[str]:
+    return [
+        match.group(0).strip()
+        for match in _DOCUMENTED_PYTEST.finditer(README.read_text(encoding="utf-8"))
+    ]
+
+
+def test_the_documented_command_pattern_catches_the_hard_shapes() -> None:
+    r"""正则必须抓得到 README 里**真实出现过**的几种写法。
+
+    抓不到就等于这条护栏在空转 —— 而空转的护栏比没有更糟，因为它会
+    给"我已经检查过了"盖章。真实出现过两种：
+
+    - 普通代码块：`python -m pytest tests`
+    - 引用块 + 环境变量前缀：
+      `> NPC_AGENT_MC_E2E=1 python -m pytest tests/test_minecraft_e2e.py`
+
+    第二种如果漏了，那条命令里的 `-q` 就永远查不出来。
+    """
+    samples: dict[str, int] = {
+        "python -m pytest tests": 1,
+        "> NPC_AGENT_MC_E2E=1 python -m pytest tests/test_minecraft_e2e.py": 1,
+        "  python -m pytest tests -k foo": 1,
+        "python -m pytest": 1,
+        "pytest tests": 0,  # 没有 `python -m`，故意不认（所以下面才要断言非空）
+    }
+    for line, expected in samples.items():
+        found = len(_DOCUMENTED_PYTEST.findall(line))
+        assert found == expected, f"{line!r} 期望 {expected} 条，实际 {found} 条"
+
+
+def test_no_documented_pytest_command_brings_its_own_quiet_flag() -> None:
+    r"""README 里**任何一条** pytest 命令都不能自己带 `-q`。
+
+    `pyproject.toml` 里已经有 `addopts = "-q"`。命令行再带一个，两个叠成
+    **`-qq`** —— 而 `-qq` 会把最后那行汇总**整个吞掉**：只剩进度点和
+    `[100%]`，退出码还是 0。照着文档敲的人会以为套件崩了。
+
+    上面那条护栏只盯"主命令"，这条盯**全部**命令 —— 因为同一个错
+    在这个 README 里出现过**两处**（主命令 + Minecraft 那条），
+    只修一处、只测一处，另一处照样是假话。
+    """
+    commands = _documented_pytest_commands()
+    assert commands, (
+        "README 里一条 `python -m pytest` 命令都找不到 —— 正则过期了，"
+        f"这条护栏正在空转：{_DOCUMENTED_PYTEST.pattern}"
+    )
+
+    offenders = [cmd for cmd in commands if _QUIET_FLAGS & set(cmd.split())]
+    assert not offenders, (
+        "这些文档化的命令自带 `-q`，会和 `pyproject.toml` 里的 "
+        f'`addopts = "-q"` 叠成 `-qq`，把汇总行吞掉：{offenders}。'
+        "`addopts` 已经给了 `-q`，命令里不必再写。"
+    )
+
+
+def test_the_quiet_flag_check_can_actually_fail() -> None:
+    """上面那条的判据必须真的抓得到 `-q`，否则它和不存在没区别。"""
+    sample = [
+        "python -m pytest tests",
+        "NPC_AGENT_MC_E2E=1 python -m pytest tests/test_minecraft_e2e.py -q",
+        "python -m pytest tests --quiet",
+    ]
+    offenders = [cmd for cmd in sample if _QUIET_FLAGS & set(cmd.split())]
+    assert len(offenders) == 2, f"漏检或误报：{offenders}"
+
+

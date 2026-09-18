@@ -299,7 +299,7 @@ python -m npc_agent.cli worlds --html docs/worlds.html
 > 服务端），因为"没起服务端"不是代码的问题：
 >
 > ```bash
-> NPC_AGENT_MC_E2E=1 python -m pytest tests/test_minecraft_e2e.py -q
+> NPC_AGENT_MC_E2E=1 python -m pytest tests/test_minecraft_e2e.py
 > ```
 >
 > 桥脚本本身还支持 `--dry-run`，可以在**完全没有服务端**时验证协议
@@ -1508,7 +1508,7 @@ game-npc-agent/
 │   ├── wait_for_batch.py       等跑批：区分「跑完了 / 跑死了 / 还在跑」
 │   └── rescore_safety.py       用新口径离线重算安全维度（要求先逐字复现旧口径）
 ├── package.json            桥的 node 依赖（mineflayer 等）；node_modules 不入库
-└── tests/                  593 个单元与端到端测试
+└── tests/                  597 个单元与端到端测试
 ```
 
 **配置驱动**：新增一个人设或场景只需要写 YAML，不用改代码。
@@ -1684,13 +1684,19 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 593 个测试
+- [x] 六维评测 harness + 597 个测试
 - [x] **`docs/` 的报告分成两类并加护栏**：**离线可复现**（`ablation` / `worlds`，
       和代码不一致就是在说谎）vs **一次跑批的快照**（要模型 + 额度）。
       入库的 `ablation.html` 曾是 12 条用例时代的产物（5 列指标、没有「发言调度」），
       已重新生成并钉住；README 里每份报告的**覆盖条数**也由护栏核对
       （`comparison.html` 只有 **12 条**、`multi_npc.html` 只有 **2 条**，
       以前表格里看不出这个差别）
+- [x] **README 里那条测试命令，印不出它承诺的输出**：`pyproject.toml` 里已经有
+      `addopts = "-q"`，命令里再写一个 `-q` 就叠成 **`-qq`** —— 而 `-qq` 会把
+      **最后那行汇总整个吞掉**，只剩进度点和 `[100%]`，**退出码还是 0**。
+      照着文档敲的人会以为套件崩了。两处都改了（主命令 + Minecraft 那条），
+      并加了两条护栏：一条把**命令和它承诺的输出**钉在一起（真跑一个小靶子，
+      确认汇总行会印），一条扫**全部**文档化命令、禁止自带 `-q`
 - [x] 记忆消融实验（五种可替换检索策略 + 对照报告）
 - [x] 离线启发式 vs 真实模型的对照跑批 + HTML 报告
 - [x] **多 NPC 协作**：Cast 导演层 + 双 NPC 场景 + 发言调度评测维度
@@ -1763,11 +1769,19 @@ python scripts/rescore_safety.py --checkpoint reports/batch_model_checkpoint.jso
 ## 测试
 
 ```bash
-python -m pytest tests -q
-# 591 passed, 2 skipped
+python -m pytest tests
+# 595 passed, 2 skipped
 ```
 
-> 收集到的是 **593** 条，默认跳过 **2** 条：
+> ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
+> 命令行再加一个就变成 **`-qq`**，而 `-qq` 会把最后那行汇总**整个吞掉** ——
+> 你只会看到进度点和 `[100%]`，然后什么都没有，看起来像跑崩了（退出码还是 0）。
+> 实测：`pytest tests/test_conditions.py` 印 `42 passed in 0.11s`，
+> 而 `pytest tests/test_conditions.py -q` 什么都不印。
+> 文档里这条命令和它下面那行输出**是被测试钉在一起的**
+> （见 `tests/test_test_hygiene.py`），改了命令不改输出会红。
+
+> 收集到的是 **597** 条，默认跳过 **2** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）
 > 和 `tests/test_docs_freshness.py` 里那条慢速报告校验
 > （约 2 分钟，`NPC_AGENT_DOC_FRESHNESS=1` 才跑）。
