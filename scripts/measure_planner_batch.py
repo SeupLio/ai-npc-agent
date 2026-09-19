@@ -620,7 +620,7 @@ def _transport_note(b: dict[str, Any], a: dict[str, Any]) -> str:
     if transport and not other:
         return (
             '<div class="warn"><strong>这一栏量的是端点健康，不是模型能力。</strong>'
-            f"两条臂加起来 {total_kind} 条用例出现过规划回落，"
+            f"配对子集里两条臂加起来 {total_kind} 条用例出现过规划回落，"
             f"其中 <strong>{transport} 条的末次错误是传输层故障</strong>"
             "（<code>TimeoutError</code> / <code>RemoteDisconnected</code>），"
             "<strong>0 条是解析失败</strong>。"
@@ -753,7 +753,7 @@ def _confound_section(cmp: dict[str, Any], conf: dict[str, Any]) -> str:
     )
 
     share = (
-        f'<div class="sub">至少发生过一次规划回落的用例：'
+        f'<div class="sub"><strong>配对子集里</strong>至少发生过一次规划回落的用例：'
         f"修复前 <strong>{conf['share_before']:.0%}</strong>、"
         f"修复后 <strong>{conf['share_after']:.0%}</strong>。"
         "回落 = 那一次规划调用超时/断连，框架<strong>静默换成启发式规划器</strong>。"
@@ -959,9 +959,15 @@ def render(cmp: dict[str, Any], before_label: str, after_label: str) -> str:
             f"其中通过 {after_all['passed']} 条（{after_all['rate']:.1%}）。"
         )
     else:
+        share = after_all["cases_with_failures"] / after_all["total"]
         arm_note = (
             f"修复后那一臂总共跑了 {after_all['total']} 条，"
-            f"通过 {after_all['passed']} 条（{after_all['rate']:.1%}）。"
+            f"通过 {after_all['passed']} 条（{after_all['rate']:.1%}）—— "
+            f"但其中 <strong>{after_all['cases_with_failures']} 条（{share:.0%}）"
+            f"期间规划调用回落过</strong>"
+            f"（末次错误传输层 {after_all['cases_last_transport']} 条、"
+            f"其他 {after_all['cases_last_other']} 条），"
+            "所以这个数也不能当模型能力读。"
         )
 
     headline = (

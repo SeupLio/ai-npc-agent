@@ -749,3 +749,27 @@ def test_the_markdown_leak_guard_can_actually_fail() -> None:
     assert _MD_LEAK_RE.findall(_strip_code_and_style(bad)), "护栏抓不到残留 = 死断言"
     good = '<div class="warn">框架<strong>静默回落</strong>启发式规划器，见 <code>flag</code></div>'
     assert not _MD_LEAK_RE.findall(_strip_code_and_style(good))
+
+
+def test_the_full_arm_reading_carries_its_fallback_share(mod) -> None:
+    """整臂读数不能只印通过率 —— 48% 的用例回落过，那个通过率不干净。
+
+    实测：修复后那一臂 231 条里 112 条期间规划调用回落过，
+    单看"通过 95.7%"会让读者以为这是个干净的读数。
+    """
+    cmp = _cmp_for_render(mod)
+    cmp["meta"] = {"after_total": len(cmp["after_all"]), "before_total": 60}
+    cmp["after_all"] = dict(
+        cmp["after_all"], total=40, passed=38, rate=0.95,
+        cases_with_failures=19, cases_last_transport=18, cases_last_other=1,
+    )
+    html = mod.render(cmp, "4c6569c", "HEAD")
+    assert "总共跑了 40 条" in html
+    assert "19 条" in html and "48%" in html, "整臂读数要带上回落占比"
+    assert "末次错误传输层 18 条、其他 1 条" in html
+
+
+def test_the_confound_share_says_it_is_the_paired_subset(mod) -> None:
+    """两边都恰好 48%，不写口径就会被读成整臂。"""
+    html = mod.render(_cmp_for_render(mod), "4c6569c", "HEAD")
+    assert "配对子集里" in html
