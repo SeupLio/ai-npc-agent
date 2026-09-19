@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ..types import ActionCall, ActionResult, Utterance
+from ..types import ActionCall, ActionResult, Utterance, looks_like_question
 from .base import Environment, ToolSpec
 from .conditions import ConditionContext
 
@@ -51,26 +51,39 @@ RECIPES: dict[str, dict[str, Any]] = {
 }
 
 # 知识库。requires 不为空时，需要对应世界标记才允许透露 —— 这是"不剧透"的实现。
+#
+# `keywords` 是给**说话**那一环用的：玩家不会照着标题提问
+# （没人会说"讲讲咖啡屋的故事"），他们会问"这店开了多久了"。
+# 所以每个话题要带一组"提问时真会出现的词"。
+# 匹配是**精确子串**，不做模糊 —— 见 `NPCAgent._direct_answer` 的注释：
+# 短句上的模糊匹配会让 NPC 对着闲聊背知识条目。
 KNOWLEDGE: dict[str, dict[str, Any]] = {
     "house_story": {
         "title": "咖啡屋的故事",
         "text": "这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。",
         "requires": None,
+        "keywords": [
+            "这家店", "这店", "开店", "开了多久", "多久", "什么时候开",
+            "历史", "灯塔", "守塔人", "以前是",
+        ],
     },
     "brewing": {
         "title": "手冲的门道",
         "text": "水温低一点，闷蒸久一点，酸味会更干净。",
         "requires": None,
+        "keywords": ["手冲", "怎么冲", "冲法", "水温", "闷蒸", "酸味", "豆子"],
     },
     "constellation": {
         "title": "露台的星空",
         "text": "露台朝北，天晴的时候能看到很清楚的星轨。",
         "requires": None,
+        "keywords": ["星空", "星星", "星轨", "露台", "天文", "朝哪"],
     },
     "hidden_menu": {
         "title": "隐藏菜单",
         "text": "其实还有一杯不写在菜单上的特调，叫「灯塔余晖」，只有熟客知道。",
         "requires": "hidden_menu_unlocked",  # ← 需要解锁，防止 NPC 一上来就剧透
+        "keywords": ["隐藏菜单", "特调", "不写在菜单上", "熟客"],
     },
 }
 
@@ -262,11 +275,19 @@ class StarIsleEnv(Environment):
         }
 
     def world_facts(self) -> dict[str, Any]:
-        """把世界规则暴露给 Planner 的离线启发式路径。"""
+        """把世界规则暴露给 Planner 的离线启发式路径。
+
+        `knowledge` 是后加的，给的是**说话**那一环而不是规划：
+        NPC 被问到「手冲的门道是什么」时得真答得上来，而不是回一句
+        「这个我还没想过，你怎么看？」（那是在把问题踢回去）。
+        和 recipes 一样，它必须**和 `_h_tell_fact` 读同一份表** ——
+        两处各写一份，就会出现"说得出但讲不了"的错位。
+        """
         return {
             "locations": dict(LOCATIONS),
             "recipes": {k: dict(v) for k, v in RECIPES.items()},
             "items": dict(ITEM_NAMES),
+            "knowledge": {k: dict(v) for k, v in KNOWLEDGE.items()},
         }
 
     def available_topics(self, actor_id: str) -> list[str]:
@@ -354,7 +375,7 @@ class StarIsleEnv(Environment):
                 tick=self.tick,
                 role="npc" if actor.kind == "npc" else "player",
                 mentions=self._mentions(text, actor.id),
-                is_question=text.rstrip().endswith(("?", "？")),
+                is_question=looks_like_question(text),
             )
         )
 
@@ -368,7 +389,7 @@ class StarIsleEnv(Environment):
             tick=self.tick,
             role="player",
             mentions=self._mentions(text, player_id),
-            is_question=text.rstrip().endswith(("?", "？")),
+            is_question=looks_like_question(text),
         )
         self._utterances.append(utterance)
         return utterance

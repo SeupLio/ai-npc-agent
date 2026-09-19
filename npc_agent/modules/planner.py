@@ -153,13 +153,27 @@ class Planner:
         text = utterance.text or ""
         speaker = utterance.speaker_id
 
-        if not REQUEST_MARKERS.search(text):
+        if not self.is_request(text):
             return None
 
         for pattern, item_id in ORDER_PATTERNS:
             if pattern.search(text):
                 return self._plan_serve(item_id, speaker, tracker)
         return None
+
+    def is_request(self, text: str) -> bool:
+        """玩家这句话是不是在**下单**（"来一杯拿铁" / "能给我做杯咖啡吗"）。
+
+        单独开一个方法，是因为同一个判断现在有**两个**消费方：
+        1. `plan_for_utterance` —— 要不要生成"制作-交付"计划；
+        2. `NPCAgent._player_is_asking_me` —— 这句要不要**当问题去回答**。
+
+        第 2 处是后加的：下单**经常写成问句**（「能给我来杯拿铁吗？」），
+        光看 `is_question` 会把它当成提问，于是 NPC 回一句泛泛的话、
+        而 `accept_order` 那句「好，稍等，我这就去弄」被让掉 —— 点单闭环就断了。
+        两边各写一遍 `REQUEST_MARKERS.search(...)` 早晚漂移，所以收拢到这里。
+        """
+        return bool(REQUEST_MARKERS.search(text or ""))
 
     def wants_scenario_flow(self, text: str) -> bool:
         return bool(SCENARIO_INTENTS.search(text or ""))

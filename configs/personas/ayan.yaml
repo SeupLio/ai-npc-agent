@@ -46,13 +46,43 @@ goals:
 relationships:
   default: 同村的人
 
+# 见 ayou.yaml 的注释：不问清楚"你是谁"，NPC 就会说"我不知道我叫什么"。
+self_facts:
+  - ask: [你叫什么, 你的名字, 怎么称呼, 你是谁, 你是干什么的]
+    reply: "阿岩。村口凿石头的，入夜管点灯。"
+  - ask: [你平时, 你常在, 你总在]
+    reply: "白天在石场，天黑前得把灯点上。"
+  - ask: [你会做什么, 你拿手, 你能做什么]
+    reply: "石头活都行。砌墙、打台阶、磨刀石。"
+
 # 说话风格模板（离线启发式模式下用于生成台词）
+#
+# 高频意图写成多选一（理由见 ayou.yaml 的注释）。阿岩的变体要"像凿石头"——
+# 短、直、不绕弯，别把三个变体写成同一种客套。
 utterance_templates:
   opening: "行。{topic_hint}"
   accept_order: "行，我这就去。"
   deliver_order: "{item_name}给你。"
   greet_new: "生面孔？我是阿岩，村口的石匠。"
-  probe: "{target}刚说的，你再讲讲。"
-  acknowledge: "{target}说的我记下了。"
-  recall: "对了，你之前提过{memory_hint}。"
-  fallback: "行，你说。"
+  # ⚠️ `wrap_up` 必须**显式写**，不能靠回落到 `fallback`：
+  # 回落之后两者是同一句话（"行，你说。"），收尾时会说出一句接话的话。
+  # 有测试（test_variants_across_intents_are_also_distinct）自动挡这个。
+  wrap_up: "就到这儿。剩下的明天再说。"
+  probe:
+    - "{target}刚说的，你再讲讲。"
+    - "行，{target}往细里说说。"
+  acknowledge:
+    - "{target}说的我记下了。"
+    - "行，记下了。"
+    - "嗯，{target}继续说。"
+  recall:
+    - "对了，你之前提过{memory_hint}。"
+    - "我记得{target}说过{memory_hint}。"
+  answer_question:
+    - "{answer_hint}"
+  unknown:
+    - "这个我说不好。"
+    - "不清楚，我不瞎讲。"
+  fallback:
+    - "行，你说。"
+    - "手上有活，你慢慢说。"

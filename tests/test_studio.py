@@ -228,6 +228,56 @@ def test_chat_reports_world_state_and_memories(cfg: RuntimeConfig) -> None:
     assert got["speech"], "发言统计不该是空的"
 
 
+def test_chat_reports_repetition_and_the_count_matches_the_lines(
+    cfg: RuntimeConfig,
+) -> None:
+    """控制台要能显示复读率，而且这个数必须和它自己渲染的台词对得上。
+
+    为什么这条不能省：**复读是唯一一个六维评测抓不到的毛病** ——
+    每一维都只看单句（符不符合人设 / 有没有用到记忆 / 有没有答到点子上），
+    没有任何一维看"这句和前面那句是不是同一句"。所以它可以在六维全 1.000
+    的情况下发生，实测就是这样。
+
+    而且这个数**不能由后端单独算一份**：后端算它的输入必须是
+    同一个 `events` 里渲染出来的 `say` —— 各算各的，就会出现
+    "界面上一句话都没重复、旁边却写着复读 3 句"。
+    """
+    short = S.run_chat(cfg, {"scenario": "tutorial", "events": CHAT_EVENTS})
+    rep = short["repetition"]
+    assert {"total", "repeats", "rate", "distinct", "examples"} <= set(rep)
+    assert rep["total"] == sum(
+        1 for ev in short["events"] for t in ev["turns"] if t["say"]
+    ), "复读统计的句数和实际说出来的句数对不上"
+
+    # 长对话必须能看出复读（离线后端有词汇量上限，见 tests/test_repetition.py）
+    long = S.run_chat(
+        cfg,
+        {
+            "scenario": "village",
+            "events": [
+                {"kind": "say", "speaker": "player_a", "text": t}
+                for t in _LONG_CONVERSATION
+            ],
+        },
+    )
+    rep = long["repetition"]
+    assert rep["repeats"] > 0, "长对话居然 0 复读 —— 要么词汇量变大了，要么这个统计坏了"
+    assert 0.0 < rep["rate"] <= 1.0
+    assert rep["examples"], "报了有复读，却一条例子都给不出"
+
+    # 独立重算一遍，和后端报的数比 —— 不能各算各的
+    from npc_agent.modules.repetition import find_repeats
+
+    lines = [
+        (t["name"], t["say"]) for ev in long["events"] for t in ev["turns"] if t["say"]
+    ]
+    recount = find_repeats(lines)
+    assert rep["total"] == recount.total
+    assert rep["repeats"] == len(recount.repeats)
+    assert rep["rate"] == pytest.approx(recount.rate)
+    assert rep["distinct"] == recount.distinct
+
+
 def test_proactive_speech_needs_the_advertised_number_of_quiet_rounds(
     cfg: RuntimeConfig,
 ) -> None:
@@ -515,6 +565,21 @@ JS_BUILTINS: frozenset[str] = frozenset(
 )
 
 
+#: 一段长到足以让**离线后端**开始复读的对话。
+#:
+#: 存在的唯一理由是让 `repetition.examples` 非空，从而把
+#: `at` / `collides_with` / `similarity` 三个键放进 API 词表。
+#: 内容不重要（这里刻意和 `tests/test_repetition.py` 里那份不同 ——
+#: 两边**不该**共享，否则改了那边会悄悄改变这里的取样）。
+_LONG_CONVERSATION = [
+    "你好呀", "今天天气不错", "你叫什么名字", "这店开了多久了",
+    "我常来这边", "有什么好喝的", "我想喝点酸的", "你平时都在这儿吗",
+    "那给我来一杯吧", "谢谢", "我下次还来", "那明天见",
+    "今天人真多", "有座位吗", "我喜欢靠窗", "外面下雨了",
+    "你推荐什么", "我朋友也来", "他不喝咖啡", "麻烦你了",
+]
+
+
 def _api_field_vocabulary(cfg: RuntimeConfig) -> set[str]:
     """真实响应里出现过的**所有**键名（递归收集，含错误体）。
 
@@ -528,6 +593,21 @@ def _api_field_vocabulary(cfg: RuntimeConfig) -> set[str]:
             {
                 "scenario": "tutorial",
                 "events": [{"kind": "say", "speaker": "player_a", "text": "你好"}],
+            },
+        ),
+        # ⚠️ 还要一份**会产生复读**的长对话。
+        # 短对话的 `repetition.examples` 永远是空列表，于是页面读的
+        # `at` / `collides_with` / `similarity` 三个字段在词表里根本不存在 ——
+        # 护栏会报"页面读了不存在的字段"，而那是**取样造成的**假警报。
+        # 离线后端有词汇量上限，20 轮必然撞（见 tests/test_repetition.py）。
+        S.run_chat(
+            cfg,
+            {
+                "scenario": "village",
+                "events": [
+                    {"kind": "say", "speaker": "player_a", "text": t}
+                    for t in _LONG_CONVERSATION
+                ],
             },
         ),
         S.run_eval(cfg, {"category": "safety", "limit": 2}),

@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..types import ActionCall, ActionResult, Utterance
+from ..types import ActionCall, ActionResult, Utterance, looks_like_question
 from .conditions import ConditionContext, condition_met, refresh_objectives
 
 
@@ -161,7 +161,7 @@ class Environment(ABC):
             text=text,
             tick=self.tick,
             role="player",
-            is_question=text.rstrip().endswith(("?", "？")),
+            is_question=looks_like_question(text),
         )
         self.utterances.append(utterance)
         return utterance

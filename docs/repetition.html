@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>复读：一个只看单句的评测看不见的缺陷</title>
+<style>
+:root { --ink:#1f2430; --muted:#6b7280; --line:#e5e7eb; --bg:#fff;
+        --soft:#f7f8fa; --accent:#2f6fd0; --good:#0f9d58; --bad:#d93025; }
+* { box-sizing: border-box; }
+body { margin:0; padding:40px 28px 64px; background:var(--bg); color:var(--ink);
+  font:15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+       "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+.wrap { max-width:1180px; margin:0 auto; }
+h1 { font-size:26px; margin:0 0 6px; letter-spacing:-0.01em; }
+h2 { font-size:18px; margin:38px 0 12px; padding-bottom:8px; border-bottom:2px solid var(--line); }
+.sub { color:var(--muted); font-size:14px; margin-bottom:22px; }
+.headline { background:var(--soft); border:1px solid var(--line); border-left:4px solid var(--accent);
+  border-radius:8px; padding:14px 18px; font-size:14.5px; }
+.warn { background:#fffbf0; border:1px solid #f0dfb8; border-left:4px solid #e8a33d;
+  border-radius:8px; padding:14px 18px; font-size:13.5px; margin:16px 0; }
+table { width:100%; border-collapse:collapse; font-size:13.5px; }
+th,td { padding:9px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+th { background:var(--soft); font-weight:600; font-size:12.5px; color:#374151; white-space:nowrap; }
+td.num { text-align:right; white-space:nowrap; font-family:ui-monospace,Menlo,Consolas,monospace; }
+td.name { font-weight:600; }
+tbody tr:hover { background:#fbfcfe; }
+.pass { color:var(--good); font-weight:600; }
+.fail { color:var(--bad); font-weight:600; }
+.card { border:1px solid var(--line); border-radius:8px; padding:14px 18px; margin-bottom:12px; background:#fcfcfd; }
+.card ul { margin:6px 0 0; padding-left:20px; }
+.card li { font-size:13.5px; }
+.muted { color:var(--muted); }
+code { background:#eef0f4; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+.foot { margin-top:34px; color:var(--muted); font-size:12.5px; }
+.sample { font-size:12.5px; color:var(--muted); font-family:ui-monospace,Menlo,Consolas,monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>复读：一个只看单句的评测看不见的缺陷</h1>
+<div class="sub">NPC 反复重复同一话题、对话推不动 —— 把它变成一个数，再修掉它。判据住在 <code>npc_agent/modules/repetition.py</code>。</div>
+<div class="headline">共 15 条用例（5 个场景 × 3 种运行方式）。 离线 10 轮复读率 <strong>0.0%</strong>、模型 20 轮 <strong>0.0%</strong>。</div>
+<div class="warn"><strong>为什么六维评测看不见这个问题。</strong>六维（人设 / 记忆 / 任务 / 工具 / 安全 / 发言调度）<strong>每一维都只看一行</strong>：这一句像不像这个角色、这一轮目标达成没有。<strong>没有任何一维把「这一句」和「上一句」放在一起看。</strong>所以复读 62% 和「六维全 1.000、231 条全过」可以同时成立 —— 而且确实同时成立了。修完复读之后离线基线仍然是 231/231、六维全 1.000，这反过来证明评测真的看不见复读。<br>判据取「同一说话人自己说过的两句话，去标点后相似度 ≥ 0.80」。阈值不是拍的：同义加词 0.86（判复读）、不同内容 0.55（不判），两侧余量都 ≥0.05。</div>
+<h2>修复前 vs 修复后（离线 10 轮）</h2>
+<div class="sub">10 轮就是演示对话的真实长度。「修复前」跑的是父提交（<code>git worktree</code> + 把判据模块拷过去）。</div>
+<table><thead><tr><th>场景</th><th>修复前复读率</th><th>修复后复读率</th><th>台词数</th></tr></thead><tbody><tr><td class="name">duet</td><td class="num fail">50.0%</td><td class="num pass">0.0%</td><td class="num">10</td></tr><tr><td class="name">hosting</td><td class="num fail">60.0%</td><td class="num pass">0.0%</td><td class="num">10</td></tr><tr><td class="name">icebreaker</td><td class="num fail">70.0%</td><td class="num pass">0.0%</td><td class="num">10</td></tr><tr><td class="name">tutorial</td><td class="num fail">62.5%</td><td class="num pass">0.0%</td><td class="num">10</td></tr><tr><td class="name">village</td><td class="num fail">66.7%</td><td class="num pass">0.0%</td><td class="num">10</td></tr><tr><td class="name">合计</td><td class="num fail">61.4%</td><td class="num pass">0.0%</td><td class="num">50</td></tr></tbody></table>
+<h2>离线 20 轮 —— 已知局限</h2>
+<div class="sub">离线启发式的词汇量是<strong>有限</strong>的（每人设约 10 条低信息模板 + 3~4 个话题），长对话必然耗尽它。复读率的下界就是 <code>(轮数 − 词汇量) / 轮数</code>。</div>
+<table><thead><tr><th>场景</th><th>台词数</th><th>去重后</th><th>复读</th><th>复读率</th></tr></thead><tbody><tr><td class="name">duet</td><td class="num">20</td><td class="num">20</td><td class="num">0</td><td class="num pass">0.0%</td></tr><tr><td class="name">hosting</td><td class="num">20</td><td class="num">16</td><td class="num">4</td><td class="num fail">20.0%</td></tr><tr><td class="name">icebreaker</td><td class="num">20</td><td class="num">15</td><td class="num">5</td><td class="num fail">25.0%</td></tr><tr><td class="name">tutorial</td><td class="num">20</td><td class="num">15</td><td class="num">5</td><td class="num fail">25.0%</td></tr><tr><td class="name">village</td><td class="num">20</td><td class="num">12</td><td class="num">8</td><td class="num fail">40.0%</td></tr><tr><td class="name">合计</td><td class="num">100</td><td class="num">·</td><td class="num">22</td><td class="num fail">22.0%</td></tr></tbody></table>
+<h2>模型 20 轮 —— 同一个长度，接上模型之后</h2>
+<div class="sub">同一个场景、同一段对话、同一个长度，只把台词换成真实模型（<code>kimi-k2.7-code</code>）。台词 prompt 里带了【你最近说过】+ 复读闸门。</div>
+<table><thead><tr><th>场景</th><th>台词数</th><th>去重后</th><th>复读</th><th>复读率</th></tr></thead><tbody><tr><td class="name">duet</td><td class="num">20</td><td class="num">20</td><td class="num">0</td><td class="num pass">0.0%</td></tr><tr><td class="name">hosting</td><td class="num">20</td><td class="num">20</td><td class="num">0</td><td class="num pass">0.0%</td></tr><tr><td class="name">icebreaker</td><td class="num">20</td><td class="num">20</td><td class="num">0</td><td class="num pass">0.0%</td></tr><tr><td class="name">tutorial</td><td class="num">20</td><td class="num">20</td><td class="num">0</td><td class="num pass">0.0%</td></tr><tr><td class="name">village</td><td class="num">20</td><td class="num">20</td><td class="num">0</td><td class="num pass">0.0%</td></tr><tr><td class="name">合计</td><td class="num">100</td><td class="num">·</td><td class="num">0</td><td class="num pass">0.0%</td></tr></tbody></table>
+<h2>修了什么</h2>
+<div class="card"><ul><li><strong>意图塌缩</strong>：玩家说陈述句一律映射成 <code>acknowledge</code>，而它只有一句固定模板 —— 实测 10 轮里同一句说了 7 遍。改成按「用得最少」在 <code>acknowledge</code> / <code>probe</code> 之间轮换。</li><li><strong>模板单变体</strong>：一个意图一个字符串 ⇒ 同一意图必然逐字相同。高频意图改成多变体列表，轮换由计数器决定（<strong>确定性</strong>，因为控制台每次请求都从头重放整段对话）。</li><li><strong>记忆反复回引同一条</strong>：检索每轮都返回打分最高的那条。加 <code>_recalled</code> 集合，回引过一次就不再回引。</li><li><strong>问题识别只看 <code>?</code>/<code>？</code></strong>：「你叫什么名字」「这店开了多久了」被当成陈述句 ⇒ 只应声不回答。这是「推不动」的<strong>最直接</strong>原因（不是重复，是压根没答）。</li><li><strong>回避问题的常量</strong>：<code>answer_hint</code> 原来是写死的「这个我还没想过，你怎么看？」⇒ NPC 对<em>每个</em>问题都用同一句话<strong>把问题踢回给玩家</strong>。改成先答「问到自己」（<code>self_facts</code>）、再答世界知识，答不上来才老实说不知道。</li></ul></div>
+<div class="warn"><strong>这份报告不能说明什么。</strong>它量的是<strong>同一段固定对话</strong>上的复读率，不是「对话质量」。复读率 0% 不代表 NPC 有趣、记得住事、或者目标推进得对 —— 那些由六维评测和裁判负责。反过来，这里也没有把 20 轮离线那个数藏起来：它是<strong>已知局限</strong>，护栏钉的是 0.35 的上界，而且 docstring 里写明「这是局限，不是目标」。</div>
+<div class="foot">重生成：<code>python scripts/measure_repetition.py --html docs/repetition.html</code>（离线部分秒级；模型部分要模型 + 额度，所以这份是<strong>一次跑批的快照</strong>）。<br>判据与回归测试：<code>npc_agent/modules/repetition.py</code>、<code>tests/test_repetition.py</code>。</div>
+</div>
+</body>
+</html>

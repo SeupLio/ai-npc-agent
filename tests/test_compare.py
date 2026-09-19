@@ -97,6 +97,46 @@ def test_free_speech_rate_empty_is_zero():
     assert free_speech_rate([], scripted_patterns()) == 0.0
 
 
+def test_a_bare_slot_template_is_not_a_wildcard():
+    """整条模板只有槽位时，**不能**编译成 ``^.+$``。
+
+    ``answer_question: "{answer_hint}"`` 的字面量是空的 —— 说什么完全由
+    运行时填进去的东西决定，这条模板对"这句话长什么样"零信息量。
+    早期它被编译成 ``^.+$``，一个匹配任何非空台词的通配符，
+    于是自由台词率**恒为 0**：报告会说每句台词都是脚本台词。
+
+    这个 bug 是加多变体模板时引入的：``answer_question`` 从
+    ``"嗯——{answer_hint}"``（字面量"嗯——"）变成 ``["{answer_hint}"]``（无字面量）。
+    所以这条测试同时守着"以后别再写出裸槽位模板"。
+    """
+    assert _template_regex("{answer_hint}") is None
+    assert _template_regex("{a}{b}") is None
+    # 有一个字的字面量就够了 —— 判据是"有没有字面量"，不是"够不够长"
+    assert _template_regex("嗯——{answer_hint}") is not None
+
+
+def test_no_scripted_pattern_is_a_catch_all():
+    """参照系里**一个通配符都不许有**。
+
+    只要有一个 ``^.+$``，自由台词率就变成常数 0，而且不会报错 ——
+    这正是 ``test_free_speech_rate_is_one_when_none_scripted`` 会红的原因。
+    与其等那句断言，不如直接钉住"参照系里没有通配符"这个更强的性质。
+    """
+    catch_alls = [p.pattern for p in scripted_patterns() if p.pattern == "^.+$"]
+    assert not catch_alls, f"参照系里有通配符，自由台词率会恒为 0：{catch_alls}"
+
+
+def test_self_facts_replies_count_as_scripted():
+    """`self_facts` 的 reply 是写在人设里的固定句子，也要算脚本台词。
+
+    它是离线路径回答"你叫什么名字"时照念的那句（见 `Persona.answer_about_self`）。
+    不算进来的话，离线模式的自由台词率会被高估 ——
+    而"离线 vs 模型"这张对照表最容易误读的就是这个数。
+    """
+    patterns = scripted_patterns()
+    assert is_scripted("我是阿柚，这家店的店主。", patterns)
+
+
 # --------------------------------------------------------------------------- #
 # RunSpec
 

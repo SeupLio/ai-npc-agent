@@ -37,16 +37,44 @@ relationships:
   ayou: 一起看店的伙伴
   default: 刚来的客人
 
+# 见 ayou.yaml 的注释：不问清楚"你是谁"，NPC 就会说"我不知道我叫什么"。
+self_facts:
+  - ask: [你叫什么, 你的名字, 怎么称呼, 你是谁]
+    reply: "小舟。唱歌的。"
+  - ask: [你唱什么, 你会唱, 你弹什么]
+    reply: "什么都弹一点。听得出来的人不多。"
+  - ask: [你平时, 你常在]
+    reply: "……晚上在。白天不一定。"
+
+# 说话风格模板（离线启发式模式下用于生成台词）
+#
+# ⚠️ 小舟的变体要比别人更小心：她话少，模板本来就短，
+# 很容易出现"两个不同意图的模板其实是同一句"（`acknowledge` 和 `fallback`
+# 都写成"嗯。"的话，轮换也救不了 —— 归一化之后仍然是 1.00）。
+# 所以这里刻意让**每个变体在归一化后都不撞**。
 utterance_templates:
   opening: "……你好。"
   invite_intro: "要听点什么吗？"
-  probe: "你刚才那句话，像一句歌词。"
+  probe:
+    - "你刚才那句话，像一句歌词。"
+    - "嗯。再说一点。"
   greet_new: "坐吧，靠窗那边声音好。"
   teach_order: "想喝什么，跟阿柚说就行。"
   announce_rules: "我来弹，你们猜。"
   ask_question: "猜猜这首，是什么季节？"
   wrap_up: "……就这样。"
-  answer_question: "嗯。"
-  acknowledge: "记住了。"
-  recall: "你上次说过{memory_hint}。"
-  fallback: "嗯。"
+  answer_question:
+    - "{answer_hint}"
+  unknown:
+    - "……不知道。"
+    - "这个我不懂。"
+  acknowledge:
+    - "记住了。"
+    - "嗯。"
+    - "……记下了。"
+  recall:
+    - "你上次说过{memory_hint}。"
+    - "我记得。{memory_hint}。"
+  fallback:
+    - "……你继续。"
+    - "嗯，听着呢。"

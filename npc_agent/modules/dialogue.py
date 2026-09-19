@@ -24,8 +24,13 @@ from .persona import Persona
 from .state import StateTracker
 
 # 指向 NPC 的称呼模式
-QUESTION_MARKERS = ("?", "？")
-HOST_INTENTS = ("announce_rules", "ask_question", "wrap_up", "invite_intro", "opening")
+#
+# ⚠️ 这里原来有两个**死常量**：`QUESTION_MARKERS = ("?", "？")` 和
+# `HOST_INTENTS = (...)`，定义了但全项目没有任何一处引用。
+# 死常量比没有更糟 —— `QUESTION_MARKERS` 这个名字会让人以为
+# "问句判定就在这儿"，而真正的判定在 `types.looks_like_question`
+# （它必须认「你叫什么名字」这种不带问号的问句，见那里的注释）。
+# 判句由 `Utterance.is_question` 带进来，本模块不再自己判。
 
 
 @dataclass
@@ -157,30 +162,51 @@ class AddresseeSelector:
         return DialogueDecision(False, None, "没有需要回应的输入", 0.0)
 
     # ------------------------------------------------------------------ #
-    def pick_proactive_intent(self, tracker: StateTracker, only: set[str] | None = None) -> str:
+    def pick_proactive_intent(
+        self,
+        tracker: StateTracker,
+        only: set[str] | None = None,
+        used: list[str] | None = None,
+    ) -> str:
         """冷场时该说什么。优先推进未完成的目标。
 
         ``only`` 用来把范围收窄到"我自己的目标" ——
         多 NPC 场景里 tracker.objectives 是整个世界的目标表，
         不过滤就会替同伴操心（见 NPCAgent._respond 的注释）。
+
+        ``used`` 是**最近说过的话分别用的意图**。目标没做完时，
+        每个冷场轮都会重算一次同一个意图，于是同一句开场白被反复捡起来 ——
+        实测（duet，10 轮）「你上次说过第一次来吧。」出现了 4 次。
+        有多个未完成目标时，优先挑一个**最近没说过的**；
+        只有一个目标时不硬换（换掉就不是"推进目标"了，而是跑题）。
         """
         pending = [
             k
             for k, v in tracker.objectives.items()
             if v != "done" and (only is None or k in only)
         ]
-        if pending:
-            objective = pending[0]
-            mapping = {
-                "greet_all": "invite_intro",
-                "find_topic": "probe",
-                "welcome_drink": "greet_new",
-                "teach_order": "teach_order",
-                "host_round": "ask_question",
-            }
-            if objective in mapping:
-                return mapping[objective]
-        return "fallback"
+        mapping = {
+            "greet_all": "invite_intro",
+            "find_topic": "probe",
+            "welcome_drink": "greet_new",
+            "teach_order": "teach_order",
+            "host_round": "ask_question",
+        }
+        # 去重但保持顺序 —— 两个目标可能映射到同一个意图，
+        # 不去重的话"优先挑没说过的那句"会在同一个意图上空转一圈。
+        options: list[str] = []
+        for objective in pending:
+            intent = mapping.get(objective)
+            if intent and intent not in options:
+                options.append(intent)
+        if not options:
+            return "fallback"
+
+        recent = list(used or [])
+        for intent in options:
+            if intent not in recent:
+                return intent
+        return options[0]
 
 
 class TurnManager:

@@ -110,7 +110,7 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", "", text or "").strip(_PUNCT)
 
 
-def _template_regex(raw: str) -> re.Pattern[str]:
+def _template_regex(raw: str) -> Optional[re.Pattern[str]]:
     """把一条模板编译成正则，槽位（``{item_name}``）变成 ``.+``。
 
     为什么不能直接做字符串相等：模板里带槽位，渲染后文本就变了。
@@ -121,9 +121,17 @@ def _template_regex(raw: str) -> re.Pattern[str]:
     注意：去标点只能作用在**原始字面块**上，不能对拼好的正则整串 strip ——
     ``.`` 和 ``?`` 既是标点又是正则元字符，整串 strip 会把开头的 ``.+`` 削成 ``+``，
     直接抛 "nothing to repeat"。
+
+    ⚠️ **整条模板全是槽位时返回 ``None``（不参与判定），而不是 ``^.+$``。**
+    这类模板对"这句话长什么样"**零信息量**：``answer_question: "{answer_hint}"``
+    的字面量是空的，说什么完全由运行时填进去的东西决定。
+    以前它会编译成 ``^.+$`` —— 一个**匹配任何非空台词的通配符**，
+    于是"自由台词率"恒为 0：报告会说每句台词都是脚本台词。
+    这比漏判更坏，因为它把指标变成了一个常数（有测试钉住这一点）。
     """
     parts = [p for p in re.split(r"(\{[^}]*\})", raw or "") if p]
     chunks: list[str] = []
+    literal_chars = 0
     for index, part in enumerate(parts):
         if part.startswith("{") and part.endswith("}"):
             chunks.append(".+")
@@ -133,12 +141,27 @@ def _template_regex(raw: str) -> re.Pattern[str]:
             literal = literal.lstrip(_PUNCT)
         if index == len(parts) - 1:
             literal = literal.rstrip(_PUNCT)
+        literal_chars += len(literal)
         chunks.append(re.escape(literal))
+    if literal_chars == 0:
+        return None
     return re.compile("^" + "".join(chunks) + "$")
 
 
 def _raw_templates() -> list[str]:
-    """收集所有 persona 的模板台词原文（含槽位）。"""
+    """收集所有 persona 的模板台词原文（含槽位）。
+
+    ⚠️ 模板的值可以是 **str 或 list[str]**（多变体，见 `Persona.template`）。
+    早期这里只收 `isinstance(value, str)`，加了变体之后**整个列表会被静默跳过** ——
+    于是这些台词不再被算作"脚本台词"，"自由台词率"会凭空变高：
+    明明是模板生成的一句话，报告会说它是模型生成的。
+    静默跳过比报错更危险，所以这里显式展开。
+
+    一并收 `self_facts[].reply`：那也是**写在人设配置里的固定句子**
+    （玩家问"你叫什么名字"时 NPC 照念），和模板一样是脚本台词。
+    不收的话离线模式的自由台词率会被高估 —— 而它恰好是"离线 vs 模型"
+    这张对照表里最容易被误读的一个数。
+    """
     lines: list[str] = []
     personas_dir = CONFIG_DIR / "personas"
     if not personas_dir.exists():
@@ -151,6 +174,12 @@ def _raw_templates() -> list[str]:
         for value in templates.values():
             if isinstance(value, str):
                 lines.append(value)
+            elif isinstance(value, (list, tuple)):
+                lines.extend(str(item) for item in value if isinstance(item, str))
+        for entry in data.get("self_facts") or []:
+            reply = (entry or {}).get("reply") if isinstance(entry, dict) else None
+            if isinstance(reply, str) and reply.strip():
+                lines.append(reply)
     return lines
 
 
@@ -173,8 +202,16 @@ def scripted_patterns() -> list[re.Pattern[str]]:
     """全部"脚本台词"的正则形式：人设模板 + 世界知识库。
 
     这是判断"这句话是人写的还是模型写的"的参照系。
+
+    全槽位的模板会被 `_template_regex` 判成 `None`（零信息量），在这里丢掉 ——
+    见那边的注释：留成 `^.+$` 会让自由台词率恒为 0。
     """
-    return [_template_regex(raw) for raw in (_raw_templates() + _raw_knowledge())]
+    patterns: list[re.Pattern[str]] = []
+    for raw in _raw_templates() + _raw_knowledge():
+        pattern = _template_regex(raw)
+        if pattern is not None:
+            patterns.append(pattern)
+    return patterns
 
 
 def is_scripted(speech: str, patterns: list[re.Pattern[str]]) -> bool:

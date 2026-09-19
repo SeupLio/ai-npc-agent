@@ -40,11 +40,32 @@ goals:
 relationships:
   default: 第一次见面的客人
 
+# 玩家问到"你自己"时该怎么答。
+#
+# 这一块是必须的：离线启发式答不上这类问题，会说出「这个我不太清楚」——
+# 而玩家问的是"你叫什么名字"。NPC 不知道自己的名字比复读还难看。
+# `ask` 是**精确子串**（不做模糊匹配，模糊会答出胡话），命中第一个就用它的 reply。
+self_facts:
+  - ask: [你叫什么, 你的名字, 怎么称呼, 你是谁, 你贵姓]
+    reply: "我是阿柚，这家店的店主。"
+  - ask: [你平时, 你常在, 你经常, 你总在]
+    reply: "我基本都在店里，从开门待到打烊。"
+  - ask: [你会做什么, 你拿手, 你擅长]
+    reply: "手冲还算拿得出手，别的就一般了。"
+
 # 说话风格模板（离线启发式模式下用于生成台词）
+#
+# 高频意图（probe / acknowledge / fallback / recall）写成**多选一**：
+# 只给一个写法时，同一段对话里必然逐字复读 —— 实测 10 轮里同一句说了 7 遍。
+# 选哪个由"这个意图用过几次"决定，所以轮换是确定性的（同一段对话必然复现）。
+# 低频意图（greet_new / teach_order …）保持单条：它们本来就说一次。
 utterance_templates:
   opening: "欢迎，随便坐。{topic_hint}"
   invite_intro: "要不先互相报个名字？从{target}开始吧。"
-  probe: "{target}刚说的那句，我有点好奇——后来呢？"
+  probe:
+    - "{target}刚说的那句，我有点好奇——后来呢？"
+    - "说起来，{target}是从哪儿知道这家的？"
+    - "{target}这么一说，我倒想再问一句。"
   greet_new: "第一次来吧？我请你一杯，想喝什么？"
   teach_order: "点单很简单：跟我说想喝什么，我做好了端过来。"
   accept_order: "好，稍等，我这就去弄。"
@@ -52,7 +73,19 @@ utterance_templates:
   announce_rules: "规则很短：我出一个题，你们各猜一次，猜错也没关系。"
   ask_question: "第一个题——{topic_hint}？"
   wrap_up: "这一轮到这儿，剩下的时间还给你们。"
-  answer_question: "嗯——{answer_hint}"
-  acknowledge: "{target}说的我记下了。"
-  recall: "对了，你之前提过{memory_hint}，是这个没错吧？"
-  fallback: "嗯——我听着呢，你接着说。"
+  answer_question:
+    - "{answer_hint}"
+  unknown:
+    - "嗯——这个我还真说不好。"
+    - "这个我不太清楚，别听我瞎说。"
+    - "说不好。我还没弄明白这件事。"
+  acknowledge:
+    - "{target}说的我记下了。"
+    - "嗯——{target}接着说。"
+    - "记下了。{target}还想到什么？"
+  recall:
+    - "对了，你之前提过{memory_hint}，是这个没错吧？"
+    - "说起来，你上次提过{memory_hint}。"
+  fallback:
+    - "嗯——我听着呢，你接着说。"
+    - "你说，我这儿不着急。"

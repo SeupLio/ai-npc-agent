@@ -52,6 +52,10 @@ SNAPSHOT_REPORTS: dict[str, str] = {
     "batch_planner.html": "compare --models kimi-k2.7-code（规划也交给模型）",
     "comparison.html": "compare --models kimi-k2.7-code（离线 vs 模型对照）",
     "multi_npc.html": "compare --models kimi-k2.7-code --category multi_npc",
+    # 离线那半是秒级可复现的，但模型那半要额度 —— 整份按快照对待，
+    # 否则 `test_the_classification_does_not_drift_from_reality` 会红
+    # （报告里嵌着模型名，就不可能是"不需要模型就能重生成"）。
+    "repetition.html": "scripts/measure_repetition.py（离线 + 模型 20 轮）",
 }
 
 # 给报告门户用的两句话：**叫什么**、**回答什么问题**。
@@ -65,6 +69,7 @@ REPORT_TITLES: dict[str, str] = {
     "batch_planner.html": "全模型跑批 · 规划侧",
     "comparison.html": "离线启发式 vs 真实模型",
     "multi_npc.html": "多 NPC 接上模型的对话样本",
+    "repetition.html": "复读：只看单句的评测看不见的缺陷",
 }
 
 REPORT_ANSWERS: dict[str, str] = {
@@ -75,6 +80,7 @@ REPORT_ANSWERS: dict[str, str] = {
     "batch_planner.html": "把规划也交给模型 —— 掉 11 个点，且报告自标「这批不干净」",
     "comparison.html": "用例集还小的时候跑的，不可与现在的跑批相比",
     "multi_npc.html": "同上，只作存档",
+    "repetition.html": "同一段对话里 NPC 有多少话是之前说过的（修复前 61% → 修复后 0%）",
 }
 
 # 报告里嵌了**时长**（`0.18s` / `14s` / `1184s`），它天然每次都不一样。

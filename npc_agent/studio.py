@@ -47,6 +47,7 @@ from .eval.harness import EvalHarness, EvalReport
 from .eval.report_index import DOCS_DIR, index as report_index
 from .eval.sensitivity import MUTANTS, run_sensitivity
 from .llm import build_llm
+from .modules.repetition import find_repeats
 from .studio_ui import PAGE
 
 #: 一次对话最多重放多少个事件。前端每发一句话就把**整段**历史重发一遍，
@@ -253,6 +254,16 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
         for _, speakers in env.speakers_by_tick().items()
         if len({s for s in speakers if s in npc_ids}) > 1
     )
+    # 复读统计。**必须在控制台里看得见**：这个毛病是用户在这里发现的，
+    # 而它最阴的地方是"每一句单看都没问题"—— 六维评测一条都抓不到
+    # （每一维都只看单句）。不给一个数，就只能靠人一句句读。
+    spoken = [
+        (turn["name"], turn["say"])
+        for event in rendered
+        for turn in event["turns"]
+        if turn["say"]
+    ]
+    repeat = find_repeats(spoken)
     return {
         "scenario": scenario_id,
         "world_label": env_label(env.name),
@@ -267,6 +278,21 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
             for pid, count in (env.speech_counts() or {}).items()
         },
         "collisions": collisions,
+        "repetition": {
+            "total": repeat.total,
+            "repeats": len(repeat.repeats),
+            "rate": repeat.rate,
+            "distinct": repeat.distinct,
+            "examples": [
+                {
+                    "at": i + 1,
+                    "collides_with": j + 1,
+                    "text": text,
+                    "similarity": sim,
+                }
+                for i, j, text, _prev, sim in repeat.repeats[:5]
+            ],
+        },
     }
 
 

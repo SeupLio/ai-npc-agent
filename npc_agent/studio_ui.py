@@ -146,10 +146,11 @@ footer{color:var(--dim);font-size:12px;padding:0 24px 32px}
   </div>
 
   <div class="grid">
-    <div class="card">
-      <h3>对话<span class="hint" id="chatnote"></span></h3>
-      <div id="log"><div class="empty">选一个场景，说一句话开始。</div></div>
-    </div>
+      <div class="card">
+        <h3>对话<span class="hint" id="chatnote"></span></h3>
+        <p class="sub" id="repnote" style="margin:0 0 8px"></p>
+        <div id="log"><div class="empty">选一个场景，说一句话开始。</div></div>
+      </div>
 
     <div>
       <div class="card">
@@ -316,7 +317,7 @@ function renderReports(reports){
 }
 
 // ---------- chat ----------
-function resetChat(){ EVENTS = []; $("#log").innerHTML = '<div class="empty">说一句话开始。</div>'; paint({}); }
+function resetChat(){ EVENTS = []; $("#log").innerHTML = '<div class="empty">说一句话开始。</div>'; $("#repnote").textContent = ""; paint({}); }
 
 async function step(ev){
   EVENTS.push(ev);
@@ -330,6 +331,32 @@ async function step(ev){
   } finally {
     $("#send").disabled = $("#idle").disabled = false;
   }
+}
+
+// 复读率那一行。三种情况分别说三句不同的话 ——
+// 尤其是**离线模式下的长对话**：离线后端的模板池是有限的，
+// 聊到 20 轮必然开始重复。不说清楚，读者会以为是修得不够好。
+function renderRepetition(rep){
+  const el = $("#repnote");
+  if (!rep || !rep.total){
+    el.textContent = "";
+    return;
+  }
+  if (!rep.repeats){
+    el.innerHTML = "复读 <b class='up'>0/" + rep.total + "</b> —— " +
+      "同一个 NPC 没有重复自己说过的话（判据：归一化后相似度 ≥ 0.80）。";
+    return;
+  }
+  const ex = (rep.examples || []).map((e) =>
+    "<br>　· 第 " + e.at + " 句撞第 " + e.collides_with + " 句（" +
+    e.similarity.toFixed(2) + "）：" + esc(e.text)).join("");
+  const hint = META && !META.llm_available
+    ? "<br>⚠ 当前离线模式：启发式后端只有有限套模板，聊得越长越容易重复。" +
+      "配 <code>NPC_AGENT_PROVIDER</code> 接上模型后，prompt 里会带上" +
+      "「你最近说过」，长对话不会撞这个上限。"
+    : "";
+  el.innerHTML = "复读 <b class='down'>" + rep.repeats + "/" + rep.total + "</b>（" +
+    Math.round(rep.rate * 100) + "%）" + ex + hint;
 }
 
 function paint(d){
@@ -373,6 +400,11 @@ function paint(d){
       head + turns + "</div>";
   }).join("");
   $("#log").scrollTop = $("#log").scrollHeight;
+
+  // 复读率。**必须显示**：这个毛病最阴的地方是"每一句单看都没问题"——
+  // 六维评测一条都抓不到（每一维都只看单句），只能靠人一句句读。
+  // 给一个数，才能一眼看出"NPC 是不是在复读"。
+  renderRepetition(d.repetition);
 
   const w = d.snapshot || {};
   const obj = Object.entries(w.objectives || {});

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..types import ActionCall, ActionResult, Utterance
+from ..types import ActionCall, ActionResult, Utterance, looks_like_question
 from .base import Environment, ToolSpec
 from .conditions import ConditionContext
 from .mc_client import (
@@ -588,7 +588,7 @@ class MinecraftEnv(Environment):
                 text=entry.get("text") or "",
                 tick=int(entry.get("tick") or 0),
                 role="npc" if kinds.get(entry.get("speaker_id")) == "npc" else "player",
-                is_question=(entry.get("text") or "").rstrip().endswith(("?", "？")),
+                is_question=looks_like_question(entry.get("text") or ""),
             )
             for entry in (state.get("utterances") or [])
         ]
