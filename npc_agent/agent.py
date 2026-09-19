@@ -22,7 +22,7 @@ from .llm.base import LLM, LLMUnavailable
 from .modules.dialogue import AddresseeSelector, DialogueConfig, TurnManager
 from .modules.memory import MemoryManager, MemoryStore
 from .modules.persona import Persona
-from .modules.planner import Planner
+from .modules.planner import Planner, render_condition
 from .modules.reflection import Reflector
 from .modules.repetition import find_repeat, similarity
 from .modules.state import StateTracker
@@ -583,11 +583,31 @@ class NPCAgent:
         return self.planner.plan_next_objective(self.objectives, self.state, self._attempted)
 
     def _pending_goal_hint(self) -> str:
-        pending = [
-            f"- {o.get('goal')}" for o in self.objectives
-            if self.state.objectives.get(o.get("id"), "pending") != "done"
-        ]
-        return "\n".join(pending)
+        """喂给规划 prompt 的"还没完成的目标"。
+
+        ⚠️ **必须带上 `success_when`。** 只给 goal 文本的话，模型会规划出
+        "听起来完成了目标"的动作，但那个动作不满足机器判定的完成条件。
+
+        实测（duet，模型规划，4 次里 3 次失败）：小舟的 `play_song` 完成条件是
+        `{flag: song_started}`，模型规划的是
+        `speak → emote(play_guitar) → start_activity(song_request)` ——
+        全是"像在起歌"的动作，**唯独没有人 `set_flag(song_started)`**，
+        于是目标永远 pending，依赖它的联合目标也跟着挂住。
+
+        这是**信息不对称**（启发式规划器读得到条件，模型读不到），
+        和"规划 prompt 里没有配方表所以想不到 take_item"同一类。
+        """
+        lines: list[str] = []
+        for obj in self.objectives:
+            if self.state.objectives.get(obj.get("id"), "pending") == "done":
+                continue
+            lines.append(f"- {obj.get('goal')}")
+            condition = obj.get("success_when")
+            if condition:
+                lines.append(
+                    f"  · 完成条件（**做到这个才算完成**）：{render_condition(condition)}"
+                )
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
     # 执行计划

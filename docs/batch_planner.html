@@ -90,6 +90,23 @@
   <h1>真实模型跑批报告（规划侧）</h1>
   <div class="sub">openai-compat / kimi-k2.7-code　·　模型规划　·　228 条自建用例</div>
 
+  <!-- ⚠️ 人工加的一段横幅（不是生成器写的）。原因见下面那句话：
+       这份报告是**修复之前**跑的，它关于"模型规划比启发式差"的结论
+       描述的是旧代码。快照报告按约定允许过期，但不能让人拿它评价现在。 -->
+  <div class="trust warn" style="margin-bottom:18px">
+    <div class="trust-v">
+      ⚠️ <b>这份跑批是 2026-09-19 的规划修复之前跑的</b>，
+      下面所有"模型规划 vs 启发式"的对比数字（通过率 99.6% → 88.6% 等）
+      <b>描述的是旧代码</b>，不能拿来评价当前版本。<br>
+      当时已定位的根因是"规划 prompt 里没有配方表"；后来又找到
+      <b>第四个根因</b>：规划 prompt 只给了目标的文字、<b>没给 <code>success_when</code></b>，
+      于是模型规划出"听起来完成了目标"的动作却不满足判定条件。
+      补上之后，同一个 duet 实验从 <b>1/4 → 10/10</b>（见
+      <code>docs/ENGINEERING.md</code> 的「已知限制」一节）。<br>
+      重跑这份 228 条跑批需要数小时模型额度，仍留在 README 的路线图上。
+    </div>
+  </div>
+
   <h2>这份分数可不可信</h2>
   <div class="trust warn"><div class="trust-v">有 99/228 条用例中途掉进了模板兜底（超过 10%）。这些用例的台词不是模型写的，通过率偏高，不能当模型能力读。　⚠️ 另有 98/228 条的**规划调用失败**并静默回落到了启发式规划 —— 这些用例上的「模型规划」等于没开，拿它们做 planner 对照会得到「两组一样」的假结论。</div><div class="tiles"><div class="tile"><div class="tile-k">用例</div><div class="tile-v">228</div></div><div class="tile"><div class="tile-k">模型调用</div><div class="tile-v">4065</div></div><div class="tile"><div class="tile-k">调用失败</div><div class="tile-v">945</div></div><div class="tile"><div class="tile-k">模板兜底</div><div class="tile-v">99（43.4%）</div></div><div class="tile"><div class="tile-k">规划回落</div><div class="tile-v">98</div></div><div class="tile"><div class="tile-k">跑不起来</div><div class="tile-v">0</div></div></div><div class="tile-note">有 99/228 条用例期间模型调用失败过，已重试仍失败。占比超过 10%，**这次跑批的分数不能当作模型能力** —— 先解决端点稳定性</div></div>
 

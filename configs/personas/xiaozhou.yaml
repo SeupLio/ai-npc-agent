@@ -25,7 +25,8 @@ style:
 
 knowledge_boundary:
   can_discuss: [brewing, constellation]
-  locked: [hidden_menu]
+  # 见 ayou.yaml：这里原来有一行 `locked: [hidden_menu]`，全项目没人读，已删。
+  # 剧透真正的机制是下面的 `spoiler_terms` + 世界事实里的 `unlocked_topics`。
 
 spoiler_terms: [灯塔余晖, 隐藏菜单]
 
@@ -33,9 +34,8 @@ goals:
   - 给店里留一点安静的声音
   - 记住每个客人说过的一句好听的话
 
-relationships:
-  ayou: 一起看店的伙伴
-  default: 刚来的客人
+# 见 ayou.yaml：这里原来有一个 `relationships` 块（还写了 `ayou: 一起看店的伙伴`），
+# 解析进了没人读的字段，已删。要让"伙伴"这层关系真的影响说话，得接进 prompt 并重量模型读数。
 
 # 见 ayou.yaml 的注释：不问清楚"你是谁"，NPC 就会说"我不知道我叫什么"。
 self_facts:

@@ -37,6 +37,80 @@ REQUEST_MARKERS = re.compile(
     r"(来一?[杯份个]|要一?[杯份个]|给我|帮我|麻烦|能不能给|可以给|想喝|想点|点一?[杯份个]|上一?[杯份个])"
 )
 
+# --------------------------------------------------------------------------- #
+# 完成条件的**人话渲染** —— 给规划 prompt 用
+# --------------------------------------------------------------------------- #
+#
+# 为什么需要它：`plan_with_llm` 原来只把目标的 **goal 文本**喂给模型，
+# **不给 `success_when`**。于是模型规划出"听起来完成了目标"的动作，
+# 但那个动作**不满足机器判定的完成条件**。
+#
+# 实测（duet，模型规划，4 次里 3 次失败）：
+#   小舟的目标 `play_song`，完成条件是 `{flag: song_started}`。
+#   模型规划出来的是 `speak → emote(play_guitar) → start_activity(song_request)`
+#   —— 全都是"像在起歌"的动作，**唯独没有人去 set_flag(song_started)**。
+#   于是 `play_song` 永远 pending，依赖它的联合目标 `terrace_night` 也跟着挂住。
+#
+# 这不是"模型不会规划"，是**信息不对称** —— 和之前"规划 prompt 里没有配方表，
+# 所以模型想不到先 take_item"是同一类病：**启发式规划器读得到那份条件，
+# 模型读不到**。修法也一样：把判据本身告诉它。
+#
+# ⚠️ 只给**判据**和**对应的工具**，不给步骤顺序 —— 顺序仍然由模型自己排。
+# 一旦把 `steps` 也抄进 prompt，LLM 规划就退化成"照着剧本念"，
+# 那正是这个项目要证明它不是的东西。
+
+_CONDITION_PHRASES: dict[str, str] = {
+    "flag": "世界标记 `{name}` 被置上（用 `set_flag`）",
+    # ⚠️ `{items}` **不要**再加反引号：下面拼的时候每一项已经带了，
+    # 再包一层会得到 ``` ``latte`` ```（Markdown 里就是"一个反引号包着的 latte"）。
+    "player_has": "玩家 `{pid}` 手里**真的有** {items}（用 `give_item`）",
+    "player_has_count": "玩家 `{pid}` 手里**真的有** {items}（数量版，用 `give_item`）",
+    "all_flags": "这些世界标记全部置上（用 `set_flag`）：{names}",
+    "any_flags": "这些世界标记里任一个置上（用 `set_flag`）：{names}",
+    "all_players_spoke": "每位玩家都至少说过 {n} 次话",
+}
+
+
+def render_condition(condition: Any) -> str:
+    """把一个 `success_when` 条件渲染成人话。
+
+    纯函数，脱离世界可测 —— 见 `tests/test_planner.py`。
+    认不出来的条件**如实说出来**，不猜：猜错会让模型去追一个不存在的目标，
+    比"我不知道"更难查。
+    """
+    if not isinstance(condition, dict) or not condition:
+        return "（没有完成条件）"
+
+    if condition.get("all_of"):
+        parts = [render_condition(c) for c in condition["all_of"]]
+        return "**且**".join(f"（{p}）" if "且" in p or "或" in p else p for p in parts)
+    if condition.get("any_of"):
+        parts = [render_condition(c) for c in condition["any_of"]]
+        return "**或**".join(f"（{p}）" if "且" in p or "或" in p else p for p in parts)
+
+    for kind, phrase in _CONDITION_PHRASES.items():
+        if kind not in condition:
+            continue
+        value = condition[kind]
+        if kind == "flag":
+            return phrase.format(name=value)
+        if kind in ("all_flags", "any_flags"):
+            return phrase.format(names="、".join(f"`{n}`" for n in (value or [])))
+        if kind == "all_players_spoke":
+            return phrase.format(n=value)
+        # player_has / player_has_count
+        bits = []
+        for pid, items in (value or {}).items():
+            if isinstance(items, dict):
+                shown = "、".join(f"`{i}`×{n}" for i, n in items.items())
+            else:
+                shown = "、".join(f"`{i}`" for i in (items or []))
+            bits.append(phrase.format(pid=pid, items=shown))
+        return "，".join(bits) if bits else "（没有完成条件）"
+
+    return f"（无法识别的完成条件：{sorted(condition)}）"
+
+
 # 需要走"场景目标"而不是即时动作的意图。
 # 玩家问"这里怎么点单"时，正确的回答是那套引导动作，而不是一句客套话。
 SCENARIO_INTENTS = re.compile(

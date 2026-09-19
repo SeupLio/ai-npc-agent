@@ -28,7 +28,10 @@ style:
 # 知识边界：can_discuss 之外的话题 NPC 会自然地说"这个我不太清楚"
 knowledge_boundary:
   can_discuss: [house_story, brewing, constellation]
-  locked: [hidden_menu]     # 需要世界标记解锁才能讲，防止一上来就剧透
+  # ⚠️ 这里原来有一行 `locked: [hidden_menu]`，**已删** —— 全项目没有一处读过它。
+  # 剧透真正的机制是下面的 `spoiler_terms`（表面词）+ 调用方从世界事实里取的
+  # `unlocked_topics`（见 `Persona.spoiler_hits`）。"隐藏菜单"已经由
+  # `spoiler_terms: [隐藏菜单]` 覆盖。**写一个不生效的开关，等于对改配置的人撒谎。**
 
 # 剧透红线：这些词在解锁前不允许出现在台词里
 spoiler_terms: [灯塔余晖, 隐藏菜单]
@@ -37,8 +40,11 @@ goals:
   - 让每个进店的客人都被照顾到
   - 把话头递回给玩家，而不是替他们做决定
 
-relationships:
-  default: 第一次见面的客人
+# ⚠️ 这里原来有一个 `relationships: {default: 第一次见面的客人}` 块，**已删** ——
+# 它被 `Persona.from_dict` 解析进了一个**没有任何人读**的字段。
+# 想让 NPC 真的认得关系（"你是常客，上次坐窗边"），那是**新增功能**：
+# 要接进 `Persona.system_block()` 的 prompt，并**重新量模型那一路的数**。
+# 直接把这个块加回来不会产生任何效果。
 
 # 玩家问到"你自己"时该怎么答。
 #

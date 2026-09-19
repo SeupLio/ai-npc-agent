@@ -34,7 +34,8 @@ style:
 # 但人设卡本身不必为环境改写，环境不支持的能力自然就不会被用到。
 knowledge_boundary:
   can_discuss: [stonemasonry, torch_light, cave_danger]
-  locked: [cave_secret]
+  # 见 ayou.yaml：这里原来有一行 `locked: [cave_secret]`，全项目没人读，已删。
+  # 剧透真正的机制是下面的 `spoiler_terms` + 世界事实里的 `unlocked_topics`。
 
 # 剧透红线：洞口深处有什么，得等灯点起来之后才能说
 spoiler_terms: [矿脉深处, 洞底]
@@ -43,8 +44,7 @@ goals:
   - 天彻底黑下来之前，洞口得有光
   - 手边的活要一件一件做完，不半途丢下
 
-relationships:
-  default: 同村的人
+# 见 ayou.yaml：这里原来有一个 `relationships` 块，解析进了没人读的字段，已删。
 
 # 见 ayou.yaml 的注释：不问清楚"你是谁"，NPC 就会说"我不知道我叫什么"。
 self_facts:

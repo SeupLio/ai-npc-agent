@@ -31,13 +31,19 @@ from .state import StateTracker
 # "问句判定就在这儿"，而真正的判定在 `types.looks_like_question`
 # （它必须认「你叫什么名字」这种不带问号的问句，见那里的注释）。
 # 判句由 `Utterance.is_question` 带进来，本模块不再自己判。
+#
+# ⚠️ 2026-09-19 又清掉**第三个**：`DialogueConfig.min_urgency_to_speak = 0.30`。
+# 同样"定义了但没人读"，而且更阴 —— 它长得像**可调阈值**，
+# 于是读者会去调它、以为能改变发言门槛，实际上改了什么都不会发生。
+# 发言门槛真正的判据是 `decide()` 的分支**顺序**（先匹配到哪一支就走哪一支），
+# 不是任何 `urgency` 数值。`urgency` 只用于显示与排序。
+# **同一个坑踩了两次，说明"清死常量"该是改这个文件时的固定动作。**
 
 
 @dataclass
 class DialogueConfig:
     idle_ticks_before_proactive: int = 2   # 冷场多少轮后主动开口
     npc_share_ceiling: float = 0.62        # 发言占比上限，超过且没被点名就闭嘴
-    min_urgency_to_speak: float = 0.30
 
 
 class AddresseeSelector:
@@ -95,7 +101,19 @@ class AddresseeSelector:
         if other_npc_spoke_last and not (utterance and self.mentions_npc(utterance.text)):
             return DialogueDecision(False, None, "另一个 NPC 刚发言，不打断", 0.0)
 
-        # 1) 有没做完的计划 —— 继续推进，但只在计划里含说话步骤时才发言
+        # 1) 有没做完的计划 —— 继续推进。
+        #
+        # ⚠️ 这里原来写的是"继续推进，**但只在计划里含说话步骤时才发言**"。
+        # 那句话**是假的**：本支无条件返回 `should_speak=True`，
+        # 没有任何地方检查"计划里有没有 speak 步骤"。
+        #
+        # 真实语义是："**这一轮我有活要干**"，不是"这一轮我要开口"。
+        # 开口与否由 `NPCAgent.step()` 决定：计划里那一步若是 `speak`，
+        # 由 `_run_plan` 执行；若不是，`step()` 会在玩家对我说话时
+        # 先应一声（`_quick_acknowledge`），再继续干活。
+        # 把两件事混成一句注释，会让人以为"没话说就不会走这支"，
+        # 从而看不出"NPC 在跑计划期间曾经完全听不见玩家"那个缺陷
+        # （见 `NPCAgent._player_wants_me` 的注释）。
         if has_pending_plan:
             return DialogueDecision(
                 True,

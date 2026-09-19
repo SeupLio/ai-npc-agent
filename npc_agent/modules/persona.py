@@ -35,10 +35,30 @@ class Persona:
     traits: list[str] = field(default_factory=list)
     style: dict[str, Any] = field(default_factory=dict)
     can_discuss: list[str] = field(default_factory=list)
-    locked_topics: list[str] = field(default_factory=list)
     spoiler_terms: list[str] = field(default_factory=list)
     goals: list[str] = field(default_factory=list)
-    relationships: dict[str, str] = field(default_factory=dict)
+    # ⚠️ 2026-09-19 删掉两个**死字段**：`locked_topics` 和 `relationships`。
+    #
+    # 它们和 `dialogue.DialogueConfig.min_urgency_to_speak` 是同一种病，
+    # 但**更严重** —— 因为它们是**从 YAML 里读进来的**：
+    #   - `knowledge_boundary.locked: [hidden_menu]`
+    #     （配置里还写着注释"需要世界标记解锁才能讲，防止一上来就剧透"）
+    #   - `relationships: {default: 第一次见面的客人}`
+    # 三个 persona 的配置里都写了，`from_dict` 也老老实实解析了，
+    # 然后**全项目没有一处读过它们**。
+    #
+    # 对一个改配置的人来说这比"没有这个字段"糟得多：他会以为
+    # 把 `hidden_menu` 写进 `locked` 就防住了剧透，其实什么都没发生。
+    # **配置里写着一个不生效的开关，等于对使用者撒谎。**
+    #
+    # 剧透真正的机制是 `spoiler_terms`（表面词）+ 调用方从世界事实里取的
+    # `unlocked_topics`，见 `spoiler_hits()`。`hidden_menu` 这个"锁定话题"
+    # 已经由 `spoiler_terms: [隐藏菜单]` 覆盖，所以不是缺功能，是**多了一份没人读的副本**。
+    #
+    # 如果以后真想让 NPC 认得关系（"你是常客，上次坐窗边"），那是**新增功能**：
+    # 要接进 `system_block()` 的 prompt，并且**重新量模型那一路的数**
+    # （prompt 一变，模型行为就变，文档里那些模型读数就作废了）。
+    # 别只是把字段加回来 —— 那正是这次删掉的东西。
     #: 意图 → 台词模板。值可以是 str，也可以是 list[str]（多变体，见 `template()`）。
     templates: dict[str, Any] = field(default_factory=dict)
     #: 「问到自己」时的答话：`[{"ask": [关键词…], "reply": "…"}]`。
@@ -63,10 +83,8 @@ class Persona:
             traits=list(data.get("traits") or []),
             style=dict(data.get("style") or {}),
             can_discuss=list(boundary.get("can_discuss") or []),
-            locked_topics=list(boundary.get("locked") or []),
             spoiler_terms=list(data.get("spoiler_terms") or []),
             goals=list(data.get("goals") or []),
-            relationships=dict(data.get("relationships") or {}),
             templates=dict(data.get("utterance_templates") or {}),
             self_facts=list(data.get("self_facts") or []),
         )

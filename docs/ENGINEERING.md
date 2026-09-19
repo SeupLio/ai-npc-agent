@@ -1363,6 +1363,89 @@ python -m npc_agent.cli worlds --html docs/worlds.html
 > 标记是记账，事实才是证据。现在改用 `all_of` 组合真实世界状态
 > （`player_has` + `flag`），断言的东西一定是真的发生过的事。
 
+#### 2026-09-19 追加：第四个根因找到了，而且它就是"稳定性"本身
+
+上面那句"剩下的问题不是幻觉，是稳定性"当时**只是观察，没有根因**。
+复现之后发现失败**不是随机的**：
+
+```
+第 1 次：❌ 悬着 ['play_song', 'terrace_night']　done=1/3
+第 2 次：✅ 全部完成　done=3/3
+第 3 次：❌ 悬着 ['play_song', 'terrace_night']　done=1/3
+第 4 次：❌ 悬着 ['play_song', 'terrace_night']　done=1/3
+```
+
+4 次里有 3 次悬着的是**同一对**目标，而 `serve_guest` **每次都完成**。
+"随机的不稳定"不会长成这样 —— 这一定是某个确定的环节断了。
+
+逐 tick 打印两个 NPC 的决策/计划/动作（`scripts/diagnose_duet_planner.py`），
+断点一目了然：
+
+```
+[xiaozhou] 计划(play_song)：在露台起一首歌，给店里留一点声音
+   - done     speak {'text': '「今天这里挺热闹的」……这句风刚好能接住…'}
+   - done     emote {'name': 'play_guitar'}
+   - done     start_activity {'activity': 'song_request'}
+   - done     remember {...}
+   ← 没有任何一步是 set_flag(song_started)
+```
+
+而 `play_song` 的完成条件是 `success_when: {flag: song_started}`。
+**模型规划出了一串"听起来完成了目标"的动作，唯独没有人去设那个标记。**
+
+根因在 `NPCAgent._pending_goal_hint()`：它只把目标的 **goal 文本**
+喂进规划 prompt，**不给 `success_when`**：
+
+```python
+# 修之前
+pending = [f"- {o.get('goal')}" for o in self.objectives if ...]
+```
+
+所以模型知道"要起一首歌"，不知道"起完歌要有人把 `song_started` 置上"。
+`start_activity(song_request)` 在它看来就是"把歌起起来了" —— 这个判断
+在语义上**没错**，错的是**判据没告诉它**。
+
+这和第三条根因是**同一种病**（信息不对称：启发式规划器读得到那份条件，
+模型读不到），连修法都一样 —— 把判据本身告诉它。
+
+**修法**：新增 `Planner.render_condition()`（纯函数），把 `success_when`
+渲染成人话 + 对应的工具，拼进 `【本场景目标】`：
+
+```
+- 在露台起一首歌，给店里留一点声音
+  · 完成条件（**做到这个才算完成**）：世界标记 `song_started` 被置上（用 `set_flag`）
+```
+
+> ⚠️ **只给判据和对应的工具，不给步骤顺序。** 顺序仍由模型自己排。
+> 一旦把场景配置里的 `steps` 也抄进 prompt，LLM 规划就退化成"照着剧本念"，
+> 而那正是这个项目要证明它不是的东西。
+
+**修完的读数**（同一个实验、同一个模型、同一段对话）：
+
+| | 完成目标 |
+|---|---|
+| 修复前 | **1 / 4** |
+| 修复后 | **10 / 10**（4 次 + 补跑 6 次） |
+| 对照组：离线启发式规划 | 2 / 2（秒级） |
+
+逐 tick 再看一遍，机制也对上了 —— 小舟的计划里出现了
+`set_flag {'key': 'song_started', 'value': '1'}`，终局
+`{'serve_guest': 'done', 'play_song': 'done', 'terrace_night': 'done'}`。
+
+> ⚠️ **适用范围**：一个场景（`duet`）、一个模型（kimi-k2.7-code）、
+> 修复后 n=10、修复前 n=4（样本偏小）。这是**定向验证**，
+> 不是"LLM 规划已全面可靠"的结论。
+>
+> **`docs/batch_planner.html`（228 条，99.6% → 88.6%）是修复之前跑的** ——
+> 它那句"模型规划比启发式差"描述的是**旧代码**。快照报告按约定允许过期，
+> 但**读它的时候必须知道这一点**；重跑需要数小时额度，仍留在路线图上。
+
+**留了一条护栏**（`tests/test_planner.py::test_every_condition_kind_renders`）：
+条件词汇表（`CONDITION_KINDS`）里每加一种，渲染器都必须跟得上。
+跟不上时渲染器输出"无法识别的完成条件"，**模型会因此少知道一条判据** ——
+它不会报错，只会规划出一个"听起来对、判定不通过"的计划然后卡住，
+和这次的 bug 一模一样。
+
 ### 跑长跑批的五条工程经验
 
 真实模型的跑批动辄十几分钟到几小时，期间一定会被打断。为此加了五层保护：
@@ -2276,6 +2359,52 @@ village        66.7%      0.0%       40.0%
   全部仍是「抓住目标维度」—— 没掉敏感度，是合法重生成。
 - 控制台**现在显示复读率**（`#repnote`，绿=0 / 红=有），
   并有一条护栏钉住"玩家每说一句，NPC 都必须有回应"。
+
+### 九、顺手清掉五个"写了但没人读"的字段 —— 其中两个会骗**改配置**的人
+
+修完复读之后去查"还有没有同类的假话"，在 `modules/dialogue.py` 里发现
+`DialogueConfig.min_urgency_to_speak = 0.30` —— 定义了，**全项目没有一处读它**。
+
+而**它正上方就有一段注释**在警告"死常量比没有更糟"，被警告过的两个
+（`QUESTION_MARKERS` / `HOST_INTENTS`）已经删了，第三个又长了出来。
+`min_urgency_to_speak` 比前两个更阴：它长得像**可调阈值**，
+读者会去调它、以为能改变发言门槛，实际上改了什么都不会发生
+（真正的门槛是 `decide()` 的**分支顺序**，不是任何 `urgency` 数值）。
+
+顺着这条线扫全库，又找到两个更严重的 —— 它们是**从 YAML 读进来的**：
+
+| 死字段 | 配置里长什么样 | 解析在哪 |
+|---|---|---|
+| `Persona.locked_topics` | `knowledge_boundary.locked: [hidden_menu]`，旁边还写着注释"需要世界标记解锁才能讲，防止一上来就剧透" | `from_dict` 第 66 行 |
+| `Persona.relationships` | `relationships: {default: 第一次见面的客人}`，**三个 persona 都写了** | `from_dict` 第 69 行 |
+
+前三个只骗**读代码**的人；这两个连**改配置**的人都骗了。
+一个使用者把 `hidden_menu` 写进 `locked`，会以为自己防住了剧透 ——
+**而配置里写着一个不生效的开关，等于对使用者撒谎**，
+对方连怀疑的入口都没有。
+
+**修法：删掉**（不是接上）。剧透真正的机制是 `spoiler_terms`（表面词）
++ 调用方从世界事实里取的 `unlocked_topics`（见 `Persona.spoiler_hits`），
+`隐藏菜单` 已经由 `spoiler_terms` 覆盖 —— 所以这不是缺功能，
+是**多了一份没人读的副本**。YAML 里对应的行也一起删，并留注释指向真机制
+（只删代码不删 YAML，配置里就还留着一个骗人的开关）。
+
+> 想让 NPC 真的认得关系（"你是常客，上次坐窗边"）是**新增功能**：
+> 要接进 `system_block()` 的 prompt，并**重新量模型那一路的数**
+> ——prompt 一变模型行为就变，文档里那些模型读数当场作废。
+
+**加了一条护栏**（`tests/test_config_hygiene.py`）：只扫**配置类**
+（`Persona` / `DialogueConfig` / `RuntimeConfig`），
+每个注解字段都必须在包里被当作属性读过。
+
+为什么不扫全库：`types.py` / `reflection.py` 那些字段是**数据载体**
+（`Plan.rationale`、`Verdict.raw`…），靠 `asdict()` 或报告渲染消费，
+属性访问是 0 次但并不是死字段 —— 一起扫会得到 **7 个假阳性**。
+**会误报的护栏比没有护栏更糟**，它迟早被人 `--deselect` 掉。
+
+这条护栏带**反向测试**：造一个临时模块，里面一个字段有人读、一个没人读，
+断言只抓后者。没有它的话，正则哪天写错就会恒返回 `[]`，
+护栏会以"配置字段都有人读"的姿态骗过所有人。
 
 ---
 
