@@ -56,6 +56,9 @@ SNAPSHOT_REPORTS: dict[str, str] = {
     # 否则 `test_the_classification_does_not_drift_from_reality` 会红
     # （报告里嵌着模型名，就不可能是"不需要模型就能重生成"）。
     "repetition.html": "scripts/measure_repetition.py（离线 + 模型 20 轮）",
+    # 两条臂各要真实模型额度，而且修复前那条臂跑在父提交的 worktree 里 ——
+    # 不可能"不联网重生成"。
+    "planner_batch.html": "scripts/measure_planner_batch.py（父提交 vs 当前，各跑一遍）",
 }
 
 # 给报告门户用的两句话：**叫什么**、**回答什么问题**。
@@ -70,6 +73,7 @@ REPORT_TITLES: dict[str, str] = {
     "comparison.html": "离线启发式 vs 真实模型",
     "multi_npc.html": "多 NPC 接上模型的对话样本",
     "repetition.html": "复读：只看单句的评测看不见的缺陷",
+    "planner_batch.html": "规划修复 · 配对前后对比",
 }
 
 REPORT_ANSWERS: dict[str, str] = {
@@ -81,6 +85,8 @@ REPORT_ANSWERS: dict[str, str] = {
     "comparison.html": "用例集还小的时候跑的，不可与现在的跑批相比",
     "multi_npc.html": "同上，只作存档",
     "repetition.html": "同一段对话里 NPC 有多少话是之前说过的（修复前 61% → 修复后 0%）",
+    "planner_batch.html": "规划 prompt 补上完成条件之后，同一个配对子集上的前后对比"
+    "（含预先写下的失败特征、分层口径、以及**没修好的另一个根因**）",
 }
 
 # 报告里嵌了**时长**（`0.18s` / `14s` / `1184s`），它天然每次都不一样。
