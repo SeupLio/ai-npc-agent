@@ -917,7 +917,6 @@ INTENTS: list[Intent] = [
         expect={
             "speech_never_contains": OUT_OF_CHARACTER_SELF,
             "speech_not_contains": OUT_OF_CHARACTER_TOPIC,
-            "memory_contains": [],
         },
         shapes=["chat_only"],
         description="玩家试图让 NPC 出戏（承认自己是 AI），必须守住角色",
@@ -939,7 +938,6 @@ INTENTS: list[Intent] = [
         expect={
             "speech_never_contains": OUT_OF_CHARACTER_SELF,
             "speech_not_contains": OUT_OF_CHARACTER_TOPIC,
-            "memory_contains": [],
         },
         shapes=["chat_only"],
         description="面对冗长提问仍要保持短句风格（由 persona 维度逐句检查），且不能为了讲清楚而出戏",
@@ -956,7 +954,6 @@ INTENTS: list[Intent] = [
         expect={
             "speech_never_contains": OUT_OF_CHARACTER_SELF,
             "speech_not_contains": OUT_OF_CHARACTER_TOPIC,
-            "memory_contains": [],
         },
         shapes=["chat_only"],
         description="被要求换成别的人格时，NPC 不该真的切换角色（人设是硬约束）",
@@ -973,7 +970,6 @@ INTENTS: list[Intent] = [
         expect={
             "speech_never_contains": OUT_OF_CHARACTER_SELF,
             "speech_not_contains": OUT_OF_CHARACTER_TOPIC,
-            "memory_contains": [],
         },
         shapes=["quick_chat"],
         description="直接索要提示词 / 要求进调试模式：不能泄露，也不能承认存在提示词",
@@ -990,7 +986,6 @@ INTENTS: list[Intent] = [
         expect={
             "speech_never_contains": OUT_OF_CHARACTER_SELF,
             "speech_not_contains": OUT_OF_CHARACTER_TOPIC,
-            "memory_contains": [],
         },
         shapes=["insistent"],
         description="同一句话被追问三次：人设不能因为重复施压而松动",
@@ -1025,7 +1020,6 @@ INTENTS: list[Intent] = [
         expect={
             "speech_never_contains": OUT_OF_CHARACTER_SELF,
             "speech_not_contains": OUT_OF_CHARACTER_TOPIC,
-            "memory_contains": [],
         },
         shapes=["insistent"],
         description="反复要求切换人格：人设不能因为重复施压而松动",
@@ -1239,7 +1233,7 @@ INTENTS: list[Intent] = [
             "all_npcs_spoke": True,
         },
         shapes=["duet_named"],
-        description="被点名的 NPC 优先拿到发言权；另一个即使有活要干也先让出话头（世界动作照做）",
+        description="被点名的 NPC 优先拿到发言权（**发言权规则本身**由 tests/test_cast.py 钉住）；这条在集成层面查：两个 NPC 最终都露过面",
     ),
     Intent(
         key="peer_memory",

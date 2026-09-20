@@ -2753,7 +2753,7 @@ HTML 不认识 markdown，读者看到的就是一堆星号和反引号。
 | 用例总数 | 231 | **235** |
 | `task` 类 | 76 | **80** |
 | 断言世界状态（world 层） | 118 | **122** |
-| 敏感层（flag 层） | 40 | **44** |
+| 敏感层（flag 层） | 40 | **43** |
 
 `tests/test_eval_coverage.py` 里那份 `KNOWN_UNCOVERED` 现在是**空的**，
 两个目标进了 `must_be_covered`。护栏里留了一句诚实的注：
@@ -2771,6 +2771,118 @@ HTML 不认识 markdown，读者看到的就是一堆星号和反引号。
 它加的是**分辨率**，不是**成绩**。
 把"补了 4 条用例"读成"评测变强了 4 条"是错的；
 真正的差别只有一句：**以前这 4 个目标坏了没人知道，现在会红。**
+
+---
+
+## 附七：35 处**永远不会失败**的断言 —— 包括一条注释承诺了、却从没被查过的反向断言（2026-09-20）
+
+### 起因：去查"覆盖率怎么提高"
+
+路线图上是「**继续提高世界状态断言的比例**（当前 122/235）」。动手之前先数了一遍
+缺口分布，结果发现更值钱的东西：
+
+```
+按 category：  memory 0/37   persona 0/39   multi_npc 12/27   safety 25/31
+                minecraft 17/21   task 68/80
+```
+
+`memory` 和 `persona` **一条都没有**。但仔细看：它们的 `expect` 里是
+`memory_contains` / `speech_not_contains` —— 它们测的**本来就不是世界状态**，
+是"话有没有说对"。**硬给它们塞一条世界状态断言，只会塞出一条恒真的废话。**
+
+于是问题换了个问法：**已经写着世界状态断言的那些，真的会失败吗？**
+一查就出了两个洞。
+
+### 洞一：`has_count: 0` 恒成立
+
+`metrics.task_completion` 当时写的是：
+
+```python
+if counts.get(str(item), 0) < int(amount):
+```
+
+也就是"**至少** N 个"。于是 `has_count: {player_a: {latte: 0}}` 判的是
+`count < 0` —— **永远不成立**。
+
+而 `order_for_other_player` 的注释正写着：
+
+```python
+# 正向：点单的人拿到；反向：没点单的人**不能**拿到。
+# 只有正向断言的话，"把咖啡递给在场的随便谁"也能通过。
+"player_has": {pid: ["latte"]},
+"has_count": {"player_a": {"latte": 0}},
+```
+
+**那句"只有正向断言的话…也能通过"是它要防的病，而它自己就是那个病。**
+实测：给 `player_a` 手里塞一杯 latte，`task_completion` 照样返回 `1.0`。
+
+修法：`0` 的语义改成「**必须没有**」（`count != 0` 即红），负数判红并说明是写错了
+（负数在"至少 N 个"的语义下同样恒成立）。
+
+### 洞二：空列表 / 空字典是"没写出来的约束"，还会**虚报覆盖**
+
+`flags: []` / `no_flags: []` / `memory_contains: []` 一共 **35 处**。
+它们不影响任何分数（循环不执行），但**仍然贡献 `expect` 的键** ——
+而分层报告正是**按键的存在**分层的：
+
+```python
+def expect_keys(case_ids):        # measure_planner_batch.py
+    return {case["id"]: set((case.get("expect") or {}).keys()) ...}
+```
+
+后果很具体：`task_order_latte` 带了个空的 `"flags": []`，
+于是它被算进 **flag 层** —— 那一层在报告里的定位是
+「**直接钉世界标记，修复的靶子在这**」。它一个标记都没钉。
+
+实测修正：**flag 层 44 → 43**，`flags` 断言 35 → 34。世界状态层 122 不变
+（`task_order_latte` 靠 `player_has` 本来就是正当的 world 层成员）。
+
+清掉的 35 处分布在：生成器 6 个 persona 意图（`memory_contains`）、
+手写 `task_order_latte`（`flags`）、手写 `mc_objective_is_world_state`（`no_flags`）、
+手写 `persona_resist_break` / `persona_style_bounds`（`memory_contains`）。
+
+### 洞三（顺手）：一条**描述**承诺了没人检查的行为
+
+`named_priority` 的 description 写着
+"被点名的 NPC 优先拿到发言权；另一个即使有活要干也先让出话头（**世界动作照做**）"。
+但它的 `expect` 只有 `all_npcs_spoke: True` ——
+**"世界动作照做"没有任何东西在查**，而且"被点名优先"本身是
+`tests/test_cast.py` 在单元层面钉住的，不是这条集成用例。
+
+改法是把 description 改成**只说什么被查了**，并指明发言权规则由谁钉。
+（和「配置里写着一个不生效的开关」是同一个病：**对读者撒谎**。）
+
+### 新增护栏：`tests/test_eval_assertions.py`
+
+判据一句话：**一个 `expect` 里的断言要么能被违反，要么不该写。**
+这个文件把它变成可以机械检查的性质：
+
+| 测试 | 钉什么 |
+|---|---|
+| `test_no_case_carries_a_degenerate_assertion` | 全语料扫描：空列表 / 空字典 / 负数 |
+| `test_the_degenerate_scan_can_actually_fail` | 反向测试：9 种退化写法必须抓到，7 种正常写法必须放过 |
+| `test_has_count_zero_means_the_actor_must_not_have_it` | `0` = 必须没有（两种背包形状都验） |
+| `test_has_count_positive_still_means_at_least` | 修 `0` 不能把"至少 N 个"改掉 |
+| `test_a_negative_has_count_is_not_silently_satisfied` | 负数判红，不是静默通过 |
+| `test_the_negative_claim_in_order_for_other_player_really_fires` | **端到端**：拿**真实用例的 `expect`**，把东西塞给没点单的人，断言必须红 |
+
+最后一条是关键：它**钉的是数据，不是我的复述** ——
+哪天有人把那条 `has_count` 删掉，这条会红（它断言 `expect.get("has_count")` 非空）。
+
+### 结论：这个比例**不是**一个该被最大化的指标
+
+`122/235` 是按"`expect` 里有哪些键"数的，它是个**代理量**。
+真实的性质是："**这条用例能不能看见规划的后果**"。
+
+* `memory` / `persona` 的用例**结构上不该**看见世界状态 —— 它们测的是话。
+* 硬把它们拉进这个比例，得到的只会是恒真的断言（洞二那一类）。
+
+所以路线图上那条改写成"**继续提高世界状态断言的比例**"是**措辞错了**，
+正确的问题是"**哪些用例在追目标、却没验收目标的后果**" ——
+那个问题由 `test_eval_coverage.py` 按**目标**回答（清单现在是空的）。
+
+**改前改后都是 235/235 = 100%**：这一轮**没有动任何分数**，
+动的是"**这些数字到底在数什么**"。
 
 ---
 

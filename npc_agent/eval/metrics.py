@@ -70,8 +70,30 @@ def task_completion(
         actor = (snapshot.get("actors") or {}).get(actor_id) or {}
         _held_set, counts = _held(actor)
         for item, amount in (wanted or {}).items():
-            if counts.get(str(item), 0) < int(amount):
-                problems.append(f"{actor_id} 的 {item} 只有 {counts.get(str(item), 0)} 个，需要 {amount}")
+            want = int(amount)
+            got = counts.get(str(item), 0)
+            if want < 0:
+                # 负数在"至少 N 个"的语义下**永远成立** —— 它不是一条断言，
+                # 是一句写错了的话。判它红，让它走到门禁/盲区里去。
+                problems.append(
+                    f"{actor_id} 的 {item} 被要求 {want} 个（负数）—— 这个断言永远为真，是写错了"
+                )
+            elif want == 0:
+                # ⚠️ `0` 的语义是「**必须没有**」，不是「至少 0 个」。
+                #
+                # 从前这里只有一句 `counts.get(item, 0) < amount`，
+                # 于是 `has_count: {a: {latte: 0}}` **恒成立** ——
+                # 而 `order_for_other_player` 的注释正写着
+                # "反向：没点单的人**不能**拿到"。**它一次都没被查过。**
+                # 实测：给 player_a 手里塞一杯 latte，分数照样是 1.0。
+                #
+                # 这是 `tools: []` 短路那个 bug 的同族：**一条永远绿的断言
+                # 比没有断言更糟** —— 它不报警，只是让每个建立在它上面的
+                # 数字都虚高一点，还让人以为那条性质被守住了。
+                if got != 0:
+                    problems.append(f"{actor_id} 不该有 {item}，实际有 {got} 个")
+            elif got < want:
+                problems.append(f"{actor_id} 的 {item} 只有 {got} 个，需要 {want}")
 
     # 世界里的方块：Minecraft 的目标是"洞口真的有个火把"
     for entry in expect.get("placed") or []:
