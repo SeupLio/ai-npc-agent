@@ -67,6 +67,15 @@ class RuntimeConfig:
     # 同一个端点上同一个毛病。`OpenAICompatLLM` 里还有一份默认值，
     # 两处**必须一致** —— 由 `tests/test_llm_client.py` 里那条护栏钉住。
     llm_timeout: float = 180.0
+    # 传输层重试次数（含首次）。
+    #
+    # 实测：超时/预算修完之后，整臂仍有 **112/231 条（48%）** 至少回落一次，
+    # 其中 **109 条是传输层故障**（超时 / 连接断开）—— 请求压根没到模型那儿。
+    # 重发一次是合理的；而 `finish_reason=length`（预算被吃光）**不重试**，
+    # 理由写在 `OpenAICompatLLM._is_transient_http` 旁边，实测见 `docs/ENGINEERING.md` 附九。
+    #
+    # ⚠️ 它改结果（回落率不同）⇒ 和超时一样进了 `RESUME_CRITICAL_FIELDS`。
+    llm_retries: int = 3
     use_llm_planner: bool = True      # 关掉可做消融：只用启发式规划
     use_llm_speech: bool = True       # 关掉可做消融：只用模板台词
 

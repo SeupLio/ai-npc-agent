@@ -791,6 +791,8 @@ def test_resume_refuses_when_the_config_changed() -> None:
         ("max_tokens", 1024),
         # 超时也改结果：等 60s 和等 180s 的回落率完全不同（实测 2/6 vs 0/6）
         ("llm_timeout", 60.0),
+        # 重试次数同理：重试 1 次和重试 3 次的回落率不同。
+        ("llm_retries", 1),
         ("memory_top_k", 2),
         ("memory_consolidate_at", 8),
         ("memory_half_life", 5.0),

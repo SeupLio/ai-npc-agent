@@ -1,4 +1,4 @@
-"""诊断：规划调用的预算够不够推理模型用。
+"""诊断：规划调用失败，是**等得不够久**、**预算不够**，还是**端点抖了**。
 
 ## 为什么要有这个脚本
 
@@ -11,13 +11,22 @@
 "模型规划得不好"记了下来。这跟"配方数量算不对"是两回事 ——
 但路线图上那条写的是后者。
 
-这个脚本把变量**只留一个**：同一个场景、同一段剧本、同一个端点，
-只改 `config.max_tokens`，然后逐次调用记录成功/失败 + 失败原文。
-失败原文里带着思维链长度，所以"预算要多少才够"是**量出来的**，不是猜的。
+## 三个**独立的**假设，必须分开测
+
+| 假设 | 失败原文长什么样 | 修法 |
+|---|---|---|
+| **读超时不够** | `TimeoutError`，思维链 **0** 字（响应根本没回来） | 放宽超时 |
+| **预算不够** | `finish_reason=length`，思维链 **N 字** | 调大 `max_tokens` |
+| **端点抖了** | 同上，但**重发一次就好** | 重试 |
+
+⚠️ 它们是**互相掩盖**的：60s 超时下所有失败都是 `TimeoutError`，
+**看不见**预算问题；把超时放宽之后预算才露出来。混在一起测，
+就会把"我们等得不够久"记成"模型规划得不好"。
 
 用法：
     python scripts/probe_planner_budget.py
-    PROBE_BUDGETS=4096,16384 python scripts/probe_planner_budget.py
+    PROBE_BUDGETS=4096,16384 PROBE_TIMEOUTS=60,180 PROBE_RETRIES=1,3 \\
+        python scripts/probe_planner_budget.py
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,13 +47,29 @@ from npc_agent.llm import build_llm  # noqa: E402
 
 BUDGETS = [int(x) for x in (os.environ.get("PROBE_BUDGETS") or "4096,16384").split(",")]
 
-#: 客户端的读超时。默认 60s —— `OpenAICompatLLM.__init__` 里写死的那个。
-#:
-#: ⚠️ 这个变量和 `max_tokens` 是**两个独立的假设**，必须分开测：
-#:   预算不够 → 失败原文里带着"思维链 N 字"、`finish_reason=length`
-#:   超时不够 → 失败原文是 `TimeoutError`，思维链长度 **0**（响应根本没回来）
-#: 混在一起测，就会把"我们等得不够久"记成"模型规划得不好"。
+#: 客户端的读超时。
 TIMEOUTS = [float(x) for x in (os.environ.get("PROBE_TIMEOUTS") or "60").split(",")]
+
+#: 传输层重试次数（含首次）。`1` = 不重试。
+RETRIES = [int(x) for x in (os.environ.get("PROBE_RETRIES") or "1").split(",")]
+
+
+# --------------------------------------------------------------------------- #
+# 直接数 `urlopen` 被调了几次。
+#
+# ⚠️ 重试发生在**客户端内部**（`OpenAICompatLLM._attempt`），从外面数
+# `complete_json` 是看不见的 —— 一次逻辑调用重试 3 次，外面也只看到 1 次。
+# 所以必须在这一层数，"平均试了几次"才是真的。
+_URLOPEN_CALLS = [0]
+_ORIG_URLOPEN = urllib.request.urlopen
+
+
+def _counting_urlopen(*args: object, **kwargs: object):
+    _URLOPEN_CALLS[0] += 1
+    return _ORIG_URLOPEN(*args, **kwargs)  # type: ignore[arg-type]
+
+
+urllib.request.urlopen = _counting_urlopen  # type: ignore[assignment]
 
 
 class RecordingLLM:
@@ -86,7 +112,7 @@ def cot_len(text: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def run(budget: int, timeout: float) -> tuple[list[tuple[int, bool, str]], dict]:
+def run(budget: int, timeout: float, retries: int) -> tuple[list[tuple[int, bool, str]], dict]:
     cfg = RuntimeConfig(
         llm_provider=os.environ.get("NPC_AGENT_PROVIDER") or "openai-compat",
         model=os.environ.get("NPC_AGENT_MODEL") or "kimi-k2.7-code",
@@ -104,6 +130,7 @@ def run(budget: int, timeout: float) -> tuple[list[tuple[int, bool, str]], dict]
             base_url=cfg.base_url,
             api_key=cfg.api_key,
             timeout=timeout,
+            retries=retries,
         )
     )
     scenario = load_scenario("village")
@@ -121,7 +148,7 @@ def run(budget: int, timeout: float) -> tuple[list[tuple[int, bool, str]], dict]
 
 
 def kind_of(error: str) -> str:
-    """按失败原文分类 —— 这两类的修法完全不同。"""
+    """按失败原文分类 —— 这几类的修法完全不同。"""
     if "Timeout" in error or "timed out" in error:
         return "超时（响应没回来）"
     if "finish_reason=length" in error or "思维链" in error or "max_tokens" in error:
@@ -132,38 +159,61 @@ def kind_of(error: str) -> str:
 
 
 def main() -> int:
-    print(f"预算档位：{BUDGETS}｜超时档位：{TIMEOUTS}\n", flush=True)
-    summary: list[tuple[float, int, int, int, dict[str, int]]] = []
-    for timeout in TIMEOUTS:
-        for budget in BUDGETS:
-            print(f"=== max_tokens={budget}  timeout={timeout:g}s ===", flush=True)
-            calls, snap = run(budget, timeout)
-            ok = sum(1 for _b, good, _e in calls if good)
-            bad = [c for c in calls if not c[1]]
-            print(f"  规划调用 {len(calls)} 次，成功 {ok}，失败 {len(bad)}", flush=True)
-            kinds: dict[str, int] = {}
-            for _b, _good, err in bad:
-                k = kind_of(err)
-                kinds[k] = kinds.get(k, 0) + 1
-                print(f"    失败[{k}]：{err}", flush=True)
-            cots = [cot_len(e) for _b, _g, e in bad]
-            if cots:
-                print(f"  失败时的思维链长度：{cots}（最长 {max(cots)} 字）", flush=True)
-            ayan = (snap.get("actors") or {}).get("ayan") or {}
-            print(f"  终局背包：{ayan.get('inventory')}", flush=True)
-            print(f"  终局目标：{snap.get('objectives')}", flush=True)
-            print(f"  世界标记：{snap.get('world_flags')}", flush=True)
-            print(flush=True)
-            summary.append((timeout, budget, len(calls), len(bad), kinds))
+    print(
+        f"预算档位：{BUDGETS}｜超时档位：{TIMEOUTS}｜重试档位：{RETRIES}\n",
+        flush=True,
+    )
+    # 平铺成一条臂列表 —— 比三层嵌套好读，而且改档位不用动缩进。
+    arms = [(t, r, b) for t in TIMEOUTS for r in RETRIES for b in BUDGETS]
+    summary: list[tuple[float, int, int, int, int, int, dict[str, int]]] = []
+    for timeout, retries, budget in arms:
+        print(
+            f"=== max_tokens={budget}  timeout={timeout:g}s  retries={retries} ===",
+            flush=True,
+        )
+        _URLOPEN_CALLS[0] = 0
+        calls, snap = run(budget, timeout, retries)
+        attempts = _URLOPEN_CALLS[0]
+        ok = sum(1 for _b, good, _e in calls if good)
+        bad = [c for c in calls if not c[1]]
+        print(f"  规划调用 {len(calls)} 次，成功 {ok}，失败 {len(bad)}", flush=True)
+        if calls:
+            print(
+                f"  HTTP 尝试 {attempts} 次 / 逻辑调用 {len(calls)} 次"
+                f"（平均每次 {attempts / len(calls):.2f} 次）",
+                flush=True,
+            )
+        kinds: dict[str, int] = {}
+        for _b, _good, err in bad:
+            k = kind_of(err)
+            kinds[k] = kinds.get(k, 0) + 1
+            print(f"    失败[{k}]：{err}", flush=True)
+        cots = [cot_len(e) for _b, _g, e in bad]
+        if cots:
+            print(f"  失败时的思维链长度：{cots}（最长 {max(cots)} 字）", flush=True)
+        ayan = (snap.get("actors") or {}).get("ayan") or {}
+        print(f"  终局背包：{ayan.get('inventory')}", flush=True)
+        print(f"  终局目标：{snap.get('objectives')}", flush=True)
+        print(f"  世界标记：{snap.get('world_flags')}", flush=True)
+        print(flush=True)
+        summary.append(
+            (timeout, retries, budget, len(calls), len(bad), attempts, kinds)
+        )
 
     print("=== 汇总 ===", flush=True)
-    print(f"  {'timeout':>8s} {'max_tokens':>10s} {'调用':>5s} {'失败':>5s} {'成功率':>7s}  失败构成",
-          flush=True)
-    for timeout, budget, total, failed, kinds in summary:
+    print(
+        f"  {'timeout':>8s} {'retries':>8s} {'max_tokens':>10s} {'调用':>5s}"
+        f" {'失败':>5s} {'HTTP尝试':>8s} {'成功率':>7s}  失败构成",
+        flush=True,
+    )
+    for timeout, retries, budget, total, failed, attempts, kinds in summary:
         rate = (total - failed) / total * 100 if total else 0.0
         detail = "、".join(f"{k}×{v}" for k, v in sorted(kinds.items())) or "—"
-        print(f"  {timeout:8g} {budget:10d} {total:5d} {failed:5d} {rate:6.1f}%  {detail}",
-              flush=True)
+        print(
+            f"  {timeout:8g} {retries:8d} {budget:10d} {total:5d} {failed:5d}"
+            f" {attempts:8d} {rate:6.1f}%  {detail}",
+            flush=True,
+        )
     return 0
 
 

@@ -162,7 +162,7 @@ def test_the_real_config_classes_have_no_unread_fields() -> None:
             f"{class_name} 有没人读的字段"
         )
         counts[class_name] = len(fields)
-    assert counts == {"Persona": 11, "DialogueConfig": 2, "RuntimeConfig": 20}, (
+    assert counts == {"Persona": 11, "DialogueConfig": 2, "RuntimeConfig": 21}, (
         f"配置类的字段数变了：{counts}。\n"
         "  加字段是好事，但要顺手改这个数 —— 改的时候请确认新字段**真的有人读**\n"
         "  （删掉 `min_urgency_to_speak` / `locked_topics` / `relationships` 时\n"

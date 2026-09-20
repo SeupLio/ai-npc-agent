@@ -1,0 +1,22 @@
+预算档位：[16384]｜超时档位：[180.0]｜重试档位：[1, 3]
+
+=== max_tokens=16384  timeout=180s  retries=1 ===
+  规划调用 5 次，成功 4，失败 1
+  HTTP 尝试 5 次 / 逻辑调用 5 次（平均每次 1.00 次）
+    失败[超时（响应没回来）]：TimeoutError: The read operation timed out（已重试 1 次）
+  失败时的思维链长度：[0]（最长 0 字）
+  终局背包：{'planks': 2, 'stick': 2, 'torch': 6, 'cobblestone': 1}
+  终局目标：{'light_the_cave': 'done'}
+  世界标记：['cave_lit']
+
+=== max_tokens=16384  timeout=180s  retries=3 ===
+  规划调用 6 次，成功 6，失败 0
+  HTTP 尝试 7 次 / 逻辑调用 6 次（平均每次 1.17 次）
+  终局背包：{'planks': 2, 'stick': 2, 'torch': 7}
+  终局目标：{'light_the_cave': 'done'}
+  世界标记：['cave_lit']
+
+=== 汇总 ===
+   timeout  retries max_tokens    调用    失败   HTTP尝试     成功率  失败构成
+       180        1      16384     5     1        5   80.0%  超时（响应没回来）×1
+       180        3      16384     6     0        7  100.0%  —

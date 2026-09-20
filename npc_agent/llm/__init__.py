@@ -27,7 +27,7 @@ __all__ = [
 def build_llm(provider: str = "null", **kwargs) -> LLM:
     """按 provider 名构造 LLM 实例。
 
-    `timeout` 只在显式给出时透传 —— 默认值留在 `OpenAICompatLLM` 里，
+    `timeout` / `retries` 只在显式给出时透传 —— 默认值留在 `OpenAICompatLLM` 里，
     免得两处默认值各写一遍、改一处漏一处。
     """
     provider = (provider or "null").lower()
@@ -36,6 +36,9 @@ def build_llm(provider: str = "null", **kwargs) -> LLM:
     if provider in ("openai", "openai-compat", "compat", "vllm", "ollama", "deepseek"):
         timeout = kwargs.get("timeout")
         extra = {"timeout": float(timeout)} if timeout else {}
+        retries = kwargs.get("retries")
+        if retries:
+            extra["transient_attempts"] = int(retries)
         return OpenAICompatLLM(
             model=kwargs.get("model", ""),
             base_url=kwargs.get("base_url", ""),

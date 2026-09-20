@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 from typing import Any
 
 import pytest
@@ -273,3 +275,140 @@ def test_a_longer_timeout_is_actually_handed_to_urlopen(monkeypatch):
     llm.complete([{"role": "user", "content": "hi"}])
     assert seen["timeout"] == 180.0
 
+# --------------------------------------------------------------------------- #
+# 传输层重试
+# --------------------------------------------------------------------------- #
+
+
+def _flaky(monkeypatch, *, failures: int, make_exc):
+    """让 `urlopen` 前 `failures` 次抛 `make_exc()`，之后正常返回。返回调用计数。"""
+    calls: list[int] = []
+
+    def fake_urlopen(*a, **k):  # noqa: ANN001
+        calls.append(1)
+        if len(calls) <= failures:
+            raise make_exc()
+        return _FakeResponse(_body("好了。", "stop"))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return calls
+
+
+def _retrying_client() -> OpenAICompatLLM:
+    # `transient_backoff=0`：测试里不许真的睡（1s + 2s 会把套件拖慢）。
+    return OpenAICompatLLM(
+        model="m",
+        base_url="http://x/v1",
+        api_key="k",
+        transient_attempts=3,
+        transient_backoff=0.0,
+    )
+
+
+def test_a_timeout_is_retried_and_can_succeed(monkeypatch):
+    """超时是**传输层**故障 —— 请求没到模型那儿，重发是合理的。
+
+    实测：整臂 112/231 条至少回落一次，其中 **109 条**是这一类。
+    """
+    calls = _flaky(
+        monkeypatch, failures=1, make_exc=lambda: TimeoutError("read timed out")
+    )
+    assert _retrying_client().complete([{"role": "user", "content": "hi"}]) == "好了。"
+    assert len(calls) == 2, "第一次超时之后应该重发一次"
+
+
+def test_a_connection_drop_is_retried(monkeypatch):
+    calls = _flaky(
+        monkeypatch, failures=2, make_exc=lambda: ConnectionResetError("reset")
+    )
+    assert _retrying_client().complete([{"role": "user", "content": "hi"}]) == "好了。"
+    assert len(calls) == 3
+
+
+def test_a_5xx_is_retried(monkeypatch):
+    """5xx 是服务端自己出问题 —— 重发合理。"""
+
+    def make_exc():
+        return urllib.error.HTTPError(
+            "http://x/v1", 503, "busy", {}, io.BytesIO(b"upstream busy")
+        )
+
+    calls = _flaky(monkeypatch, failures=1, make_exc=make_exc)
+    assert _retrying_client().complete([{"role": "user", "content": "hi"}]) == "好了。"
+    assert len(calls) == 2
+
+
+def test_a_429_is_not_retried(monkeypatch):
+    """429 看着像"过一会儿就好"，但实测那批 429 全是 `apikey_quota_exhausted`
+    （**按 key 计的额度用光**）—— 退避 1~2 秒不会让它恢复，重试只是把失败推迟几秒。
+    """
+
+    def make_exc():
+        return urllib.error.HTTPError(
+            "http://x/v1", 429, "quota", {}, io.BytesIO(b"apikey_quota_exhausted")
+        )
+
+    calls = _flaky(monkeypatch, failures=99, make_exc=make_exc)
+    with pytest.raises(LLMUnavailable) as err:
+        _retrying_client().complete([{"role": "user", "content": "hi"}])
+    assert len(calls) == 1, "429 不该重试"
+    assert "429" in str(err.value)
+
+
+def test_a_400_is_not_retried(monkeypatch):
+    """4xx（除了 429）是请求本身有问题：重发纯属浪费。"""
+
+    def make_exc():
+        return urllib.error.HTTPError(
+            "http://x/v1", 400, "bad", {}, io.BytesIO(b"model not found")
+        )
+
+    calls = _flaky(monkeypatch, failures=99, make_exc=make_exc)
+    with pytest.raises(LLMUnavailable):
+        _retrying_client().complete([{"role": "user", "content": "hi"}])
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        TimeoutError("The read operation timed out"),
+        ConnectionResetError("Connection reset by peer"),
+        urllib.error.URLError("TLS handshake timeout"),
+    ],
+)
+def test_the_final_error_keeps_the_marker_the_classifier_looks_for(monkeypatch, exc):
+    """⚠️ 重试耗尽后抛出的**原文必须保留最后一次的原始原因**。
+
+    下游的回落分类器是按特征串认类的（`_TRANSPORT_MARKERS`：`TimeoutError` /
+    `URLError` / `ConnectionResetError` …）。要是这里换成"重试失败"，
+    那 109 条传输层故障会掉进"解析失败"那一栏 —— 正是上一轮刚修掉的那个假话。
+    """
+    calls = _flaky(monkeypatch, failures=99, make_exc=lambda: exc)
+    with pytest.raises(LLMUnavailable) as err:
+        _retrying_client().complete([{"role": "user", "content": "hi"}])
+    assert len(calls) == 3, "应该试满 3 次"
+    assert type(exc).__name__ in str(err.value)
+    assert "共尝试 3 次" in str(err.value)
+
+
+def test_the_eval_path_hands_the_configured_retries_to_the_client():
+    """配置要**真的接线**到客户端 —— 光在 `RuntimeConfig` 里写个字段不算数。"""
+    from npc_agent.eval.runner import _default_llm_factory
+
+    config = RuntimeConfig(llm_provider="openai-compat", model="m", llm_retries=5)
+    llm = _default_llm_factory(config)()
+    assert getattr(llm, "transient_attempts", None) == 5, (
+        "`llm_retries` 没传到客户端上 —— 改配置不会改变行为。"
+    )
+
+
+def test_the_retry_defaults_agree():
+    """两个默认值必须一致（不许"两个真相"）。"""
+    assert RuntimeConfig().llm_retries == OpenAICompatLLM().transient_attempts
+
+
+def test_retries_can_be_turned_off():
+    """`1` = 不重试；`0` 会被夹到 1（不许构造出"一次都不试"的客户端）。"""
+    assert OpenAICompatLLM(model="m", transient_attempts=1).transient_attempts == 1
+    assert OpenAICompatLLM(model="m", transient_attempts=0).transient_attempts == 1

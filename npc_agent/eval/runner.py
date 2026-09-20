@@ -316,6 +316,9 @@ RESUME_CRITICAL_FIELDS = (
     # 不进指纹的话，`--resume` 会把"60s 跑出来的半批"和"180s 跑出来的另半批"
     # 拼成一份报告，而报告只会写"跑了 N 条"。
     "llm_timeout",
+    # 重试次数同理：重试 3 次和重试 1 次的**回落率不同**，
+    # 拼在一起那份报告就说不清自己是用哪种配置跑出来的。
+    "llm_retries",
     "memory_strategy",
     "memory_top_k",
     "memory_consolidate_at",
@@ -580,6 +583,7 @@ def _default_llm_factory(config: RuntimeConfig) -> Callable[[], LLM]:
         base_url=config.base_url,
         api_key=config.api_key,
         timeout=config.llm_timeout,
+        retries=config.llm_retries,
     )
 
 

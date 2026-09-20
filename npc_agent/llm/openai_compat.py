@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Iterator
@@ -43,6 +44,16 @@ class OpenAICompatLLM(LLM):
         #
         # 这个默认值和 `RuntimeConfig.llm_timeout` 必须一致，有护栏钉住。
         timeout: float = 180.0,
+        # 传输层重试次数（含首次）。**这不是"再试一次就好"的乐观，是有数的**：
+        # 超时/预算修完之后，整臂 112/231 条（48%）至少回落一次，其中 **109 条是
+        # 传输层故障** —— 请求压根没到模型那儿，重发是合理的。
+        #
+        # 而 `finish_reason=length`（预算被吃光）和"响应结构异常"**不重试**：
+        # 前者重发一次要再花一整次调用，且同样的预算很可能同样被吃光。
+        transient_attempts: int = 3,
+        # 退避基数（秒）：第 n 次重试前等 `backoff * 2**(n-1)` ⇒ 1s、2s。
+        # 端点真的挂掉时一次调用最坏 3×180s —— 那时本来也什么都拿不到。
+        transient_backoff: float = 1.0,
     ) -> None:
         self.model = model or os.getenv("NPC_AGENT_MODEL", "")
         self.base_url = (
@@ -50,6 +61,8 @@ class OpenAICompatLLM(LLM):
         ).rstrip("/")
         self.api_key = api_key or os.getenv("NPC_AGENT_API_KEY", "")
         self.timeout = timeout
+        self.transient_attempts = max(1, transient_attempts)
+        self.transient_backoff = transient_backoff
 
     @property
     def available(self) -> bool:
@@ -71,6 +84,47 @@ class OpenAICompatLLM(LLM):
             "stream": stream,
         }
 
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _is_transient_http(code: int) -> bool:
+        """**5xx 重试，429 和其余 4xx 不重试。**
+
+        5xx 是服务端自己出问题，重发合理。429 看着像"过一会儿就好"，
+        但实测那批 429 全是 `apikey_quota_exhausted`（**按 key 计的额度用光**）——
+        退避 1~2 秒不会让它恢复，重试只是把失败推迟几秒。
+        其余 4xx 是请求本身有问题（模型名写错、key 无效），重发纯属浪费。
+        """
+        return 500 <= code < 600
+
+    def _attempt(self, call):
+        """跑 `call`，**只对传输层故障重试**；重试次数用尽才抛 `LLMUnavailable`。
+
+        抛出的消息里保留**最后一次的原始原因**（`TimeoutError: ...` 等），
+        因为下游的回落分类器是按特征串认类的（`is_transport_error`）——
+        把原因换成"重试失败"会让它掉进"其他"那一栏。
+        """
+        last = ""
+        for attempt in range(self.transient_attempts):
+            if attempt:
+                time.sleep(self.transient_backoff * (2 ** (attempt - 1)))
+            try:
+                return call()
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:300]
+                if not self._is_transient_http(exc.code):
+                    raise LLMUnavailable(f"HTTP {exc.code}: {detail}") from exc
+                last = f"HTTP {exc.code}: {detail}"
+            except Exception as exc:  # 超时 / 连接断开 / 响应体被截断
+                last = f"{type(exc).__name__}: {exc}"
+        raise LLMUnavailable(f"{last}（共尝试 {self.transient_attempts} 次）")
+
+    def _post_json(self, request) -> dict:
+        def once() -> dict:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        return self._attempt(once)
+
     def complete(
         self,
         messages: list[dict[str, str]],
@@ -87,14 +141,7 @@ class OpenAICompatLLM(LLM):
             headers=self._headers(),
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:  # 4xx/5xx
-            detail = exc.read().decode("utf-8", errors="replace")[:300]
-            raise LLMUnavailable(f"HTTP {exc.code}: {detail}") from exc
-        except Exception as exc:  # 网络/超时
-            raise LLMUnavailable(f"{type(exc).__name__}: {exc}") from exc
+        body = self._post_json(request)
 
         try:
             choice = body["choices"][0]
@@ -146,7 +193,12 @@ class OpenAICompatLLM(LLM):
             headers=self._headers(),
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+        # 只重试**建立连接**那一步：一旦开始吐字，重试就会把已经发出去的内容
+        # 再发一遍（客户端会看到重复的半句话）。
+        response = self._attempt(
+            lambda: urllib.request.urlopen(request, timeout=self.timeout)
+        )
+        with response:
             for raw_line in response:
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line or not line.startswith("data:"):
