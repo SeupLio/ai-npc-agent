@@ -361,6 +361,20 @@ function renderRepetition(rep){
 
 function paint(d){
   if (!d.events) return;
+  // 规划来源。⚠️ 规划调用失败时框架会**静默回落**到启发式规划器，
+  // 两条路径产出的轨迹**完全一样** —— 不把来源画出来，
+  // "接上模型规划到底有没有生效"在页面上根本看不出来。
+  const PLANNER = d.planner || {};
+  // ⚠️ "回落"只有在模型**真的可用**时才成立：没配模型是"没开这一路"，
+  // 不是失败。否则离线控制台会把每一个启发式计划都标成回落 ——
+  // 那就成了"对照组被记成一片红"，和这个项目已经修过的那类错误同源。
+  // 判据由后端算好（`llm_active` = 配置开着 **且** 模型在），页面照读，
+  // 不自己再与一遍 —— 同一条规则两份实现迟早只改一边。
+  const llmOn = !!PLANNER.llm_active;
+  const SRC_LABEL = {
+    model: "模型规划", heuristic: "启发式规划",
+    request_template: "点单模板", scenario_flow: "场景引导"
+  };
   $("#log").innerHTML = d.events.map((ev, i) => {
     const head = ev.kind === "say"
       ? "<div class='who p'>玩家 " + esc(ev.speaker_name) + "：</div>" + esc(ev.text)
@@ -374,6 +388,16 @@ function paint(d){
         : "";
       const viol = (t.violations || []).length
         ? "<div class='mem' style='color:var(--bad)'>人设违规：" + esc(t.violations.join("；")) + "</div>" : "";
+      // 计划来源标签。`heuristic` 出现在这里而模型是开着的 ⇒ **静默回落**：
+      // 模型被问过了，但它没给出可用计划，框架换成了启发式规划器。
+      // 这是唯一能看出"这一轮其实不是模型在规划"的地方。
+      const src = t.plan_source || "";
+      const fellBack = src === "heuristic" && llmOn;
+      const srcBadge = src
+        ? "<span class='pill' style='color:" + (fellBack ? "var(--bad)" : "var(--dim)") +
+          ";border-color:" + (fellBack ? "var(--bad)" : "transparent") + "'>" +
+          esc(SRC_LABEL[src] || src) + (fellBack ? " ⚠ 回落" : "") + "</span>"
+        : "";
       // 三种结局都要有可见的一行，否则"没轮到它"的 NPC 会**整条消失**，
       // 读者会以为它压根没参与 —— 而"谁被让出话头"正是多 NPC 最该看见的东西。
       //
@@ -393,6 +417,7 @@ function paint(d){
             : "");
       return "<div class='turn'>" +
         (t.decision_reason ? "<div class='meta'>" + esc(t.name) + "：" + esc(t.decision_reason) + "</div>" : "") +
+        (srcBadge ? "<div class='meta'>" + srcBadge + "</div>" : "") +
         acts + mems + viol + outcome +
         "</div>";
     }).join("");
@@ -408,11 +433,21 @@ function paint(d){
 
   const w = d.snapshot || {};
   const obj = Object.entries(w.objectives || {});
+  // 计划来源的汇总。**必须显示**：回落是静默的，不报出来就没人知道
+  // 这一整段对话里"模型规划"其实没发生几次。
+  const srcEntries = Object.entries(PLANNER.sources || {});
+  const srcSummary = srcEntries.length
+    ? srcEntries.map(([k, v]) => esc(SRC_LABEL[k] || k) + "×" + v).join("、")
+    : "（无）";
   $("#world").innerHTML = "<dl class='kv'>" +
     "<dt>世界</dt><dd>" + esc(d.world_label) + "</dd>" +
     "<dt>世界标记</dt><dd>" + (esc((w.world_flags || []).join(", ")) || "（无）") + "</dd>" +
     "<dt>目标</dt><dd>" + (obj.length ? obj.map(([k, v]) => esc(k) + "=" + esc(v)).join("<br>") : "（无）") + "</dd>" +
     "<dt>抢话轮次</dt><dd class='" + (d.collisions ? "down" : "up") + "'>" + d.collisions + "</dd>" +
+    "<dt>规划来源</dt><dd>" + srcSummary + "</dd>" +
+    "<dt>静默回落</dt><dd class='" + (PLANNER.silent_fallbacks ? "down" : "up") + "'>" +
+      (PLANNER.silent_fallbacks || 0) +
+      (llmOn ? "" : "（模型未开启或不可用，不算回落）") + "</dd>" +
     "</dl>";
 
   $("#mems").innerHTML = Object.entries(d.memories || {}).map(([name, m]) =>

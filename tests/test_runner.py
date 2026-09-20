@@ -663,6 +663,11 @@ def test_checkpoint_round_trip_preserves_the_result() -> None:
         # 那份 planner 对照能不能读。
         assert restored.result.planner_failures == original.result.planner_failures
         assert restored.result.planner_last_error == original.result.planner_last_error
+        # 计划来源与"空计划"计数同理：恢复之后如果丢了，
+        # "这一条到底是不是模型在规划"就再也说不清了 ——
+        # 而它是判断**静默回落**的唯一依据。
+        assert restored.result.plans_by_source == original.result.plans_by_source
+        assert restored.result.planner_empty_plans == original.result.planner_empty_plans
 
     # 不带 include_result 时不该塞进结果（进度快照不需要那么重）
     assert "result" not in runs[0].to_dict()

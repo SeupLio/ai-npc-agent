@@ -176,6 +176,10 @@ def _turn_payload(turn: Any, cast: Cast) -> dict[str, Any]:
         "name": cast.name_of(turn.actor_id),
         "say": turn.say,
         "decision_reason": turn.decision_reason,
+        # 这个计划是谁产出的（见 `types.PLAN_SOURCES`）。
+        # 规划失败会**静默回落**到启发式规划器，不显示来源的话，
+        # "模型规划的"和"回落之后的"在页面上长得一模一样。
+        "plan_source": getattr(turn.plan, "source", "") if turn.plan else "",
         "actions": [
             {
                 "tool": action.tool,
@@ -264,6 +268,30 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
         if turn["say"]
     ]
     repeat = find_repeats(spoken)
+
+    # 计划来源统计。**必须在控制台里看得见**：规划调用失败会静默回落到
+    # 启发式规划器，而两条路径产出的轨迹完全一样 —— 不显示来源的话，
+    # "接上模型规划有没有用"这件事在页面上根本看不出来。
+    # 实测（2026-09-19，231 条跑批）：48% 的用例至少回落过一次。
+    plan_sources: dict[str, int] = {}
+    for event in rendered:
+        for turn in event["turns"]:
+            source = turn.get("plan_source") or ""
+            if source:
+                plan_sources[source] = plan_sources.get(source, 0) + 1
+    llm_enabled = bool(cfg.use_llm_planner)
+    # ⚠️ 模型**可用**才谈得上"回落"。没配模型是"没开这一路"，不是失败 ——
+    # 否则离线控制台一打开就会报一堆回落，而这正是"对照组被记成一片红"
+    # 的老毛病换了个入口（`use_llm_planner` 默认是 True）。
+    # 见 `Planner.plan_with_llm` 里那句"没配模型不是失败，是没开这一路"。
+    llm_available = any(a.planner.llm.available for a in cast.agents.values())
+    # 这两个是**原始输入**（配置怎么说 / 模型在不在），下面是**结论**。
+    # ⚠️ 结论只算一遍，页面直接读它 —— 让页面自己写 `enabled && available`
+    # 就是同一条规则的两份实现，哪天口径改了必然只有一边跟上（本项目有前科）。
+    llm_active = bool(llm_enabled and llm_available)
+    # 模型开着且真的可用，而计划来自启发式 ⇒ 模型被问过，但没给出可用计划。
+    silent_fallbacks = plan_sources.get("heuristic", 0) if llm_active else 0
+
     return {
         "scenario": scenario_id,
         "world_label": env_label(env.name),
@@ -278,6 +306,15 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
             for pid, count in (env.speech_counts() or {}).items()
         },
         "collisions": collisions,
+        "planner": {
+            "llm_enabled": llm_enabled,
+            "llm_available": llm_available,
+            #: 模型规划这一路**真的活着**（配置开着 **且** 模型配了）。
+            #: 判"是不是回落"只看这一个 —— 页面别再自己与一遍。
+            "llm_active": llm_active,
+            "sources": plan_sources,
+            "silent_fallbacks": silent_fallbacks,
+        },
         "repetition": {
             "total": repeat.total,
             "repeats": len(repeat.repeats),

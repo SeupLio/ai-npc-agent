@@ -29,6 +29,20 @@ from .modules.state import StateTracker
 from .modules.tools import ToolContext, ToolRegistry
 from .types import ActionCall, ActionResult, AgentTurn, Plan, PlanStep, Utterance
 
+
+def _tag_plan(plan: Optional[Plan], source: str) -> Optional[Plan]:
+    """给计划标上来源，然后原样返回。
+
+    见 `Plan.source` 的注释：规划失败会**静默回落**到启发式规划器，
+    不标来源的话，"模型规划的"和"回落之后启发式规划的"在任何地方
+    都长得一模一样。所以这个标记不能省 —— 它是"这次到底是谁在规划"
+    的唯一依据。`plan` 是 `None` 时原样返回，方便直接包住 return。
+    """
+    if plan is not None:
+        plan.source = source
+    return plan
+
+
 #: 记忆里出现这些词，说明是值得当面回引的偏好类信息
 RECALL_HINTS = ("喜欢", "讨厌", "习惯", "常来", "第一次", "答应", "约定")
 
@@ -287,6 +301,26 @@ class NPCAgent:
     def planner_last_error(self) -> str:
         return self.planner.last_error
 
+    @property
+    def planner_empty_plans(self) -> int:
+        """模型"调用成功但计划不可用"的次数。见 `Planner.empty_plans`。"""
+        return self.planner.empty_plans
+
+    def plan_sources(self) -> dict[str, int]:
+        """这个 NPC 产出过的计划**按来源**计数。
+
+        `use_llm_planner` 开着而这里出现 `heuristic` ⇒ 那就是**静默回落**：
+        模型被问过了，但它没给出可用计划，框架换成了启发式规划器。
+        不记来源的话，这两种情况在数据里完全一样。
+        """
+        counts: dict[str, int] = {}
+        for turn in self.turns:
+            plan = turn.plan
+            if plan is None or not plan.source:
+                continue
+            counts[plan.source] = counts.get(plan.source, 0) + 1
+        return counts
+
     # ------------------------------------------------------------------ #
     # 主循环
     # ------------------------------------------------------------------ #
@@ -542,7 +576,7 @@ class NPCAgent:
         if utterance is not None:
             request_plan = self.planner.plan_for_utterance(utterance, self.state)
             if request_plan and request_plan.steps:
-                return request_plan
+                return _tag_plan(request_plan, "request_template")
 
         # 2) 玩家在问"我该怎么用 / 教教我" → 直接走场景引导流程。
         #    新客问"这里怎么点单"，正确的回答就是那套引导动作，而不是一句客套话。
@@ -551,7 +585,7 @@ class NPCAgent:
                 self.objectives, self.state, self._attempted
             )
             if guide_plan and guide_plan.steps:
-                return guide_plan
+                return _tag_plan(guide_plan, "scenario_flow")
 
         # 3) 被**点名** → 不启动场景目标，只回答（`_respond` 本轮已经答过了）。
         #    这一条是"不背固定教程"的关键闸门。
@@ -577,10 +611,21 @@ class NPCAgent:
                 goal_hint=self._pending_goal_hint(),
             )
             if llm_plan and llm_plan.steps:
-                return llm_plan
+                return _tag_plan(llm_plan, "model")
 
         # 5) 兜底：推进场景里还没完成的目标
-        return self.planner.plan_next_objective(self.objectives, self.state, self._attempted)
+        #
+        #    ⚠️ 走到这里有两种情况，**必须能分辨**：
+        #      (a) `use_llm_planner` 关着（`--no-planner` 对照组）—— 正常；
+        #      (b) 开着但模型没给出可用计划 —— 这就是**静默回落**，
+        #          实测 2026-09-19 那次 231 条跑批里有 48% 的用例发生过。
+        #    靠 `Plan.source == "heuristic"` + 配置里的 `use_llm_planner` 分辨。
+        return _tag_plan(
+            self.planner.plan_next_objective(
+                self.objectives, self.state, self._attempted
+            ),
+            "heuristic",
+        )
 
     def _pending_goal_hint(self) -> str:
         """喂给规划 prompt 的"还没完成的目标"。

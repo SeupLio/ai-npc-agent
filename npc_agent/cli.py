@@ -266,6 +266,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     from rich.table import Table
 
     from .eval import EvalHarness, EvalReport
+    from .eval.harness import eval_config
     from .eval.runner import (
         Checkpoint,
         config_fingerprint,
@@ -301,15 +302,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         cases = cases[:limit]
 
     concurrency = max(1, getattr(args, "concurrency", DEFAULT_CONCURRENCY) or 1)
-    report = EvalReport(
-        config={
-            "provider": cfg.llm_provider,
-            "model": cfg.model or "(offline)",
-            "memory_strategy": cfg.memory_strategy,
-            "use_llm_planner": cfg.use_llm_planner,
-            "use_llm_speech": cfg.use_llm_speech,
-        }
-    )
+    report = EvalReport(config=eval_config(cfg))
 
     checkpoint = None
     ckpt_path = getattr(args, "checkpoint", "") or ""

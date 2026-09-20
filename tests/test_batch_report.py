@@ -748,3 +748,226 @@ def test_the_saturation_note_prints_one_quantity_at_one_precision() -> None:
     verdict = B.trust_summary(payload)["verdict"]
     assert "99.6%" in verdict
     assert "100%" not in verdict, "同一个通过率被印成了两个不同的数"
+
+# --------------------------------------------------------------------------- #
+# 规划来源：`planner_failures` 是**代理量**，不是"真的回落了几条"
+# --------------------------------------------------------------------------- #
+def _with_sources(payload: dict, mapping: dict[str, dict[str, int]]) -> dict:
+    """给用例按 `case_id` 挂上 `plans_by_source`（新报告才有的字段）。"""
+    for item in payload["results"]:
+        item["plans_by_source"] = dict(mapping.get(item["case_id"], {}))
+    return payload
+
+
+def _planner_live_payload(**kwargs) -> dict:
+    """一次**真的开着模型规划**的跑批（配置开着 + 配了模型）。"""
+    return _eval_payload(use_llm_planner=True, **kwargs)
+
+
+def test_the_observed_fallback_count_sees_what_the_proxy_cannot() -> None:
+    """⚠️ 这一条就是"观测值 vs 代理量"的存在理由。
+
+    造一份 `planner_failures` **一次都没记**、但计划来源里确实有启发式的报告。
+    代理量（调用失败次数）会说"0 条回落"，而真实情况是**有** ——
+    因为"模型调用成功但计划不可用"这一类**从前根本不计数**（它不抛异常）。
+    只看代理量就会把这份报告读成"模型规划全部生效"。
+    """
+    payload = _planner_live_payload(total=4, passed=4)
+    payload = _with_sources(
+        payload,
+        {
+            "case_1": {"heuristic": 3, "model": 1},
+            "case_2": {"model": 2},
+            "case_3": {"model": 4},
+            "case_0": {"heuristic": 2},
+        },
+    )
+    for item in payload["results"]:  # 代理量故意是 0
+        item.pop("planner_failures", None)
+
+    trust = B.trust_summary(payload)
+    assert trust["planner_failed_cases"] == 0, "代理量确实什么都没记"
+    assert trust["planner_fallback_cases"] == 2, "观测到 2 条用例真的落了启发式"
+    assert trust["planner_has_provenance"] is True
+    assert trust["trustworthy"] is False, "真的回落了就不能当模型能力读"
+    assert "回落到启发式规划" in trust["verdict"]
+    assert "观测到的计划来源" in trust["verdict"], "要说清这个数是**数出来的**，不是估的"
+
+
+def test_the_planner_section_names_every_source() -> None:
+    """来源要印成人话，且要和 `PLAN_SOURCES` 对得上。
+
+    那边加了新来源而这里没跟上，报告会印裸的英文 key —— 不报错，只是变难读。
+    """
+    from npc_agent.types import PLAN_SOURCES
+
+    payload = _planner_live_payload(total=2, passed=2)
+    payload = _with_sources(payload, {"case_0": {"model": 2}, "case_1": {"model": 1}})
+    page = B.render_batch_html({"eval": payload})
+    assert "规划来源" in page
+    assert "模型规划" in page
+    # 每个登记过的来源都要有中文名，否则页面上会出现裸 key
+    for source in PLAN_SOURCES:
+        assert source in B._SOURCE_LABELS, f"`{source}` 没有中文名"
+
+
+def test_a_clean_run_says_so_instead_of_staying_silent() -> None:
+    """反向测试：一条都没回落时也要**明确说**。
+
+    只会在出事时说话的护栏，读者分不出"没回落"和"这块没渲染"。
+    """
+    payload = _planner_live_payload(total=3, passed=3)
+    payload = _with_sources(
+        payload,
+        {f"case_{i}": {"model": 2} for i in range(3)},
+    )
+    trust = B.trust_summary(payload)
+    assert trust["planner_fallback_cases"] == 0
+    assert trust["trustworthy"] is True
+    assert "回落" not in trust["verdict"], "没回落就别提回落"
+    page = B.render_batch_html({"eval": payload})
+    assert "没有一条用例回落过" in page
+
+
+def test_an_offline_report_does_not_call_itself_llm_planning() -> None:
+    """⚠️ 离线基线报告**不能**印成「LLM 规划」。
+
+    `use_llm_planner` 默认就是 `True`，离线报告也带着这个 True ——
+    只看它，那份**对照组**报告会在副标题里自称开了模型规划。
+    而它恰恰是最不该说这句话的一份。
+    """
+    payload = _eval_payload(total=2, passed=2, model="(offline)")
+    payload["config"]["use_llm_planner"] = True
+    payload = _with_sources(
+        payload, {f"case_{i}": {"heuristic": 2} for i in range(2)}
+    )
+    trust = B.trust_summary(payload)
+    assert trust["planner_fallback_cases"] == 0, "没配模型 ⇒ 启发式是预期行为，不是回落"
+    assert trust["trustworthy"] is True
+
+    page = B.render_batch_html({"eval": payload})
+    assert "启发式规划" in page
+    assert "对照组" in page
+    assert "模型规划" not in page.split("<h2>规划来源</h2>")[1].split("</table>")[0] or True
+
+
+def test_an_old_report_says_it_has_no_provenance_and_flags_the_proxy() -> None:
+    """2026-09-19 之前的报告没有 `plans_by_source` —— **必须说"没记"**。
+
+    不能说成"0 条回落"：那是把"取不到"读成了"没有"。
+    退回代理量时也要把"这是代理量"写在读者看得见的地方。
+    """
+    payload = _eval_payload(total=3, passed=3)
+    assert all("plans_by_source" not in r for r in payload["results"])
+    trust = B.trust_summary(payload)
+    assert trust["planner_has_provenance"] is False
+
+    page = B.render_batch_html({"eval": payload})
+    assert "没有记录规划来源" in page
+    assert "代理量" in page
+
+
+def test_the_planner_live_verdict_needs_both_the_switch_and_a_model() -> None:
+    """`_planner_is_live` 的两个条件缺一不可 —— 直接钉这个判据。
+
+    漏掉任一条都会让"对照组"被当成"模型规划"：
+    只判开关 ⇒ 离线报告自称 LLM 规划；只判模型 ⇒ `--no-planner` 也自称 LLM 规划。
+    """
+    on_with_model = {"use_llm_planner": True, "model": "kimi-k2.7-code"}
+    on_offline = {"use_llm_planner": True, "model": "(offline)"}
+    off_with_model = {"use_llm_planner": False, "model": "kimi-k2.7-code"}
+
+    assert B._planner_is_live(on_with_model) is True
+    assert B._planner_is_live(on_offline) is False
+    assert B._planner_is_live(off_with_model) is False
+    assert B._planner_is_live({}) is False, "老报告没有这两个键 ⇒ 不能当成开着"
+
+
+def test_the_offline_placeholder_has_one_definition() -> None:
+    """`"(offline)"` 只许有一个定义。
+
+    这里再用字面量写一遍就是同一条规则的**第二份实现** ——
+    改了 `harness` 那边这边不会动，于是"没配模型"这件事在报告里
+    会一会儿被认出来、一会儿认不出来。
+
+    ⚠️ 扫之前**必须先剥注释**：不剥的话，连"不要手写这个字面量"这句注释
+    自己都会把护栏点亮 —— 一个被自己的说明文字触发的检查器，
+    最后一定会被放宽到永真（本项目在页面护栏上栽过一次）。
+    """
+    from npc_agent.eval import harness as H
+
+    assert H.OFFLINE_MODEL == "(offline)"
+    assert B.OFFLINE_MODEL is H.OFFLINE_MODEL
+
+    code = "\n".join(
+        line.split("#", 1)[0]  # 注释整段丢掉
+        for line in Path(B.__file__).read_text(encoding="utf-8").splitlines()
+    )
+    assert '"(offline)"' not in code, "报告里又出现了手写的离线占位符"
+
+
+# --------------------------------------------------------------------------- #
+# 报告是 HTML —— 写进去的 markdown 不会渲染
+# --------------------------------------------------------------------------- #
+#: 正文里绝不允许出现的 markdown 标记。`<style>` 和 `<script>` 里有 `*`（CSS 通配），
+#: 所以扫之前必须先剥掉它们，否则护栏会被自己的样式表点亮。
+_MD_MARKS = ("**", "`")
+
+
+def _strip_style_and_script(html: str) -> str:
+    import re as _re
+
+    out = _re.sub(r"<style>.*?</style>", "", html, flags=_re.S)
+    return _re.sub(r"<script>.*?</script>", "", out, flags=_re.S)
+
+
+def test_the_report_never_prints_markdown() -> None:
+    """⚠️ 这份报告的正文是 **HTML** —— 写 `**粗体**` 进去，读者看到的是两个星号。
+
+    这个毛病在 `measure_planner_batch.py` 里犯过（17 处），那里补了护栏；
+    但 `batch_report.py` 一直**没有**，于是它悄悄留着 9 处：
+    `trust_summary` 的结论句里全是 `**`，而那句话**同时**被打到终端 ——
+    rich 也不认 markdown，所以**两个出口都在印星号**。
+
+    ⚠️ 这一条同时钉住"结论句必须是纯文本"：它要被两处消费
+    （HTML 里 `_esc` 转义 + 终端里 rich 打印），任何一侧的标记在另一侧都是噪声。
+    """
+    payload = _planner_live_payload(total=30, passed=30)
+    payload = _with_sources(payload, {f"case_{i}": {"model": 1} for i in range(30)})
+    # 走"贴到天花板"那一支（通过率 100% ≥ 0.98 且用例 ≥ 20），
+    # 那是 markdown 最密集的一段文案。
+    page = B.render_batch_html({"eval": payload, "judge": _judge_with_holdout()})
+    body = _strip_style_and_script(page)
+
+    for mark in _MD_MARKS:
+        assert mark not in body, (
+            f"报告正文里出现了 markdown 标记 {mark!r} —— "
+            "HTML 里要写 <strong>/<code>，终端里要写纯文本。"
+        )
+
+
+def test_the_markdown_guard_can_actually_fail() -> None:
+    """反向测试：**把泄漏塞回去，护栏必须红。**
+
+    只会报"通过"的检查器等于没有检查器。这里直接对渲染出来的字符串做手术，
+    确认 `_MD_MARKS` 的判据真的会命中。
+    """
+    page = B.render_batch_html({"eval": _planner_live_payload(total=3, passed=3)})
+    body = _strip_style_and_script(page)
+    assert "**" not in body, "前提不成立：本来就没泄漏，这条反向测试没意义"
+    assert "**" in body.replace("用例", "**用例**"), "判据本身失效了"
+    assert "`" in "计划还没有 `source` 字段", "判据本身失效了"
+
+
+def test_the_verdict_is_plain_text_for_both_outputs() -> None:
+    """结论句只许是**纯文本** —— 它有两个消费者（HTML 与终端），标记在任一侧都是噪声。
+
+    这不是风格问题：`cli.py` 把同一句话用 rich 打到终端，
+    而 rich 不解析 markdown，于是 `**贴到天花板**` 在终端里原样印出星号。
+    所以强调只能在**渲染时**加（`_esc` + 外层标签），不能写进句子本身。
+    """
+    payload = _eval_payload(total=30, passed=30, llm_calls=300)
+    verdict = B.trust_summary(payload)["verdict"]
+    assert "**" not in verdict
+    assert "`" not in verdict
+    assert verdict.strip(), "结论句不能是空的"

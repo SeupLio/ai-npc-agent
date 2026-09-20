@@ -305,3 +305,101 @@ def test_an_unconfigured_model_is_not_a_planner_failure() -> None:
     drive(agent, env, [None] * 3)
     assert agent.planner_failures == 0
     assert "未配置模型" in agent.planner_last_error
+
+# --------------------------------------------------------------------------- #
+# 计划来源：**回落是静默的**，所以来源必须能被读到
+#
+# 实测背景（2026-09-19，231 条跑批）：**48% 的用例至少回落过一次**。
+# 回落前后的轨迹完全一样 —— 不标来源，"模型规划到底有没有生效"
+# 在任何地方都看不出来，包括控制台。
+# --------------------------------------------------------------------------- #
+class _ScriptedPlanLLM(NullLLM):
+    """`available` 为真、`complete` 返回一段写死的文本。
+
+    用来分别制造"可用的计划"和"调用成功但计划不可用"两种情况。
+    后者**从前一次都不会被记** —— 它不抛异常，所以不计数。
+    """
+
+    name = "scripted"
+
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def complete(self, messages, *, temperature=0.7, max_tokens=512):  # type: ignore[override]
+        return self.payload
+
+
+#: 可用：有 goal、有一步带 tool。
+_USABLE_PLAN = (
+    '{"goal": "招呼客人", "rationale": "先开口", "steps": '
+    '[{"goal": "打招呼", "tool": "speak", "args": {"text": "欢迎光临"}}]}'
+)
+#: 解析得出来，但 `steps` 是空的。
+_EMPTY_PLAN = '{"goal": "招呼客人", "rationale": "先开口", "steps": []}'
+#: 解析得出来，但每一步都缺 `tool`。
+_TOOLLESS_PLAN = '{"goal": "招呼客人", "steps": [{"goal": "打招呼"}]}'
+
+
+def test_every_plan_says_who_produced_it() -> None:
+    """计划必须带来源，而且来源只能是登记过的那几个。"""
+    from npc_agent.types import PLAN_SOURCES
+
+    agent, env = _build_with_llm(
+        "tutorial", _ScriptedPlanLLM(_USABLE_PLAN), planner_on=True
+    )
+    drive(agent, env, [None] * 3)
+
+    sources = agent.plan_sources()
+    assert sources, "一个计划都没记来源 —— 那就分不清模型规划和静默回落"
+    assert set(sources) <= set(PLAN_SOURCES), f"出现了没登记的来源：{set(sources)}"
+
+
+def test_a_model_plan_is_tagged_model() -> None:
+    """模型真给出计划时来源是 `model`，不能被兜底那条覆盖掉。"""
+    agent, env = _build_with_llm(
+        "tutorial", _ScriptedPlanLLM(_USABLE_PLAN), planner_on=True
+    )
+    drive(agent, env, [None] * 3)
+    assert agent.plan_sources().get("model", 0) > 0
+    assert agent.planner_failures == 0
+    assert agent.planner_empty_plans == 0
+
+
+@pytest.mark.parametrize("payload", [_EMPTY_PLAN, _TOOLLESS_PLAN, ""])
+def test_an_unusable_plan_is_counted_not_swallowed(payload: str) -> None:
+    """⚠️ 这一条补的是一个**从来没被计数过**的洞。
+
+    模型调用成功、JSON 也解析出来了，但 `steps` 不可用 —— 从前这一支
+    直接 `return None`，**什么都没记**。于是"模型给了不可用的计划"
+    和"模型给了可用计划"在数据里的区别消失了，而报告里却写着
+    "解析失败 0 条"（那句话只覆盖了抛异常的那一类）。
+
+    **不抛异常不等于成功。**
+    """
+    agent, env = _build_with_llm(
+        "tutorial", _ScriptedPlanLLM(payload), planner_on=True
+    )
+    drive(agent, env, [None] * 3)
+
+    assert agent.planner_empty_plans > 0, "不可用的计划被静默吞掉了"
+    assert agent.planner_failures == 0, "这不是抛异常那一类，别混在一起"
+    assert "不可用" in agent.planner_last_error
+    # 回落仍然发生（NPC 不能因为模型答不好就卡住），但这次它留了痕迹
+    assert agent.plan_sources().get("heuristic", 0) > 0
+
+
+def test_planner_off_tags_heuristic_but_records_no_failure() -> None:
+    """`--no-planner` 也走启发式，但它**不是回落**。
+
+    靠配置（`use_llm_planner`）区分，不靠来源 —— 否则对照组会被记成一片红，
+    而它恰恰是基线。
+    """
+    agent, env = _build_with_llm("tutorial", NullLLM(), planner_on=False)
+    drive(agent, env, [None] * 3)
+    assert agent.plan_sources().get("heuristic", 0) > 0
+    assert agent.planner_failures == 0
+    assert agent.planner_empty_plans == 0

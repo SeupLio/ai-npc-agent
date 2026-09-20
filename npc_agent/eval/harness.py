@@ -26,6 +26,35 @@ from . import metrics as M
 CASES_DIR = Path(__file__).resolve().parent / "cases"
 CATEGORIES = ("task", "memory", "persona", "safety", "multi_npc", "minecraft")
 
+#: 没配模型时写进报告的占位符。**报告要能一眼看出"这次没有模型"**，
+#: 而不是留一个空字符串让读者自己猜。
+OFFLINE_MODEL = "(offline)"
+
+
+def eval_config(cfg: RuntimeConfig) -> dict[str, Any]:
+    """跑批报告里的 `config` 块。**全仓库只有这一个产出点。**
+
+    ⚠️ 这里从前有**两份**实现：`EvalHarness.run()` 写 `memory_top_k` 那几个，
+    `cli.cmd_eval` 写 `use_llm_planner` / `use_llm_speech` 那两个。
+    于是走 `run()` 出的报告里**没有 `use_llm_planner`**，
+    而 `batch_report` 的副标题读的正是它 —— `config.get("use_llm_planner")`
+    取不到就当成假，**副标题永远印「启发式规划」**，哪怕那次真的开了模型规划。
+
+    **取不到 ≠ 没有：一个键的缺失被静默解释成了另一个值。**
+    这类"两个真相"在本项目里出现过多次（`answer_hint` 的通配符、
+    报告与测试各写一份语料），共同点都是**不报错、还更像对的**。
+    """
+    return {
+        "provider": cfg.llm_provider,
+        "model": cfg.model or OFFLINE_MODEL,
+        "memory_strategy": cfg.memory_strategy,
+        "memory_top_k": cfg.memory_top_k,
+        "max_steps_per_turn": cfg.max_steps_per_turn,
+        "reflect_every": cfg.reflect_every,
+        "use_llm_planner": cfg.use_llm_planner,
+        "use_llm_speech": cfg.use_llm_speech,
+    }
+
 
 # --------------------------------------------------------------------------- #
 def evaluator_persona_violations(
@@ -112,6 +141,16 @@ class CaseResult:
     #: 变成自己跟自己比。这是"配置故障伪装成模型行为"的又一个入口。
     planner_failures: int = 0
     planner_last_error: str = ""
+    #: 模型"调用成功但计划不可用"的次数。与 `planner_failures` 分开，
+    #: 因为这两类的修法不同（一个修端点，一个修提示词/预算），
+    #: 而它们**都会**静默回落到启发式规划。
+    planner_empty_plans: int = 0
+    #: 这条用例产出的计划**按来源**计数（见 `types.PLAN_SOURCES`）。
+    #:
+    #: `use_llm_planner` 开着而这里出现 `heuristic` ⇒ **静默回落**。
+    #: 这是唯一能分辨"模型规划的"和"回落之后启发式规划的"的依据 ——
+    #: 两者的轨迹在转写里完全一样。
+    plans_by_source: dict[str, int] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -132,6 +171,8 @@ class CaseResult:
             "speakers": self.speakers,
             "planner_failures": self.planner_failures,
             "planner_last_error": self.planner_last_error,
+            "planner_empty_plans": self.planner_empty_plans,
+            "plans_by_source": dict(self.plans_by_source),
         }
 
     @classmethod
@@ -149,6 +190,10 @@ class CaseResult:
             notes=list(data.get("notes") or []),
             planner_failures=int(data.get("planner_failures") or 0),
             planner_last_error=str(data.get("planner_last_error") or ""),
+            planner_empty_plans=int(data.get("planner_empty_plans") or 0),
+            plans_by_source={
+                str(k): int(v) for k, v in (data.get("plans_by_source") or {}).items()
+            },
         )
 
 
@@ -380,6 +425,13 @@ class EvalHarness:
                 if value < 0.99:
                     notes.append(f"{key}: {detail}")
 
+        # 计划来源按 NPC 汇总。多 NPC 场景里两个 NPC 的回落情况可能完全不同，
+        # 分开看才能知道是谁在回落 —— 合起来只有一个数会把这个信息抹掉。
+        plans_by_source: dict[str, int] = {}
+        for agent in cast.agents.values():
+            for source, count in agent.plan_sources().items():
+                plans_by_source[source] = plans_by_source.get(source, 0) + count
+
         return CaseResult(
             case_id=case.get("id", "unnamed"),
             category=case.get("category", "task"),
@@ -399,19 +451,15 @@ class EvalHarness:
                 ),
                 "",
             ),
+            planner_empty_plans=sum(
+                a.planner_empty_plans for a in cast.agents.values()
+            ),
+            plans_by_source=plans_by_source,
         )
 
     # ------------------------------------------------------------------ #
     def run(self, categories: Optional[list[str]] = None) -> EvalReport:
-        report = EvalReport(
-            config={
-                "provider": self.config.llm_provider,
-                "model": self.config.model or "(offline)",
-                "memory_top_k": self.config.memory_top_k,
-                "max_steps_per_turn": self.config.max_steps_per_turn,
-                "reflect_every": self.config.reflect_every,
-            }
-        )
+        report = EvalReport(config=eval_config(self.config))
         for case in self.load_cases(categories):
             report.results.append(self.run_case(case))
         return report

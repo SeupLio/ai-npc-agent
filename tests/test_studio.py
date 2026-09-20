@@ -890,3 +890,63 @@ def test_report_route_serves_docs_and_blocks_traversal(live: str) -> None:
 def test_free_port_returns_a_usable_port() -> None:
     port = S.free_port()
     assert 1024 < port < 65536
+
+def test_the_console_shows_who_produced_each_plan(cfg: RuntimeConfig) -> None:
+    """控制台必须显示计划来源 —— 回落是**静默**的，不显示就没人看得出来。
+
+    和复读一样，这个毛病是在控制台里被发现的，所以它也得在控制台里可见，
+    而不是只躺在跑批 JSON 里（那份要跑几个小时才有）。
+    """
+    from npc_agent.types import PLAN_SOURCES
+
+    got = S.run_chat(cfg, {"scenario": "tutorial", "events": [{"kind": "idle"}] * 3})
+
+    planner = got["planner"]
+    # 判"模型规划这一路活没活着"看 `llm_active`，不是 `llm_enabled`：
+    # 后者只是配置开关，而 `use_llm_planner` 默认就是 True —— 离线也报 True。
+    assert planner["llm_enabled"] is True, "配置开关默认就是开着的（那是原始输入）"
+    assert planner["llm_available"] is False, "离线没有模型"
+    assert planner["llm_active"] is False, "配置开着但没模型 ⇒ 这一路没活着"
+    # 模型没开 ⇒ 启发式计划不算"回落"（否则基线会被记成一片红）
+    assert planner["silent_fallbacks"] == 0
+    sources = planner["sources"]
+    assert sources, "跑了一段对话，一个计划都没有？"
+    assert set(sources) <= set(PLAN_SOURCES)
+
+    # 每个回合都要带上来源，页面才有东西可画
+    turns = [t for ev in got["events"] for t in ev["turns"]]
+    assert any(t.get("plan_source") for t in turns), "回合上没带 plan_source"
+
+
+def test_the_fallback_count_is_only_meaningful_with_the_model_on() -> None:
+    """`silent_fallbacks` 的定义是"模型被问过、但没给出可用计划"。
+
+    模型没开时它必须是 0 —— 否则 `--no-planner` 那条基线会被算成
+    一堆回落，而那正是"对照组被记成一片红"的老毛病换了个入口。
+    """
+    from npc_agent.studio import run_chat as chat
+
+    cfg = RuntimeConfig()  # 默认离线
+    got = chat(cfg, {"scenario": "tutorial", "events": [{"kind": "idle"}] * 2})
+    assert got["planner"]["silent_fallbacks"] == 0
+    assert got["planner"]["sources"].get("heuristic", 0) > 0
+
+
+def test_the_planner_verdict_follows_from_its_own_inputs() -> None:
+    """`llm_active` 是**结论**，必须能从同一份载荷里的两个输入算出来。
+
+    分开报是为了"结论"只有一个来源：页面读 `llm_active`，
+    不自己再写一遍 `enabled && available` —— 同一条规则两份实现，
+    改口径时必然只改一边（本项目已经栽过）。
+    """
+    from npc_agent.studio import run_chat as chat
+
+    for cfg in (RuntimeConfig(), RuntimeConfig(use_llm_planner=False)):
+        planner = chat(
+            cfg, {"scenario": "tutorial", "events": [{"kind": "idle"}]}
+        )["planner"]
+        assert planner["llm_active"] == (
+            planner["llm_enabled"] and planner["llm_available"]
+        ), f"结论和输入对不上：{planner}"
+        if not planner["llm_active"]:
+            assert planner["silent_fallbacks"] == 0, "这一路没活着就不该报回落"

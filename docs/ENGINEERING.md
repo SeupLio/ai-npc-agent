@@ -2642,6 +2642,62 @@ HTML 不认识 markdown，读者看到的就是一堆星号和反引号。
 
 ---
 
+## 附五：让「规划回落」显式可见 —— 顺手挖出三处静默的假话（2026-09-20）
+
+### 起因
+
+路线图上最卡的一条：规划调用超时后框架**静默**回落到启发式规划器，
+**48% 的用例至少回落一次**，于是"LLM 规划"的批量读数全被污染。
+两条路可选：让端点稳下来（额度不够，做不到），或者让回落**显式可见**。选了后者。
+
+### 改了什么
+
+新增 `Plan.source`（`types.PLAN_SOURCES` = `model` / `heuristic` /
+`request_template` / `scenario_flow`）。`NPCAgent._make_plan` 的**每一条 return 路径**
+都要打标（`_tag_plan`）—— 漏一条，那条路径产出的计划就来源不明，
+而它在数据里和别的计划**长得一模一样**。
+`agent.plan_sources()` 按来源计数；`CaseResult.plans_by_source` / `planner_empty_plans`
+进报告；控制台在回合上打红色「⚠ 回落」标签，并单列「静默回落」计数。
+
+**判据必须带一个前提**：模型**可用**才谈得上"回落"。`use_llm_planner` 默认就是 `True`，
+只看它，离线控制台会把每一个启发式计划都标成回落 —— 又一次"对照组被记成一片红"。
+所以载荷里给了 `llm_active = llm_enabled and llm_available`，
+**页面读这个结论，不自己再与一遍**（自己与一遍就是同一条规则的第二份实现）。
+
+### 顺手挖出来的三处静默假话
+
+1. **`planner_empty_plans` 从前根本不计数。** 模型调用成功、JSON 也解析出来了，
+   但 `steps` 为空（或每一步都缺 `tool`）⇒ 直接 `return None`，**什么都没记**。
+   于是报告里那句"解析失败 0 条"只覆盖了**抛异常**的那一类。
+   **不抛异常不等于成功。**
+2. **报告的 `config` 有两个产出点。** `EvalHarness.run()` 写 `memory_top_k` 那几个，
+   `cli.cmd_eval` 写 `use_llm_planner` 那几个 ⇒ 走 `run()` 出的报告**没有
+   `use_llm_planner`**，而副标题读的正是它，`config.get(...)` 取不到就当成假 ⇒
+   **副标题永远印「启发式规划」**。合并成 `eval_config(cfg)`，只留一个产出点。
+3. **离线基线报告会在副标题里自称「LLM 规划」**（`use_llm_planner` 默认 True、
+   `model` 是 `(offline)`）。判据改成 `_planner_is_live = 开关 and 配了模型` ——
+   和 studio 的 `llm_active` 是同一条规则。
+
+### 一个新的测量区分：代理量 vs 观测值
+
+`planner_failures` 数的是**失败的调用**，不是**真的回落了的用例**。
+一条用例按 tick 多次规划，**一次失败就够**让那个 tick 落回启发式，其余九次可能全成功。
+报告现在**两条口径分开报**：`planner_failed_cases`（代理量，老报告只有这个）
+与 `planner_fallback_cases`（观测值，数 `plans_by_source`）。
+没有来源数据的报告**必须说"没记"**并标明用的是代理量 —— "取不到 ≠ 没有"。
+
+测试里有一条专门钉住这个区别：造一份 `planner_failures` **一次都没记**、
+但来源里确实有启发式的报告 —— **代理量会说"0 条回落"，而真实情况是有。**
+
+### 环境怪癖又咬了一口
+
+`cat >> 测试文件 <<'EOF'` 追加一整块测试，**整块被追加了两遍**（9 个定义重复）。
+重复定义的函数**只有最后一个会跑**，所以测试数、通过率看起来完全正常。
+是 `test_no_test_file_defines_the_same_function_twice` 抓到的 ——
+**那条护栏存在的理由就是它**（2026-09-19 也抓到过一次）。
+
+---
+
 ## License
 
 [MIT](../LICENSE)

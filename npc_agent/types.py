@@ -122,12 +122,33 @@ class PlanStep:
     note: str = ""
 
 
+#: `Plan.source` 的合法取值。
+#:
+#: * `model`            —— 由模型规划（`Planner.plan_with_llm` 成功返回）
+#: * `heuristic`        —— 启发式规划器（场景目标模板）。**模型被调用过却没给出
+#:                         可用计划时也会落到这里**，所以它同时是"回落"的信号
+#: * `request_template` —— 玩家明确点单 → 意图模板（确定性最高，不是回落）
+#: * `scenario_flow`    —— 玩家在问"怎么用" → 场景引导流程（不是回落）
+#:
+#: 判"有没有静默回落"要看：`use_llm_planner` 开着，而计划来源是 `heuristic`。
+PLAN_SOURCES: tuple[str, ...] = ("model", "heuristic", "request_template", "scenario_flow")
+
+
 @dataclass
 class Plan:
     goal: str = ""
     rationale: str = ""
     steps: list[PlanStep] = field(default_factory=list)
     objective_id: str = ""  # 关联的场景目标 id（用于"只尝试一次"的判定）
+    #: 这个计划**是谁产出的**，取值见 `PLAN_SOURCES`。
+    #:
+    #: ⚠️ 为什么必须显式标注：规划调用失败（或模型返回了不可用的计划）时，
+    #: 框架会**静默回落到启发式规划器**。不标注来源的话，
+    #: "模型规划的"和"回落之后启发式规划的"在转写、控制台、评测数据里
+    #: **长得一模一样** —— 于是"接上模型规划到底有没有用"这个问题
+    #: 会在读者不知情的情况下变成自己跟自己比。
+    #: 实测（2026-09-19，231 条跑批）：**48% 的用例至少回落过一次**。
+    source: str = ""
 
     @property
     def next_step(self) -> Optional[PlanStep]:
