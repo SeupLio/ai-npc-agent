@@ -75,6 +75,19 @@ JUDGE_TEMPERATURE = 0.0
 JUDGE_MAX_RETRIES = 2
 JUDGE_BACKOFF = 3.0
 
+#: 判一条台词时，往前带**几轮**对话作为上下文。`0` = 不带（旧行为）。
+#:
+#: ## 为什么必须带 —— 这是"喂给裁判的材料不完整"那条坑的最后一个洞
+#:
+#: 裁判原来只看【玩家刚说】+【NPC 的台词】。于是**同样的回复，在不同的对话历史下
+#: 对错相反**，而裁判看不到历史 ⇒ 它**按拿到的材料判得完全正确，然后判错正确的行为**。
+#: 最典型的是**指代与承接**："好，稍等。"在"来一杯拿铁"之后是正确回应，
+#: 在一段闲聊之后就是答非所问 —— 而两者在裁判眼里长得一模一样。
+#:
+#: 4 轮是个折中：再往前，prompt 里塞的多半是已经判过的内容（判分成本线性上涨），
+#: 而且裁判更容易被远处的台词带跑。这个值进指纹 —— 改了它就作废旧检查点。
+JUDGE_HISTORY_TURNS = 4
+
 
 # --------------------------------------------------------------------------- #
 # 评分标准
@@ -230,6 +243,7 @@ class LLMJudge:
         max_retries: int = JUDGE_MAX_RETRIES,
         backoff: float = JUDGE_BACKOFF,
         sleep: Any = None,
+        history_turns: int = JUDGE_HISTORY_TURNS,
     ) -> None:
         self.llm = llm
         self.rubrics = list(rubrics)
@@ -248,6 +262,8 @@ class LLMJudge:
         #: 这个数只要不是 0，就说明裁判预算该加或者该换更稳的模型 ——
         #: 合并进 `retries` 就看不出这一点了。
         self.parse_retries = 0
+        #: 判分时往前带几轮对话。`0` = 旧行为（只看当前这一对）。
+        self.history_turns = max(0, int(history_turns))
 
     @property
     def available(self) -> bool:
@@ -262,6 +278,7 @@ class LLMJudge:
         scene: str = "",
         player: str = "",
         reply: str = "",
+        history: str = "",
     ) -> Verdict:
         rubric = RUBRICS.get(rubric_key)
         if rubric is None:
@@ -273,7 +290,7 @@ class LLMJudge:
             # 沉默可能是正确的（发言占比到顶了就该闭嘴），规则指标已经在别处管这件事。
             return Verdict.unjudged(rubric_key, "没有台词可判")
 
-        prompt = self._build_prompt(rubric, persona, scene, player, reply)
+        prompt = self._build_prompt(rubric, persona, scene, player, reply, history)
 
         # 两种情况都要重试，**但原因不同，所以要分开计数**：
         #
@@ -329,7 +346,12 @@ class LLMJudge:
     # ------------------------------------------------------------------ #
     @staticmethod
     def _build_prompt(
-        rubric: Rubric, persona: str, scene: str, player: str, reply: str
+        rubric: Rubric,
+        persona: str,
+        scene: str,
+        player: str,
+        reply: str,
+        history: str = "",
     ) -> str:
         parts = [
             "你是一个游戏 NPC 对话质量评审。按下面的标准给一句 NPC 台词打分。",
@@ -341,6 +363,14 @@ class LLMJudge:
             parts += ["【人设】", persona, ""]
         if scene:
             parts += ["【现场】", scene, ""]
+        # 历史排在「玩家刚说」**之前** —— 顺序就是时间顺序，别让裁判以为
+        # 这几轮发生在当前这一对之后。
+        if history:
+            parts += [
+                "【之前的对话】（从早到晚，仅供理解上下文；**要评的是下面那一对**）",
+                history,
+                "",
+            ]
         if player:
             parts += ["【玩家刚说】", player, ""]
         parts += [
@@ -393,15 +423,22 @@ class LLMJudge:
         persona_of: Any = None,
         scene: str = "",
         progress: Any = None,
+        history_turns: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """对一串 (玩家说 → NPC 回) 逐条判分。
 
         `persona_of(speaker)` 优先于 `persona`：多 NPC 场景里每一句台词
         属于不同的人，必须拿**说话人自己的**人设卡去判。
         只有一个 NPC 时调用方传 `persona` 就行。
+
+        `history_turns` 不传就用实例上的 `self.history_turns`。
+        每一对带的是**它前面**那几轮 —— 见 `history_block`。
         """
+        turns = (
+            self.history_turns if history_turns is None else max(0, int(history_turns))
+        )
         out: list[dict[str, Any]] = []
-        for index, pair in enumerate(pairs, 1):
+        for index, pair in enumerate(pairs):
             block = persona
             if persona_of is not None:
                 block = persona_of(pair.get("speaker", "")) or persona
@@ -410,10 +447,11 @@ class LLMJudge:
                 scene=scene,
                 player=pair.get("player", ""),
                 reply=pair.get("reply", ""),
+                history=history_block(pairs, index, turns),
             )
             out.append({"pair": pair, "verdicts": [v.to_dict() for v in verdicts]})
             if progress:
-                progress(f"  裁判 {index}/{len(pairs)} …")
+                progress(f"  裁判 {index + 1}/{len(pairs)} …")
         return out
 
     # ------------------------------------------------------------------ #
@@ -928,6 +966,34 @@ def render_calibration(report: CalibrationReport) -> str:
 # --------------------------------------------------------------------------- #
 # 从转写里还原对话对
 # --------------------------------------------------------------------------- #
+def history_block(pairs: list[dict[str, str]], index: int, turns: int) -> str:
+    """第 `index` 对**之前**的 `turns` 轮，排成给裁判看的文本。
+
+    ## ⚠️ 绝对不能包含 `index` 自己
+
+    裁判要评的就是这一对。历史里带上待评台词 = **把答案递给它**：
+    「是否回应」会退化成"把上一句抄一遍"，而「角色口吻」会变成
+    "照着刚才那句的风格再判一次"。所以这里切的是 `[start:index]`，
+    右端是**开区间**。护栏 `tests/test_judge.py` 钉住了这一点。
+
+    行格式和转写一致（`玩家：…` / `说话人：…`），让裁判读到的
+    和它自己在别处见过的东西长得一样。
+    """
+    if turns <= 0 or index <= 0:
+        return ""
+    start = max(0, index - turns)
+    lines: list[str] = []
+    for pair in pairs[start:index]:
+        player = (pair.get("player") or "").strip()
+        speaker = (pair.get("speaker") or "").strip() or "NPC"
+        reply = (pair.get("reply") or "").strip()
+        if player:
+            lines.append(f"玩家：{player}")
+        if reply:
+            lines.append(f"{speaker}：{reply}")
+    return "\n".join(lines)
+
+
 def dialogue_pairs(transcript: list[str]) -> list[dict[str, str]]:
     """从一次跑批的转写里还原「玩家说了什么 → NPC 回了什么」。
 
@@ -1061,7 +1127,13 @@ def report_digest(results: list[dict[str, Any]]) -> str:
 
 #: 判分侧影响结果的配置字段。和跑批那边同理：**并发数不在里面** ——
 #: 它只影响判多久，不影响判出什么。
-JUDGE_RESUME_CRITICAL_FIELDS = ("judge", "rubrics", "max_tokens", "temperature")
+JUDGE_RESUME_CRITICAL_FIELDS = (
+    "judge",
+    "rubrics",
+    "max_tokens",
+    "temperature",
+    "history_turns",
+)
 
 
 def prompt_digest(context: dict[str, str]) -> str:
@@ -1106,6 +1178,10 @@ def judge_fingerprint(
         "rubrics": sorted(judge.rubrics),
         "max_tokens": judge.max_tokens,
         "temperature": JUDGE_TEMPERATURE,
+        # 判分时往前带几轮对话。**它改结果** —— 同一句台词，带不带历史
+        # 可能判出相反的分数（见 `JUDGE_HISTORY_TURNS`）。不带进指纹的话，
+        # `--resume` 会把"没带历史判的"和"带了历史判的"拼成一份报告。
+        "history_turns": judge.history_turns,
         "report_digest": report_digest(results),
         # 上下文指纹。没给就留空串 —— 空串和历史检查点里的"没有这个键"
         # 不相等，所以**加了这一项之后旧检查点一律拒绝恢复**，这是对的：

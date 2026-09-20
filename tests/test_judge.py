@@ -1233,3 +1233,144 @@ def test_parallel_calibration_never_turns_unjudged_into_zero() -> None:
     assert report.unjudged == 5
     assert report.per_rubric == {}
     assert {d["kind"] for d in report.disagreements} == {"unjudged"}
+
+
+# --------------------------------------------------------------------------- #
+# 铁律三：裁判必须看得见**这一对之前**的对话
+#
+# 判据不是"分数变高了"，而是**裁判拿到的材料里有没有能区分两种历史的那个信息**。
+# 前三条断言都是确定性的、不需要模型的 —— 它们证明缺陷真实存在。
+# --------------------------------------------------------------------------- #
+def _history_pairs() -> list[dict[str, str]]:
+    """一段五轮的对话。第 i 对判得对不对，取决于它前面那几轮。"""
+    return [
+        {"speaker": "阿柚", "player": "店里的豆子是哪儿来的？", "reply": "都是我自己烘的。"},
+        {"speaker": "阿柚", "player": "那挺费工夫的吧。", "reply": "嗯，凌晨四点就得起来。"},
+        {"speaker": "阿柚", "player": "再来一杯。", "reply": "好，稍等。"},
+        {"speaker": "阿柚", "player": "不要糖。", "reply": "记下了。"},
+        {"speaker": "阿柚", "player": "谢谢。", "reply": "不客气。"},
+    ]
+
+
+def _prompts_of(pairs: list[dict[str, str]], turns: int) -> list[str]:
+    """把 `judge_pairs` 真正发出去的 prompt 逐条取回来（走完整条路径，不走 `_build_prompt`）。"""
+    llm = ScriptedLLM(lambda _text: '{"score": 1, "reason": "ok"}')
+    judge = J.LLMJudge(llm, rubrics=["responsive"], history_turns=turns)
+    judge.judge_pairs(pairs)
+    return ["\n".join(m.get("content", "") for m in call) for call in llm.calls]
+
+
+def test_the_history_block_never_contains_the_pair_being_judged() -> None:
+    """**把答案递给裁判**是这里最容易犯的错 —— 历史里绝不能有当前这一对。
+
+    带上待评台词之后，「是否回应」会退化成"把上一句抄一遍"，
+    「角色口吻」会变成"照着刚才那句的风格再判一次"。
+    """
+    pairs = _history_pairs()
+    for index in range(len(pairs)):
+        block = J.history_block(pairs, index, J.JUDGE_HISTORY_TURNS)
+        assert pairs[index]["reply"] not in block, f"第 {index} 对的历史漏进了它自己的台词"
+        assert pairs[index]["player"] not in block, f"第 {index} 对的历史漏进了它自己的玩家话"
+
+    # 反向：证明上面那两条不是永真式 —— 窗口挪一格，更早的那一对**应该**出现。
+    assert pairs[0]["reply"] in J.history_block(pairs, 2, J.JUDGE_HISTORY_TURNS)
+
+
+def test_the_history_block_is_the_preceding_turns_in_order() -> None:
+    pairs = _history_pairs()
+    assert J.history_block(pairs, 0, 4) == "", "第一对没有历史"
+    assert J.history_block(pairs, 1, 4) == "玩家：店里的豆子是哪儿来的？\n阿柚：都是我自己烘的。"
+    # 窗口 1：只带紧挨着的那一对
+    assert J.history_block(pairs, 3, 1) == "玩家：再来一杯。\n阿柚：好，稍等。"
+    # 窗口大于已发生的轮数时不补空，全带上
+    block = J.history_block(pairs, 3, 4)
+    assert "店里的豆子是哪儿来的？" in block
+    assert "不要糖。" not in block
+    # turns=0 一律空串
+    assert J.history_block(pairs, 3, 0) == ""
+
+
+def test_history_labels_each_line_with_its_own_speaker() -> None:
+    """多 NPC 场景里，历史里每一句必须标**说话人自己**的名字。"""
+    pairs = [
+        {"speaker": "阿柚", "player": "今天谁看店？", "reply": "我看前厅。"},
+        {"speaker": "老周", "player": "那后厨呢？", "reply": "后厨归我。"},
+        {"speaker": "阿柚", "player": "知道了。", "reply": "嗯。"},
+    ]
+    block = J.history_block(pairs, 2, 4)
+    assert "阿柚：我看前厅。" in block
+    assert "老周：后厨归我。" in block
+    assert block.index("阿柚：我看前厅。") < block.index("老周：后厨归我。")
+
+
+def test_a_pair_without_a_speaker_falls_back_to_npc() -> None:
+    pairs = [{"player": "在吗？", "reply": "在。"}, {"player": "好。", "reply": "嗯。"}]
+    assert J.history_block(pairs, 1, 4) == "玩家：在吗？\nNPC：在。"
+
+
+def test_without_history_two_different_pasts_look_identical_to_the_judge() -> None:
+    """**这就是那个缺陷本身**，而且是确定性的、不需要模型、不需要额度。
+
+    同一句回复、同一句玩家话，前面发生的事完全不同 —— 不带历史时裁判拿到的
+    prompt **逐字节相同**，所以它**不可能**判出区别：它会按拿到的材料判得没错，
+    然后判错正确的那一次。
+    """
+    tail = {"speaker": "阿柚", "player": "不要糖。", "reply": "好，我记下了。"}
+    latte = [{"speaker": "阿柚", "player": "来杯拿铁。", "reply": "好，稍等。"}, tail]
+    chitchat = [{"speaker": "阿柚", "player": "你叫什么名字？", "reply": "我叫阿柚。"}, tail]
+
+    assert _prompts_of(latte, 0)[-1] == _prompts_of(chitchat, 0)[-1], (
+        "不带历史时两条 prompt 竟然不同 —— 说明有别的东西泄漏进来了"
+    )
+    assert (
+        _prompts_of(latte, J.JUDGE_HISTORY_TURNS)[-1]
+        != _prompts_of(chitchat, J.JUDGE_HISTORY_TURNS)[-1]
+    ), "带上历史之后 prompt 仍然相同 —— 历史根本没被用上"
+
+
+def test_history_turns_zero_reproduces_the_old_behaviour() -> None:
+    prompts = _prompts_of(_history_pairs(), 0)
+    assert all("【之前的对话】" not in p for p in prompts)
+    # 默认值下：第一对没有历史，从第二对起都有。
+    prompts4 = _prompts_of(_history_pairs(), J.JUDGE_HISTORY_TURNS)
+    assert "【之前的对话】" not in prompts4[0]
+    assert all("【之前的对话】" in p for p in prompts4[1:])
+
+
+def test_history_is_placed_before_the_pair_under_judgment() -> None:
+    """顺序就是时间顺序 —— 历史排在「玩家刚说」之前，别让裁判以为它发生在后面。"""
+    prompt = _prompts_of(_history_pairs(), J.JUDGE_HISTORY_TURNS)[3]
+    assert prompt.index("【之前的对话】") < prompt.index("【玩家刚说】")
+
+
+def test_history_turns_changes_the_fingerprint() -> None:
+    llm = ScriptedLLM(lambda _text: '{"score": 1, "reason": "ok"}')
+    results: list[dict] = []
+    fp0 = J.judge_fingerprint(J.LLMJudge(llm, history_turns=0), results)
+    fp4 = J.judge_fingerprint(J.LLMJudge(llm, history_turns=4), results)
+    assert fp0["history_turns"] == 0
+    assert fp4["history_turns"] == 4
+    assert fp0 != fp4, "指纹没变 ⇒ `--resume` 会把两种判法拼成一份报告"
+    assert "history_turns" in J.JUDGE_RESUME_CRITICAL_FIELDS
+
+
+def test_history_turns_defaults_to_the_constant_and_is_clamped() -> None:
+    llm = ScriptedLLM(lambda _text: '{"score": 1, "reason": "ok"}')
+    assert J.LLMJudge(llm).history_turns == J.JUDGE_HISTORY_TURNS
+    assert J.LLMJudge(llm, history_turns=-5).history_turns == 0
+
+
+def test_the_calibration_set_cannot_see_dialogue_history() -> None:
+    """校准集里没有历史 ⇒ **已经发布的 kappa 数字不受这次改动影响**。
+
+    这是好事，同时也是一条限制：**校准检测不到这个改动**，
+    所以它不能被拿来当"改动有效"的证据 —— 那要另做探针
+    （`scripts/probe_judge_history.py`）。
+    """
+    assert all("history" not in item for item in J.load_calibration())
+    llm = ScriptedLLM(lambda _text: '{"score": 1, "reason": "ok"}')
+    judge = J.LLMJudge(llm, history_turns=J.JUDGE_HISTORY_TURNS)
+    J.calibrate(judge, J.load_calibration()[:4], concurrency=1)
+    prompts = ["\n".join(m.get("content", "") for m in call) for call in llm.calls]
+    assert prompts, "一次 prompt 都没抓到 —— 这条断言什么都没验证"
+    assert all("【之前的对话】" not in p for p in prompts)

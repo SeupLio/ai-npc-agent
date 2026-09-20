@@ -23,7 +23,11 @@ from .cast import Cast, build_cast, load_cast
 from .config import RuntimeConfig, list_scenarios, load_scenario
 from .env import env_label, env_name_of
 from .eval.harness import CASES_DIR
-from .eval.judge import DEFAULT_JUDGE_CONCURRENCY, JUDGE_MAX_TOKENS
+from .eval.judge import (
+    DEFAULT_JUDGE_CONCURRENCY,
+    JUDGE_HISTORY_TURNS,
+    JUDGE_MAX_TOKENS,
+)
 from .eval.judge import DEFAULT_RUBRICS as DEFAULT_RUBRIC_KEYS
 from .eval.runner import DEFAULT_BACKOFF, DEFAULT_CONCURRENCY, DEFAULT_MAX_RETRIES
 from .llm import build_llm
@@ -796,6 +800,23 @@ def cmd_seal_holdout(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+def judge_history_turns(args: argparse.Namespace) -> int:
+    """把 `--judge-history-turns` 翻成实际生效的轮数。
+
+    ## ⚠️ 这里**不能**写 `args.judge_history_turns or JUDGE_HISTORY_TURNS`
+
+    `0` 是**有意义的取值**（"退回旧行为：裁判只看当前这一对"），
+    而 `0 or 4` 会把它悄悄改成 4 —— 使用者显式关掉历史，得到的却是"带了 4 轮"，
+    报告里还写着 `history_turns: 4`。**只有 `None`（没传）才该走默认值。**
+    所以参数定义那边 `default=None`（而不是 `default=JUDGE_HISTORY_TURNS`），
+    由这个函数做唯一的翻译。护栏：`tests/test_cli_help.py`。
+    """
+    raw = getattr(args, "judge_history_turns", None)
+    if raw is None:
+        return JUDGE_HISTORY_TURNS
+    return max(0, int(raw))
+
+
 def cmd_judge(args: argparse.Namespace) -> int:
     """LLM-as-judge：先校准裁判，再（可选）用它判一份跑批报告。
 
@@ -853,6 +874,10 @@ def cmd_judge(args: argparse.Namespace) -> int:
         llm,
         rubrics=rubrics,
         max_tokens=getattr(args, "judge_max_tokens", 0) or JUDGE_MAX_TOKENS,
+        # 不传 `--judge-history-turns` 时用默认值（4 轮）。
+        # 翻译（含 `0` 不许被当成"没传"）在 `judge_history_turns()` 里，
+        # 那样这个坑才测得到 —— 写在这儿就只能靠跑一次真模型才发现。
+        history_turns=judge_history_turns(args),
         name=cfg.model or "judge",
     )
 
@@ -864,7 +889,13 @@ def cmd_judge(args: argparse.Namespace) -> int:
         )
         return 1
 
-    payload: dict[str, object] = {"judge_model": cfg.model or cfg.llm_provider}
+    # 判分配置要**写在报告里**，不能只藏在指纹哈希里：指纹只能回答"两次判分
+    # 是不是同一套配置"，回答不了"这一份是用哪套配置判的"。带不带对话历史
+    # 会改判决（见 `JUDGE_HISTORY_TURNS`），所以它必须能被读到。
+    payload: dict[str, object] = {
+        "judge_model": cfg.model or cfg.llm_provider,
+        "judge_history_turns": judge.history_turns,
+    }
 
     # ---- 1) 校准（永远先做） ----
     #
@@ -1639,14 +1670,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help=f"裁判的输出预算（默认 {JUDGE_MAX_TOKENS}）。推理模型要给足，否则思维链会把预算吃光、返回空内容",
     )
+    p_judge.add_argument(
+        "--judge-history-turns",
+        dest="judge_history_turns",
+        type=int,
+        default=None,
+        help=f"判一条台词时往前带几轮对话（默认 {JUDGE_HISTORY_TURNS}）。"
+             "0 = 不带（旧行为：裁判只看「玩家刚说」+「NPC 的台词」）。"
+             "不带历史时，同一句回复在不同上下文中对错相反，而裁判看不见 —— "
+             "它会按拿到的材料判得没错，然后判错正确的行为",
+    )
     p_judge.add_argument("--progress", action="store_true", help="逐条打印判分进度")
     p_judge.add_argument(
         "--timeout",
         type=float,
         default=0.0,
-        help="单次调用的读超时（秒）。0 = 用默认 60s。"
-             "判分的 prompt 比台词长得多，实测有约 7% 的调用会超过 60s —— "
-             "那会变成一条永久缺失的判决，所以长跑判分建议给 180",
+        # ⚠️ 下面那个 `7%%` 不是笔误：argparse 会对 help 串再做一次 `%` 格式化
+        # （`_expand_help` 里的 `% params`），写成单个 `%` 会让**渲染到这个选项的
+        # `--help`** 直接崩。实测：`build_parser()` 和 `parse_args()` 都不受影响
+        # （它们不求值 help），只有 `judge --help` 会抛
+        # `ValueError: unsupported format character`。护栏：
+        # `tests/test_cli_help.py::test_every_subcommand_can_render_its_help`。
+        help="单次调用的读超时（秒）。0 = 用配置里的默认值（180s，不再是 60s）。"
+             "判分的 prompt 比台词长得多，实测有约 7%% 的调用会超过 60s —— "
+             "那会变成一条永久缺失的判决",
     )
     p_judge.add_argument(
         "--checkpoint",
