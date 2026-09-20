@@ -95,6 +95,28 @@ def _blanks(n: int) -> list[None]:
     return [None] * n
 
 
+#: 三位玩家的自我介绍台词。**按 id 固定写死**，因为形状要保证"三个人都开口"，
+#: 而 `pid` 是意图声明的 —— 可能是 a/b/c 里的任意一个。
+_INTRO_LINES = {
+    "player_a": "大家好，我是阿澈，平时喜欢爬山。",
+    "player_b": "我叫小满，最近在学做甜点。",
+    "player_c": "我是阿岚，做插画的。",
+}
+
+
+def _intro_all_turns(pid: str, text: str) -> list[Any]:
+    """三位玩家依次开口，中间各留一轮给 NPC 回应。
+
+    第一句用意图自己的措辞（`pid` 说的），另外两位用固定台词 ——
+    这样无论意图声明的是哪个玩家，**三个人都会开口**。
+    """
+    turns: list[Any] = []
+    for player_id in ("player_a", "player_b", "player_c"):
+        line = text if player_id == pid else _INTRO_LINES[player_id]
+        turns += [{"player": player_id, "text": line}, None]
+    return turns + _blanks(12)
+
+
 TURN_SHAPES: dict[str, TurnShape] = {
     # ---- 时间预算 ----
     # 玩家开场说一句，然后留空轮让 NPC 干活
@@ -181,6 +203,13 @@ TURN_SHAPES: dict[str, TurnShape] = {
         None,
         None,
     ],
+    # ---- 破冰：三位玩家都要开口 ----
+    # `icebreaker.greet_all` 的完成条件是 `all_players_spoke: 1` —— "每位玩家都说过话"。
+    # 已有的形状最多让**两个**玩家开口（`interleaved` / `two_speakers`），
+    # 于是那个目标在 icebreaker 的 92 条用例（其中 86 条是这里生成的）里
+    # **一条都做不完**：不是 NPC 做不到，是用例从来没给够人。
+    # 后面留 12 个空轮：NPC 要先收下三路介绍，才可能去挑 `find_topic`（优先级 2）。
+    "intro_all": lambda pid, text, _f: _intro_all_turns(pid, text),
     # ---- 主持 ----
     # 一轮完整的游戏流程，中间夹两次玩家发言
     "hosting_round": lambda pid, text, _f: [
@@ -1484,6 +1513,43 @@ INTENTS: list[Intent] = [
         },
         shapes=["insistent"],
         description="同一件事被催三次：目标不该被重复执行，资源是有限的",
+    ),
+    Intent(
+        key="icebreaker_greet_all",
+        category="task",
+        scenarios=["icebreaker"],
+        phrasings=[
+            "大家好，我先自我介绍一下。",
+            "我是阿澈，平时喜欢爬山。",
+        ],
+        # ⚠️ 这个目标**没有对应的 flag**（完成条件是 `all_players_spoke`），
+        # 所以只能断言目标本身被判定完成。
+        # **不能**拿 `all_npcs_spoke` 顶替 —— 那个问的是"NPC 有没有轮流开口"，
+        # 和"每位玩家都说过话"是两件事（覆盖判据里专门钉了这条）。
+        expect=lambda sc, pid: {
+            "objectives_done": ["greet_all"],
+            "allowed_extra": _chat_extras(),
+        },
+        shapes=["intro_all"],
+        description="三位玩家都完成了自我介绍：断言的是**场景自己的目标**被判完成（92 条 icebreaker 用例此前一条都没查过它）",
+    ),
+    Intent(
+        key="icebreaker_find_topic",
+        category="task",
+        scenarios=["icebreaker"],
+        phrasings=[
+            "大家好，我先自我介绍一下。",
+            "我是阿澈，平时喜欢爬山。",
+        ],
+        # `find_topic` 的完成条件是 `flag=topic_found`，由它自己的 `set_flag` 步骤置上。
+        # 它优先级是 2，要先等 `greet_all`（优先级 1）做完才会被挑中 ——
+        # 所以形状必须让三个人先开口，否则这条用例永远测不到它。
+        expect=lambda sc, pid: {
+            "flags": ["topic_found"],
+            "allowed_extra": _chat_extras(),
+        },
+        shapes=["intro_all"],
+        description="帮三位客人找到共同话题：NPC 走完 find_topic 的步骤，把 topic_found 真的置上",
     ),
 ]
 

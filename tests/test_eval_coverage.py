@@ -44,15 +44,15 @@ ROOT = Path(__file__).resolve().parent.parent
 #:
 #: 留在这里不是"接受它"，而是让它在报告和 README 里有个明确位置，
 #: 并且让"哪天补上了"变成一次**必须改这里**的动作。
-KNOWN_UNCOVERED: dict[str, str] = {
-    "icebreaker.greet_all": (
-        "完成条件是 all_players_spoke，而 expect 里没有对应的键"
-        "（all_npcs_spoke 问的是 NPC 之间，不是玩家）"
-    ),
-    "icebreaker.find_topic": (
-        "完成条件是 flag=topic_found，而 icebreaker 的用例一条都没有断言 flags"
-    ),
-}
+#:
+#: 2026-09-20：`icebreaker` 的两个目标补上了，清单**清空**。
+#: 做法不是在数据文件里手加两条（`generated.jsonl` 是生成物，
+#: 有"必须和生成器一致"的护栏），而是给生成器加一个轮次形状 `intro_all`
+#: （让**三位玩家都开口** —— 此前所有形状最多只让两个人说话）+
+#: 两条断言场景目标的意图。
+#: 关键判据：`greet_all` 的完成条件是 `all_players_spoke`，**没有对应的 flag**，
+#: 所以只能断言 `objectives_done`；拿 `all_npcs_spoke` 顶替是错的。
+KNOWN_UNCOVERED: dict[str, str] = {}
 
 
 def load_all_cases() -> list[dict[str, Any]]:
@@ -176,7 +176,15 @@ def test_every_objective_is_either_checked_or_a_listed_gap() -> None:
 
 
 def test_the_known_gaps_are_really_uncovered() -> None:
-    """清单里的每一条都要**确实**还没被覆盖，别把已覆盖的留在里面当借口。"""
+    """清单里的每一条都要**确实**还没被覆盖，别把已覆盖的留在里面当借口。
+
+    ⚠️ 2026-09-20 起清单是**空的**，所以这条目前是**空转**的 ——
+    不是坏了，是它在等下一个被记进清单的目标。
+    留着它是因为下一个人加清单项时，这条会立刻检查那个借口成不成立；
+    删掉它，清单就会慢慢变成"随手往里丢东西"的地方。
+    （"覆盖检查本身能不能判错"由 `test_the_coverage_check_can_actually_fail` 负责，
+    所以这里空转不会让整个机制失去保护。）
+    """
     from npc_agent.config import load_scenario
 
     gaps = uncovered_objectives(load_all_cases(), load_scenario)
@@ -202,6 +210,11 @@ def test_the_covered_objectives_are_the_ones_we_think() -> None:
         "duet.serve_guest",
         "tutorial.teach_order",
         "tutorial.welcome_drink",
+        # 2026-09-20 补上的两个：它们的完成条件一个没有 flag（all_players_spoke）、
+        # 一个靠目标自己的 set_flag 步骤。写进来是为了**不让它们退回去** ——
+        # 此前 icebreaker 的 92 条用例没有一条查过它们。
+        "icebreaker.greet_all",
+        "icebreaker.find_topic",
     }
     lost = sorted(must_be_covered & gaps)
     assert not lost, (
