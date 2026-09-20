@@ -98,7 +98,11 @@ def _build(args: argparse.Namespace):
 
     scenario = load_scenario(getattr(args, "scenario", "tutorial"))
     llm = build_llm(
-        cfg.llm_provider, model=cfg.model, base_url=cfg.base_url, api_key=cfg.api_key
+        cfg.llm_provider,
+        model=cfg.model,
+        base_url=cfg.base_url,
+        api_key=cfg.api_key,
+        timeout=cfg.llm_timeout,
     )
     return cfg, scenario, build_cast(scenario, llm, cfg)
 
@@ -833,7 +837,9 @@ def cmd_judge(args: argparse.Namespace) -> int:
         model=cfg.model,
         base_url=cfg.base_url,
         api_key=cfg.api_key,
-        timeout=getattr(args, "timeout", 0.0) or 0.0,
+        # 没显式给 `--timeout` 时走配置里的默认值（180s），
+        # 而不是回到客户端那个写死的 60s。
+        timeout=getattr(args, "timeout", 0.0) or cfg.llm_timeout,
     )
     rubrics = [r.strip() for r in (args.rubrics or "").split(",") if r.strip()] or list(DEFAULT_RUBRICS)
     unknown = [r for r in rubrics if r not in RUBRICS]

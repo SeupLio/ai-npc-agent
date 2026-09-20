@@ -225,19 +225,94 @@ def test_parse_errors_are_not_called_transport(mod, text: str) -> None:
     assert mod.is_transport_error(text) is False
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("TimeoutError: The read operation timed out", "transport"),
+        ("RemoteDisconnected: Remote end closed connection without response", "transport"),
+        ('HTTP 429: {"error":{"message":"ApiKey已触发限额","type":"quota_error"}}', "quota"),
+        (
+            "模型返回空内容（finish_reason=length，思维链 16354 字）。"
+            "推理模型需要更大的 max_tokens。",
+            "budget",
+        ),
+        ("模型输出被 max_tokens 截断（已生成 516 字，可能是思维链吃掉了预算）", "budget"),
+        ("JSONDecodeError: Expecting value: line 1 column 1", "parse"),
+        ("ValueError: 计划里没有任何步骤", "parse"),
+        ("", ""),
+    ],
+)
+def test_every_fallback_cause_gets_its_own_bucket(mod, text: str, expected: str) -> None:
+    """四分类。**只有 `parse` 才该被读成"模型规划得不好"。**"""
+    assert mod.classify_planner_failure(text) == expected
+
+
+def test_budget_starvation_is_not_called_a_parse_failure(mod) -> None:
+    """这一条是**本轮新增分类的理由**。
+
+    推理模型的思维链和正式回答**共用** `max_tokens`。预算给小了，模型把预算
+    全花在思维链上、`content` 返回空串 —— 框架回落启发式。
+
+    这既不是端点故障，也不是"模型给了读不懂的计划"，而是**我们自己的配置缺陷**。
+    从前它掉进"其他"，而"其他"的注释写着
+    "可能包含真正的解析失败 —— 那才是模型的问题" ⇒ 会把配置缺陷读成模型能力。
+
+    实测（`reports/eval_model_planner.json`，228 条）：失败时思维链 16354~16688 字，
+    而当时规划预算只有 4096。
+    """
+    kind = mod.classify_planner_failure(
+        "模型返回空内容（finish_reason=length，思维链 16354 字）。"
+        "推理模型需要更大的 max_tokens。"
+    )
+    assert kind == "budget"
+    assert kind not in ("parse", "transport", "quota")
+
+
+def test_quota_exhaustion_is_not_called_a_parse_failure(mod) -> None:
+    """额度耗尽同样不是模型的问题 —— 从前它也被算进"其他"。"""
+    kind = mod.classify_planner_failure(
+        'HTTP 429: {"error":{"message":"ApiKey已触发限额","type":"quota_error"}}'
+    )
+    assert kind == "quota"
+    assert kind != "parse"
+
+
 def test_failure_kinds_are_counted_separately(mod) -> None:
     records = [
         {"passed": False, "planner_failures": 1, "task": 0.0,
-         "planner_last_is_transport": True},
+         "planner_last_is_transport": True, "planner_last_kind": "transport"},
         {"passed": False, "planner_failures": 2, "task": 0.0,
-         "planner_last_is_transport": False},  # 解析失败
+         "planner_last_is_transport": False, "planner_last_kind": "parse"},
         {"passed": True, "planner_failures": 0, "task": 1.0,
-         "planner_last_is_transport": False},
+         "planner_last_is_transport": False, "planner_last_kind": ""},
     ]
     r = mod._rate(records)
     assert r["cases_with_failures"] == 2
     assert r["cases_last_transport"] == 1
-    assert r["cases_last_other"] == 1
+    assert r["cases_last_parse"] == 1
+    assert r["cases_last_other"] == 1, "旧字段的含义没变：其他 = 配额 + 预算 + 解析"
+
+
+def test_the_four_buckets_add_up_to_the_fallback_count(mod) -> None:
+    """四类之和必须等于"回落过的用例数" —— 不许有东西掉在缝里。"""
+    records = [
+        {"passed": False, "planner_failures": 1, "task": 0.0,
+         "planner_last_is_transport": True, "planner_last_kind": "transport"},
+        {"passed": False, "planner_failures": 1, "task": 0.0,
+         "planner_last_is_transport": False, "planner_last_kind": "quota"},
+        {"passed": False, "planner_failures": 1, "task": 0.0,
+         "planner_last_is_transport": False, "planner_last_kind": "budget"},
+        {"passed": False, "planner_failures": 1, "task": 0.0,
+         "planner_last_is_transport": False, "planner_last_kind": "parse"},
+        {"passed": True, "planner_failures": 0, "task": 1.0,
+         "planner_last_is_transport": False, "planner_last_kind": ""},
+    ]
+    r = mod._rate(records)
+    total = (
+        r["cases_last_transport"] + r["cases_last_quota"]
+        + r["cases_last_budget"] + r["cases_last_parse"]
+    )
+    assert total == r["cases_with_failures"] == 4
 
 
 def test_render_says_the_failure_column_is_about_the_endpoint(mod) -> None:
@@ -249,19 +324,20 @@ def test_render_says_the_failure_column_is_about_the_endpoint(mod) -> None:
     before = {
         c: {"case_id": c, "category": "task", "passed": True, "task": 1.0,
             "scores": {}, "task_detail": "", "planner_failures": 0,
-            "planner_last_error": "", "planner_last_is_transport": False}
+            "planner_last_error": "", "planner_last_is_transport": False,
+            "planner_last_kind": ""}
         for c in ("case_000", "case_005")
     }
     after = {
         c: dict(v, planner_failures=1,
                 planner_last_error="TimeoutError: The read operation timed out",
-                planner_last_is_transport=True)
+                planner_last_is_transport=True, planner_last_kind="transport")
         for c, v in before.items()
     }
     cmp = mod.compare(before, after, _order(6))
     html = mod.render(cmp, "4c6569c", "HEAD")
     assert "量的是端点健康" in html
-    assert "传输 2／其他 0" in html
+    assert "传输 2／配额 0／预算 0／解析 0" in html
 
 
 def test_render_separates_the_kinds_when_both_are_present(mod) -> None:
@@ -271,19 +347,50 @@ def test_render_separates_the_kinds_when_both_are_present(mod) -> None:
                      "task": 1.0, "scores": {}, "task_detail": "",
                      "planner_failures": 1,
                      "planner_last_error": "JSONDecodeError: nope",
-                     "planner_last_is_transport": False},
+                     "planner_last_is_transport": False,
+                     "planner_last_kind": "parse"},
         "case_005": {"case_id": "case_005", "category": "task", "passed": True,
                      "task": 1.0, "scores": {}, "task_detail": "",
                      "planner_failures": 1,
                      "planner_last_error": "TimeoutError: nope",
-                     "planner_last_is_transport": True},
+                     "planner_last_is_transport": True,
+                     "planner_last_kind": "transport"},
     }
     after = {c: dict(v, planner_failures=0, planner_last_error="",
-                     planner_last_is_transport=False) for c, v in before.items()}
+                     planner_last_is_transport=False, planner_last_kind="")
+             for c, v in before.items()}
     cmp = mod.compare(before, after, _order(6))
     html = mod.render(cmp, "4c6569c", "HEAD")
     assert "回落原因不止一种" in html
     assert "量的是端点健康" not in html
+
+
+def test_render_names_the_budget_class_instead_of_lumping_it_into_other(mod) -> None:
+    """只有预算这一类时，报告必须**点名**它，不能塞进"其他"。
+
+    这是本轮修的那个洞：预算被思维链吃光是**我们自己的配置缺陷**，
+    塞进"其他"之后会被读者当成"模型给了读不懂的计划"。
+    """
+    before = {
+        c: {"case_id": c, "category": "task", "passed": True, "task": 1.0,
+            "scores": {}, "task_detail": "", "planner_failures": 0,
+            "planner_last_error": "", "planner_last_is_transport": False,
+            "planner_last_kind": ""}
+        for c in ("case_000", "case_005")
+    }
+    after = {
+        c: dict(v, planner_failures=1,
+                planner_last_error="模型返回空内容（finish_reason=length，思维链 16354 字）",
+                planner_last_kind="budget")
+        for c, v in before.items()
+    }
+    cmp = mod.compare(before, after, _order(6))
+    html = mod.render(cmp, "4c6569c", "HEAD")
+    assert "预算被思维链吃光 <strong>2</strong>" in html
+    assert "真正的解析失败 <strong>0</strong>" in html
+    # 解析失败为 0 时，仍然要说清这一栏不是模型能力
+    assert "量的是端点健康" in html
+    assert "预算 2／解析 0" in html
 
 
 # --------------------------------------------------------------------------- #
@@ -762,11 +869,12 @@ def test_the_full_arm_reading_carries_its_fallback_share(mod) -> None:
     cmp["after_all"] = dict(
         cmp["after_all"], total=40, passed=38, rate=0.95,
         cases_with_failures=19, cases_last_transport=18, cases_last_other=1,
+        cases_last_quota=0, cases_last_budget=1, cases_last_parse=0,
     )
     html = mod.render(cmp, "4c6569c", "HEAD")
     assert "总共跑了 40 条" in html
     assert "19 条" in html and "48%" in html, "整臂读数要带上回落占比"
-    assert "末次错误传输层 18 条、其他 1 条" in html
+    assert "末次错误传输层 18 条、配额 0 条、预算 1 条、解析 0 条" in html
 
 
 def test_the_confound_share_says_it_is_the_paired_subset(mod) -> None:

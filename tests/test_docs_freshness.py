@@ -37,6 +37,7 @@ import importlib.util
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -303,3 +304,84 @@ def test_the_link_guard_can_actually_fail(tmp_path: Path) -> None:
     # 外链和纯锚点不归这条管
     doc.write_text("[a](https://example.com) [b](#sec)", encoding="utf-8")
     assert _broken_links(doc) == []
+# --------------------------------------------------------------------------- #
+# 链接指向的文件必须**真的会随仓库提交**
+# --------------------------------------------------------------------------- #
+
+def _repo_rel(path: Path) -> str:
+    """相对仓库根的 posix 路径 —— `git check-ignore` 只认正斜杠。"""
+    return os.path.relpath(path, ROOT).replace(os.sep, "/")
+
+
+def _ignored_paths(rels: list[str]) -> set[str]:
+    """从相对路径里挑出被 `.gitignore` 挡下的那些（用仓库自己的规则判）。
+
+    `git check-ignore` 只做**模式匹配**，路径不需要真的存在 ——
+    所以这条判据不碰磁盘，也不会因为文件还没建就误报。
+    """
+    rels = sorted(set(rels))
+    if not rels:
+        return set()
+    # ⚠️ 必须用 `-z`（NUL 分隔）。换行分隔在这台机器上（git 2.55.0.windows.3）
+    # **静默失灵**：一次传两条路径时，不管带不带结尾换行，它都报"一个都没被忽略"
+    # （rc=1、输出为空）—— 也就是"看起来查过了、其实没查"。
+    proc = subprocess.run(
+        ["git", "check-ignore", "-z", "--stdin"],
+        input=chr(0).join(rels),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    # 0 = 有命中；1 = 一个都没被忽略（正常结果）；其它 = 判据自己坏了
+    if proc.returncode not in (0, 1):
+        raise AssertionError(
+            f"`git check-ignore` 跑不起来（退出码 {proc.returncode}）：{proc.stderr[:300]}"
+        )
+    return {item for item in proc.stdout.split(chr(0)) if item}
+
+
+def _links_that_never_ship(doc: Path) -> list[str]:
+    """文档里"本地能打开、但不会被提交"的相对链接。"""
+    text = doc.read_text(encoding="utf-8")
+    targets = {
+        t
+        for t in _MD_LINK.findall(text)
+        if not t.startswith(("http://", "https://", "mailto:", "#"))
+    }
+    ignored = _ignored_paths([_repo_rel(doc.parent / t) for t in targets])
+    return sorted(t for t in targets if _repo_rel(doc.parent / t) in ignored)
+
+
+@pytest.mark.parametrize("rel", _LINKED_DOCS)
+def test_doc_links_point_at_files_that_actually_ship(rel: str) -> None:
+    """相对链接不能指向被 `.gitignore` 挡下的文件。
+
+    **这条是真事故换来的（2026-09-20）。** 附八那张 2x2 表的原始探针日志
+    本来叫 `*.log`，而 `.gitignore` 第 24 行正是 `*.log` ——
+    于是：文件在本地**能打开**，`test_relative_links_in_docs_resolve` **是绿的**，
+    而公开 clone 上那个链接**根本不存在**。
+    链接护栏只问"这个文件在不在磁盘上"，不问"它会不会跟着仓库走"。
+    """
+    doc = ROOT / rel
+    never_ship = _links_that_never_ship(doc)
+    assert not never_ship, (
+        f"{rel} 里有链接指向**不会随仓库提交**的文件：{never_ship}。"
+        "它们在本地打得开，但公开 clone 上不存在 —— "
+        "要么换个扩展名（别撞上 .gitignore 的规则），要么在 .gitignore 里显式放行。"
+    )
+
+
+def test_the_ship_guard_can_actually_fail() -> None:
+    """反向测试：判据必须真的认得出"被忽略的路径"。
+
+    只证明"当前文档是绿的"不够 —— 那可能只是因为判据什么都没在查。
+    这三个路径都**不需要存在**：`git check-ignore` 只做模式匹配。
+    """
+    ignored = _ignored_paths(
+        ["reports/_no_such_probe.log", "docs/ENGINEERING.md", "README.md"]
+    )
+    assert "reports/_no_such_probe.log" in ignored, (
+        "`reports/` 明明在 .gitignore 里，判据却没认出来 —— 它没在查。"
+    )
+    assert "docs/ENGINEERING.md" not in ignored
+    assert "README.md" not in ignored

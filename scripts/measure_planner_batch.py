@@ -87,6 +87,56 @@ def is_transport_error(text: str) -> bool:
     return any(marker in text for marker in _TRANSPORT_MARKERS)
 
 
+#: 配额耗尽的特征串。
+#:
+#: ⚠️ 2026-09-20 补。这一类和传输层故障**都不是模型的问题**，但从前的分类里
+#: 它们一起掉进"其他"，而"其他"旁边的注释写着
+#: "「其他」里可能包含真正的解析失败 —— 那才是模型的问题"。
+#: 实测 228 条跑批里"其他"共 85 条，其中 57 条是配额、28 条是预算，
+#: **真正的解析失败是 0 条**。分类不完整会把结论说反。
+_QUOTA_MARKERS = (
+    "429",
+    "quota",
+    "限额",
+    "rate limit",
+    "RateLimit",
+)
+
+#: **预算被思维链吃光**的特征串。
+#:
+#: 这一类和模型能力无关，和端点健康也无关 —— 它是**我们自己的配置缺陷**：
+#: 推理模型先写思维链，思维链和正式回答**共用** `max_tokens`。
+#: 预算给小了，模型把预算全花在思维链上，`content` 返回空字符串。
+#:
+#: 实测：失败时思维链长度 16354~16688 字，而当时规划预算只有 4096。
+#: 修法是给够预算，不是换模型、也不是等端点恢复。
+_BUDGET_MARKERS = (
+    "finish_reason=length",
+    "思维链",
+    "max_tokens",
+)
+
+
+def classify_planner_failure(text: str) -> str:
+    """把一条回落原因归到四类之一。
+
+    顺序有意义：传输层 → 配额 → 预算 → 解析。
+
+    前三类都**不该**被读成"模型规划得不好"：
+    前两类是端点的事（网络抖动 / 额度耗尽），第三类是我们自己的配置缺陷。
+    只有第四类 `parse` 才真的该指向模型 —— 而实测里它是 0 条。
+    """
+    if not text:
+        return ""
+    if is_transport_error(text):
+        return "transport"
+    if any(marker in text for marker in _QUOTA_MARKERS):
+        return "quota"
+    if any(marker in text for marker in _BUDGET_MARKERS):
+        return "budget"
+    return "parse"
+
+
 def _read_arm(path: str | Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """读一份读数，返回（原始结果列表，元信息）。
 
@@ -136,6 +186,9 @@ def load_arm(path: str | Path) -> dict[str, dict[str, Any]]:
             # ⚠️ 只有**最后一条**错误被留下（检查点不存全部错误），
             # 所以这是"按最后一条归类"的近似，不是逐条归类。
             "planner_last_is_transport": bool(last_error) and is_transport_error(last_error),
+            # ⚠️ 四分类，规则见 `classify_planner_failure`。
+            # 只有 `parse` 才该被读成"模型给了读不懂的计划"。
+            "planner_last_kind": classify_planner_failure(last_error),
         }
     return out
 
@@ -292,7 +345,10 @@ def _rate(records: list[dict[str, Any]]) -> dict[str, Any]:
     clean_passed = sum(1 for r in clean if r["passed"])
     world = sum(1 for r in records if r["task"] >= 0.99)
     with_failures = [r for r in records if r["planner_failures"]]
-    transport = sum(1 for r in with_failures if r.get("planner_last_is_transport"))
+    kinds = {
+        k: sum(1 for r in with_failures if (r.get("planner_last_kind") or "") == k)
+        for k in ("transport", "quota", "budget", "parse")
+    }
     return {
         "total": total,
         "passed": passed,
@@ -304,8 +360,13 @@ def _rate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "world_rate": (world / total) if total else 0.0,
         "planner_failures": sum(r["planner_failures"] for r in records),
         "cases_with_failures": len(with_failures),
-        "cases_last_transport": transport,
-        "cases_last_other": len(with_failures) - transport,
+        "cases_last_transport": kinds["transport"],
+        "cases_last_quota": kinds["quota"],
+        "cases_last_budget": kinds["budget"],
+        "cases_last_parse": kinds["parse"],
+        # 兼容旧字段：从前"其他"= 非传输层。现在它 = 配额 + 预算 + 解析，
+        # 含义没变，只是终于被拆开了。
+        "cases_last_other": kinds["quota"] + kinds["budget"] + kinds["parse"],
     }
 
 
@@ -573,7 +634,10 @@ def _planner_health_table(b: dict[str, Any], a: dict[str, Any]) -> str:
             return "0"
         return (
             f'{arm["cases_with_failures"]} 条'
-            f'（传输 {arm["cases_last_transport"]}／其他 {arm["cases_last_other"]}）'
+            f'（传输 {arm["cases_last_transport"]}'
+            f'／配额 {arm["cases_last_quota"]}'
+            f'／预算 {arm["cases_last_budget"]}'
+            f'／解析 {arm["cases_last_parse"]}）'
         )
 
     rows = [
@@ -611,30 +675,53 @@ def _planner_health_table(b: dict[str, Any], a: dict[str, Any]) -> str:
 
 
 def _transport_note(b: dict[str, Any], a: dict[str, Any]) -> str:
-    """回落到底是谁的锅 —— 实测结论写进报告，别让读者自己猜。"""
+    """回落到底是谁的锅 —— 实测结论写进报告，别让读者自己猜。
+
+    ⚠️ 2026-09-20 从"两类"改成"四类"。
+
+    从前只有 传输层／其他 两栏，于是**配额耗尽**（HTTP 429）和
+    **预算被思维链吃光**（<code>finish_reason=length</code>）一起掉进"其他"，
+    而"其他"的注释写着"可能包含真正的解析失败 —— 那才是模型的问题"。
+
+    实测（<code>reports/eval_model_planner.json</code>，228 条）：
+    "其他" 85 条 = 配额 57 + 预算 28，**解析失败 0 条**。
+    分类不完整会把"端点的额度 + 我们自己的配置缺陷"读成"模型不会规划"。
+    """
     total_kind = b["cases_with_failures"] + a["cases_with_failures"]
-    transport = b["cases_last_transport"] + a["cases_last_transport"]
-    other = b["cases_last_other"] + a["cases_last_other"]
     if not total_kind:
         return ""
-    if transport and not other:
-        return (
-            '<div class="warn"><strong>这一栏量的是端点健康，不是模型能力。</strong>'
-            f"配对子集里两条臂加起来 {total_kind} 条用例出现过规划回落，"
-            f"其中 <strong>{transport} 条的末次错误是传输层故障</strong>"
-            "（<code>TimeoutError</code> / <code>RemoteDisconnected</code>），"
-            "<strong>0 条是解析失败</strong>。"
-            "也就是说这些回落不是「模型给出了读不懂的计划」，"
-            "而是「这一次请求没回来」 —— 框架把它当成规划失败、回落启发式，"
-            "于是网络抖动被记进了这一栏。"
-            "两条臂的抖动次数不一样，所以<strong>总通过率的差里混着端点的运气</strong>；"
-            "干净子集那一行才是把这份运气扣掉之后的读数。</div>"
+    transport = b["cases_last_transport"] + a["cases_last_transport"]
+    quota = b["cases_last_quota"] + a["cases_last_quota"]
+    budget = b["cases_last_budget"] + a["cases_last_budget"]
+    parse = b["cases_last_parse"] + a["cases_last_parse"]
+
+    if parse:
+        lead = "<strong>回落原因不止一种。</strong>"
+        tail = (
+            "只有最后那一类才该被读成「模型规划得不好」。"
+            "引用这一栏时请把几类分开说。"
         )
+    else:
+        lead = (
+            "<strong>这一栏量的是端点健康和我们的预算配置，不是模型能力。</strong>"
+        )
+        tail = (
+            "也就是说这些回落<strong>没有一条</strong>是"
+            "「模型给出了读不懂的计划」：前两类是端点的事"
+            "（网络抖动 / 额度耗尽），第三类是 <code>max_tokens</code> 给推理模型"
+            "给小了 —— 思维链和正式回答共用预算，预算被思维链吃光后"
+            "<code>content</code> 返回空串，框架把它当成规划失败、回落启发式。"
+            "引用这一栏时请把几类分开说。"
+        )
+
     return (
-        '<div class="warn"><strong>回落原因不止一种。</strong>'
-        f"末次错误里传输层 {transport} 条、其他 {other} 条。"
-        "「其他」里可能包含真正的解析失败 —— 那才是模型的问题。"
-        "引用这一栏时请把两类分开说。</div>"
+        f'<div class="warn">{lead}'
+        f"配对子集里两条臂加起来 {total_kind} 条用例出现过规划回落，"
+        f"末次错误分别是：传输层 <strong>{transport}</strong>、"
+        f"配额 <strong>{quota}</strong>、"
+        f"预算被思维链吃光 <strong>{budget}</strong>、"
+        f"真正的解析失败 <strong>{parse}</strong>。"
+        f"{tail}</div>"
     )
 
 
@@ -966,7 +1053,9 @@ def render(cmp: dict[str, Any], before_label: str, after_label: str) -> str:
             f"但其中 <strong>{after_all['cases_with_failures']} 条（{share:.0%}）"
             f"期间规划调用回落过</strong>"
             f"（末次错误传输层 {after_all['cases_last_transport']} 条、"
-            f"其他 {after_all['cases_last_other']} 条），"
+            f"配额 {after_all['cases_last_quota']} 条、"
+            f"预算 {after_all['cases_last_budget']} 条、"
+            f"解析 {after_all['cases_last_parse']} 条），"
             "所以这个数也不能当模型能力读。"
         )
 

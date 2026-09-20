@@ -125,6 +125,83 @@ def test_the_planner_budget_is_not_smaller_than_the_speech_budget() -> None:
     assert config.max_tokens >= config.speech_max_tokens
 
 
+#: 实测"够用"的规划预算。**这个数是量出来的，不是推出来的。**
+#:
+#: village 场景、读超时 180s：预算 4096 时 6 次规划调用有 2 次
+#: `finish_reason=length`（思维链 16590 / 17276 字被吃光）；
+#: 提到 16384 之后这一类清零。
+MEASURED_SUFFICIENT_PLANNER_BUDGET = 16384
+
+
+def test_the_planner_budget_is_at_least_the_measured_sufficient_value() -> None:
+    """规划预算必须 ≥ 实测"够用"的那个值。
+
+    ⚠️ 这里**不用**"预算 ≥ 实测思维链字数"那种写法。那条对台词成立
+    （中文散文大约 1 字/token），对规划**不成立** —— 规划思维链里大量是
+    JSON 和 ASCII，实测约 4 字/token（17276 字只吃掉了约 4096 token）。
+    拿字数当 token 的下界会得出"16384 < 17276，所以不够"这种**错的**结论。
+
+    所以锁的是直接测出来的那个够用值。**而且这个实验必须在超时放宽之后做**：
+    读超时 60s 时失败全是 `TimeoutError`（思维链长度 0），
+    预算问题被整个盖住 —— 见 `docs/ENGINEERING.md` 附八。
+    """
+    assert RuntimeConfig().max_tokens >= MEASURED_SUFFICIENT_PLANNER_BUDGET
+
+
+#: 实测的**单次调用耗时**（秒），kimi-k2.7-code。
+#:
+#: 27s 是平均调用、35s 是规划调用。旧默认超时 60s 就贴着这两个数 ——
+#: 平均值贴着上限，尾巴必然被砍。
+OBSERVED_CALL_SECONDS = (27.0, 35.0)
+
+
+def test_the_llm_timeout_is_not_below_the_observed_call_latency() -> None:
+    """读超时必须容得下**实测的单次调用耗时**，不能贴着平均值。
+
+    这条锁的是实测数字，不是审美。旧默认值 60s 和实测值贴得太近：
+    village 场景 12 轮里 6 次规划调用有 2 次 `TimeoutError`，
+    而失败原文里思维链长度是 **0** —— 响应根本没回来。
+
+    ⚠️ 和预算那条是**两个独立的假设**，所以各有各的护栏：
+    实测把预算从 4096 提到 16384，失败数反而从 2 涨到 3
+    ⇒ 卡住的是等待时间，不是 token。混成一条就会把
+    "我们等得不够久"记成"模型规划得不好"。
+    """
+    timeout = RuntimeConfig().llm_timeout
+    slowest = max(OBSERVED_CALL_SECONDS)
+    assert timeout >= slowest * 3, (
+        f"读超时 {timeout}s 只有实测单次耗时 {slowest}s 的 {timeout / slowest:.1f} 倍："
+        "平均值附近就开始丢调用，而丢掉的调用会被静默记成「规划失败」"
+    )
+
+
+def test_the_two_timeout_defaults_agree() -> None:
+    """客户端默认超时和配置默认超时**必须是同一个数**。
+
+    这是"两个真相"那一类：两处各写一份默认值、都不报错，
+    改了其中一处之后，走 `build_llm()` 的路径和走 `RuntimeConfig` 的路径
+    会**等不一样久** —— 而症状只是"有时候会回落"，没人查得出来。
+    """
+    assert RuntimeConfig().llm_timeout == OpenAICompatLLM().timeout
+
+
+def test_the_eval_path_hands_the_configured_timeout_to_the_client() -> None:
+    """配置里的超时要**真的走到**客户端 —— 否则那个字段是个摆设。
+
+    ⚠️ 这条查的是**接线**，不是数字。
+    `test_the_two_timeout_defaults_agree` 只证明两个默认值相等，
+    完全不能证明评测路径把配置传下去了 —— 中间那一段可以压根不传，
+    而症状是"配置写了 180s、实际还是 60s"，从任何报告里都看不出来。
+    """
+    from npc_agent.eval.runner import _default_llm_factory
+
+    config = RuntimeConfig(llm_provider="openai-compat", model="m")
+    llm = _default_llm_factory(config)()
+    assert getattr(llm, "timeout", None) == config.llm_timeout, (
+        "评测路径没把 `llm_timeout` 传给客户端 —— 配置项失效了"
+    )
+
+
 def test_available_requires_model(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _FakeResponse({}))
     assert OpenAICompatLLM(model="m").available is True
@@ -154,17 +231,22 @@ def test_malformed_body_raises(monkeypatch):
 
 
 def test_build_llm_uses_the_client_default_timeout_when_unspecified():
-    """不传就保持原样 —— 默认值只写在 `OpenAICompatLLM` 一处。
+    """不传就落到**客户端那个默认值**上，而不是某个写死的数。
 
-    两处各写一遍默认值，改一处漏一处，就会出现"命令行说 60s、
-    实际跑的是别的数"这种查不动的问题。
+    ⚠️ 2026-09-20：这里从前写死 `== 60.0`。默认超时从 60s 提到 180s 时
+    它红了 —— 但红的是"数字变了"，不是"行为错了"。改成对着
+    `OpenAICompatLLM()` 的默认值断言：这样它锁的是**"不传就用默认值"**这个性质。
+    数字本身该是多少，由 `test_the_llm_timeout_is_not_below_the_observed_call_latency`
+    那条按实测值管 —— 两条各管一件事，改数字时只有一条会红。
+
+    显式给 0 也算"没给"，不能变成 0 秒超时（那等于每次都失败）。
     """
     from npc_agent.llm import build_llm
 
-    assert build_llm("openai-compat", model="m").timeout == 60.0
-    # 显式给 0 也算"没给"，不能变成 0 秒超时（那等于每次都失败）
-    assert build_llm("openai-compat", model="m", timeout=0).timeout == 60.0
-    assert build_llm("openai-compat", model="m", timeout=None).timeout == 60.0
+    default = OpenAICompatLLM().timeout
+    assert build_llm("openai-compat", model="m").timeout == default
+    assert build_llm("openai-compat", model="m", timeout=0).timeout == default
+    assert build_llm("openai-compat", model="m", timeout=None).timeout == default
 
 
 def test_build_llm_passes_an_explicit_timeout_through():

@@ -789,6 +789,8 @@ def test_resume_refuses_when_the_config_changed() -> None:
         ("temperature", 0.0),
         ("speech_max_tokens", 1024),
         ("max_tokens", 1024),
+        # 超时也改结果：等 60s 和等 180s 的回落率完全不同（实测 2/6 vs 0/6）
+        ("llm_timeout", 60.0),
         ("memory_top_k", 2),
         ("memory_consolidate_at", 8),
         ("memory_half_life", 5.0),

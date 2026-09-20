@@ -312,6 +312,10 @@ RESUME_CRITICAL_FIELDS = (
     "temperature",
     "max_tokens",
     "speech_max_tokens",
+    # 超时也改结果：等 60s 和等 180s，回落率完全不同（见 `llm_timeout` 的注释）。
+    # 不进指纹的话，`--resume` 会把"60s 跑出来的半批"和"180s 跑出来的另半批"
+    # 拼成一份报告，而报告只会写"跑了 N 条"。
+    "llm_timeout",
     "memory_strategy",
     "memory_top_k",
     "memory_consolidate_at",
@@ -575,6 +579,7 @@ def _default_llm_factory(config: RuntimeConfig) -> Callable[[], LLM]:
         model=config.model,
         base_url=config.base_url,
         api_key=config.api_key,
+        timeout=config.llm_timeout,
     )
 
 

@@ -34,7 +34,15 @@ class OpenAICompatLLM(LLM):
         model: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 60.0,
+        # 读超时。**别调小。**
+        #
+        # 实测（kimi-k2.7-code）：平均 27s/次调用、规划约 35s。60s 会砍掉尾巴 ——
+        # village 场景 6 次规划调用里 2 次 `TimeoutError`，而思维链长度是 0
+        # （响应根本没回来）。框架把超时当成"规划失败"、静默回落启发式，
+        # 于是**我们等得不够久**被记成了"模型规划得不好"。
+        #
+        # 这个默认值和 `RuntimeConfig.llm_timeout` 必须一致，有护栏钉住。
+        timeout: float = 180.0,
     ) -> None:
         self.model = model or os.getenv("NPC_AGENT_MODEL", "")
         self.base_url = (

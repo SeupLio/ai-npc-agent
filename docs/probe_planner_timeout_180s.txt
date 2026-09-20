@@ -1,0 +1,23 @@
+预算档位：[4096, 16384]｜超时档位：[180.0]
+
+=== max_tokens=4096  timeout=180s ===
+  规划调用 6 次，成功 4，失败 2
+    失败[预算（思维链吃光）]：模型返回空内容（finish_reason=length，思维链 16590 字）。推理模型需要更大的 max_tokens。
+    失败[预算（思维链吃光）]：模型返回空内容（finish_reason=length，思维链 17276 字）。推理模型需要更大的 max_tokens。
+  失败时的思维链长度：[16590, 17276]（最长 17276 字）
+  终局背包：{'planks': 6, 'stick': 3, 'torch': 3}
+  终局目标：{'light_the_cave': 'done'}
+  世界标记：['cave_lit']
+
+=== max_tokens=16384  timeout=180s ===
+  规划调用 5 次，成功 4，失败 1
+    失败[超时（响应没回来）]：TimeoutError: The read operation timed out
+  失败时的思维链长度：[0]（最长 0 字）
+  终局背包：{'planks': 2, 'stick': 3, 'torch': 2}
+  终局目标：{'light_the_cave': 'done'}
+  世界标记：['cave_lit']
+
+=== 汇总 ===
+   timeout max_tokens    调用    失败     成功率  失败构成
+       180       4096     6     2   66.7%  预算（思维链吃光）×2
+       180      16384     5     1   80.0%  超时（响应没回来）×1

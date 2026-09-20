@@ -325,6 +325,7 @@ class EvalHarness:
                 model=self.config.model,
                 base_url=self.config.base_url,
                 api_key=self.config.api_key,
+                timeout=self.config.llm_timeout,
             )
         )
         # 一律走 Cast，哪怕场上只有一个 NPC。

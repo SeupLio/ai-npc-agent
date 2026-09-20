@@ -422,7 +422,7 @@ game-npc-agent/
 ├── configs/scenarios/       场景与人设（YAML，加场景不用改代码）
 ├── docs/                    报告 + 详细工程记录
 ├── scripts/                 重生成报告 / 跑批 / 桥 / 探针
-└── tests/                  831 个单元与端到端测试
+└── tests/                  851 个单元与端到端测试
 ```
 
 ---
@@ -442,7 +442,7 @@ game-npc-agent/
 | [`docs/comparison.html`](docs/comparison.html) | **12 条** ⚠️ | 离线启发式 vs 真实模型的对照 | `compare --models <模型>` |
 | [`docs/multi_npc.html`](docs/multi_npc.html) | **2 条** ⚠️ | 多 NPC 场景接上模型的对话样本 | `compare --models <模型> --category multi_npc` |
 | [`docs/repetition.html`](docs/repetition.html) | **15 条** | 同一段对话里 NPC 有多少话是之前说过的（修复前 61% → 修复后 0%） | `python scripts/measure_repetition.py --html docs/repetition.html` |
-| [`docs/planner_batch.html`](docs/planner_batch.html) | **60 条** | 规划 prompt 补上完成条件之后的前后配对对比 —— 结论是**这批测不出修复**（翻转全在"规划回落"里），并给出原因 | `python scripts/measure_planner_batch.py --before <父提交检查点> --after <当前检查点>` |
+| [`docs/planner_batch.html`](docs/planner_batch.html) | **60 条** | 规划 prompt 补上完成条件之后的前后配对对比 —— 结论是**这批测不出修复**（翻转全在"规划回落"里），并给出原因；回落原因按**传输层／配额／预算／解析**四类分开印 | `python scripts/measure_planner_batch.py --before <父提交检查点> --after <当前检查点>` |
 
 > ⚠️ 标了 ⚠️ 的两份是**早期小样本**，请只当"跑通了"的证据，不要当结论。
 > 覆盖数是从报告自己印的数字里读出来的，README 这一列和它必须一致（有测试钉住）。
@@ -456,7 +456,7 @@ game-npc-agent/
 
 ```bash
 python -m pytest tests
-# 829 passed, 2 skipped
+# 849 passed, 2 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -464,7 +464,7 @@ python -m pytest tests
 > 你只会看到进度点和 `[100%]`，然后什么都没有，看起来像跑崩了（退出码还是 0）。
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**，改了命令不改输出会红。
 
-> 收集到的是 **831** 条，默认跳过 **2** 条：
+> 收集到的是 **851** 条，默认跳过 **2** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）
 > 和 `tests/test_docs_freshness.py` 里那条慢速报告校验（约 2 分钟，`NPC_AGENT_DOC_FRESHNESS=1` 才跑）。
 
@@ -478,7 +478,7 @@ README 里的测试数、离线基线、报告覆盖数、每条被文档化的�
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 831 个测试
+- [x] 六维评测 harness + 851 个测试
 - [x] **自测控制台 `studio`**：一条命令起个网页，离线可玩，数字与命令行逐字一致
 - [x] **评测敏感性**：注入缺陷，证明满分不是"护栏从不报警"
 - [x] **跨世界覆盖报告**：同一套 Agent 在两个世界上的成绩
@@ -513,9 +513,36 @@ README 里的测试数、离线基线、报告覆盖数、每条被文档化的�
       `flags` 混进了 flag 层）⇒ flag 层 44 → **43**。
       护栏 `tests/test_eval_assertions.py`（6 条，含端到端那条）。
       **分数一点没变**（235/235），变的是"这些数字到底在数什么" —— 见 `docs/ENGINEERING.md` 附七
-- [ ] **Minecraft 的数量语义**：`village` 的配方是 1→4 / 2→4 / 1+1→4，
-      目标要求"最后手里还有 2 个木板、3 支火把"，需要精确的产出算术。
-      回落组里这类失败最集中
+- [x] **回落原因四分类 + 读超时提到 180s**（2026-09-20）：
+      `docs/planner_batch.html` 原来只有「传输层／其他」两栏，于是
+      **配额耗尽**（HTTP 429）和**预算被思维链吃光**（`finish_reason=length`）
+      一起掉进"其他"，而"其他"旁边的注释写着"可能包含真正的解析失败 ——
+      那才是模型的问题"。实测 228 条跑批：其他 85 条 = 配额 57 + 预算 28，
+      **真正的解析失败 0 条** ⇒ 分类不完整会把"端点的额度 + 我们自己的配置缺陷"
+      读成"模型不会规划"。现在四类分开印（护栏在 `tests/test_measure_planner_batch.py`）。
+      顺带量到一件更硬的事：`OpenAICompatLLM` 的读超时**写死在 60s**，
+      而 kimi-k2.7-code 实测平均 27s/次、规划约 35s —— 平均值贴着上限，
+      尾巴必然被砍。village 场景 12 轮（只开规划）：
+      60s + 预算 4096 → 6 次调用失败 **2** 次；60s + 预算 16384 → 失败 **3** 次，
+      **全部是 `TimeoutError`、思维链长度 0**（响应根本没回来）⇒
+      **卡住的是"我们等得不够久"，不是 token**。
+      超时放宽到 180s 之后，**预算才露出水面**：同样的 4096 变成
+      **2/6 次 `finish_reason=length`**（思维链 16590 / 17276 字被吃光）；
+      再提到 16384，这一类**清零**、只剩 1 条超时（端点自身也会卡）。
+      两个默认值现在分别是 **180s / 16384**，并都进了
+      `RESUME_CRITICAL_FIELDS`；护栏 `tests/test_llm_client.py`
+- [ ] **⭐ 端点稳定性**（仍然最卡的一条）：修复后整臂 **112/231 条（48%）**
+      至少回落一次，于是"LLM 规划"的批量读数全被污染。
+      现在回落**看得见**、原因也**分了四类**，但 109/112 仍是传输层故障 ——
+      超时已放宽到 180s，剩下的要靠更稳的端点或重试策略
+- [x] **Minecraft 的数量语义**（2026-09-20：**原来的诊断是错的**）：
+      这条原来写的是"需要精确的产出算术"，但 4 条 Minecraft 失败
+      **全部**落在回落组里（失败原文 3 条 `finish_reason=length` + 1 条 `TimeoutError`）
+      ⇒ 模型压根没被问成，不是算术不行；而且配方表（`yields`）
+      **本来就喂给了模型**（`Planner._world_block`）。
+      真正让余料对不上的是**中途回落**：启发式接着跑会重做半条链，
+      于是出现 `{planks: 2, stick: 2, torch: 5}` 这种数字（目标本身仍算完成）。
+      所以这条并进上面那条超时/预算的修复里，不再单列
 
 ---
 

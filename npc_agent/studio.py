@@ -71,7 +71,11 @@ def _config(overrides: dict[str, Any] | None = None) -> RuntimeConfig:
 
 def _make_llm(cfg: RuntimeConfig):
     return build_llm(
-        cfg.llm_provider, model=cfg.model, base_url=cfg.base_url, api_key=cfg.api_key
+        cfg.llm_provider,
+        model=cfg.model,
+        base_url=cfg.base_url,
+        api_key=cfg.api_key,
+        timeout=cfg.llm_timeout,
     )
 
 
