@@ -3606,6 +3606,88 @@ def test_a_correctly_yielded_floor_is_not_a_lesson() -> None:
 这次是整套测试替我 grep 的（它红了一条我压根没注意的旧测试）——
 所以**改完必须跑整套，不能只跑新增的那个文件**。
 
+
+### 十一、同一个假象从**转写**溜了回来 —— 标记有两个产出点
+
+修完反思、改完测试，我去 grep 谁还在按 `ok` 下结论，于是撞见这条：
+
+```python
+# npc_agent/eval/harness.py（修之前）
+mark = "ok" if result.ok else "!!"
+transcript.append(f"  [{mark}] {speaker} {action.render()}")
+```
+
+**同一件事两处各写一份实现** —— `ActionResult.render()` 里面也算一遍标记
+（硬规矩 5「两个真相」）。在只有 `ok` 两态的时候，两份**碰巧一致**，
+所以一直没人发现；加了 `declined` 之后它们**分了家**：
+
+| 产出点 | 主动让出话头时印什么 |
+|---|---|
+| `ActionResult.render()` | `[yield]` ✓（这次修对了） |
+| `harness` 的转写 | `[!!]` ✗（像失败） |
+
+**而裁判读的就是这段转写。** 也就是说：我在记忆那条路径上刚拆掉的假象
+（"让出话头长得像失败"），**从转写这条路径原样回来了** ——
+而且这条路径更靠前：转写既进裁判的 prompt，也进报告给人看。
+
+> 这是本项目最典型的一类缺陷：**修好了一处，另一处同样的写法还在，
+> 而两处都不报错。** 判据是那句老话 ——
+> 一件事有几个产出点？**多于一个，它们就会在某个未来时刻分家。**
+
+**修法：把标记也变成属性，只留一个产出点。**
+
+```python
+# npc_agent/types.py
+@property
+def mark(self) -> str:
+    """这一行的标记。**唯一产出点** —— 别处要用就调它，不要自己再判一次 `ok`。"""
+    if self.ok:
+        return "ok"
+    if self.declined:
+        return "yield"          # ⚠️ 不印 FAIL：这一行会进转写、也进报告
+    return "FAIL"
+
+def render(self) -> str:
+    return f"[{self.mark}] {self.tool}: {self.detail}"
+```
+
+`harness` 改成 `f"  [{result.mark}] {speaker} {action.render()}"`；
+`scripts/diagnose_duet_planner.py` 里同款的 `"ok" if res.ok else "FAIL"` 一起改掉。
+
+### 顺带修掉的第二处：控制台把让出印成红色 ✗
+
+`cli.py` 有两处动作列表渲染（对话页 / 回放页）：
+
+```python
+style = "green" if result.ok else "red"
+console.print(f"  [{style}]▸ {name} {action.render()}[/{style}]")
+if not result.ok:
+    console.print(f"      [red]✗ {result.detail}[/red]")   # ← 对着正确行为印一个大红叉
+```
+
+改成 `"red" if not result.ok and not result.declined else "green"`。
+**"主动让出话头"在控制台上从红叉变成了绿行。**
+
+### ⚠️ 而这条新护栏自己写错了三次
+
+护栏 `test_the_mark_has_exactly_one_producer` 用 AST 扫"谁还在按 `.ok` 拼标记"。
+为了确认它**真的会红**，我注入回归再跑 —— 结果**三次都是全绿**：
+
+| 版本 | 判据 | 为什么没抓到 |
+|---|---|---|
+| v1 | `isinstance(n, ast.Compare) and n.left.attr == "ok"` | `"ok" if result.ok else "!!"` 里 `result.ok` 是**裸属性**（真值判断），**AST 里根本没有 `Compare` 节点** ⇒ 空转 |
+| v2 | 任何读 `.ok` 的三元都算违规 | **误报**：`not result.ok and not result.declined` 是对的（两个字段都读了），却被禁掉 |
+| v3 | 读了 `.ok` 但没读 `.declined` ⇒ 违规 | **误报**：把 `result.passed`（评测结果，不是动作结果）也当成了 `.ok` |
+
+v4（现在这版）只认**属性名恰好是 `ok`**、且**基名是动作结果那几个**（`result`/`res`），
+并且要求同一判据里**没有** `.declined`。四个版本各注入一次回归实测：
+**v1/v2/v3 全绿（假的），v4 精确报出 `harness.py:368` 这一处、无其他。**
+
+> **"护栏写完是绿的"什么都不能证明 —— 它绿，可能因为它压根没在查。**
+> 这条已经写进 skill `test-harness-hygiene` 了，而这次是**同一个坑第四次发作**：
+> 我写护栏时没先注入回归，而是等写完了才想起来测它。
+> **顺序要反过来：先想好"改坏哪里它必须红"，再去写那条护栏。**
+
 ## 附十二：反思把「守规矩」记成了「有毛病」—— 30.4% 的教训在教模型学坏（2026-09-20）
 
 ### 一、怎么发现的：一个关于"要不要重试"的问题，拐到了别处

@@ -162,9 +162,10 @@ def cmd_demo(args: argparse.Namespace) -> int:
             for action, result in zip(turn.actions, turn.results):
                 if action.tool == "speak":
                     continue
-                style = "green" if result.ok else "red"
+                # 「主动让出话头」不是失败 —— 印绿色，别印红配 ✗。
+                style = "red" if not result.ok and not result.declined else "green"
                 console.print(f"  [{style}]▸ {name} {action.render()}[/{style}]")
-                if not result.ok:
+                if not result.ok and not result.declined:
                     console.print(f"      [red]✗ {result.detail}[/red]")
             if turn.say:
                 console.print(f"  [yellow]{name}[/yellow]：{turn.say}")
@@ -261,7 +262,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
             for action, result in zip(turn.actions, turn.results):
                 if action.tool == "speak":
                     continue
-                style = "green" if result.ok else "red"
+                # 同上：「主动让出话头」不是失败。
+                style = "red" if not result.ok and not result.declined else "green"
                 console.print(f"  [{style}]▸ {name} {action.render()}[/{style}]")
             if turn.say:
                 console.print(f"[yellow]{name}[/yellow]：{turn.say}")

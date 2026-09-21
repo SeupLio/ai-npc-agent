@@ -148,16 +148,25 @@ class ActionResult:
         """按策略主动让出，不是失败。"""
         return (not self.ok) and self.outcome == OUTCOME_DECLINED
 
-    def render(self) -> str:
+    @property
+    def mark(self) -> str:
+        """这一行的标记。**唯一产出点** —— 别处要用就调它，不要自己再判一次 `ok`。
+
+        转写、报告、`render()` 都从这里取。曾经 `harness` 自己写了一份
+        `"ok" if result.ok else "!!"`，于是两份实现分家：
+        `render()` 印 `[yield]`、转写印 `[!!]` ⇒
+        **「主动让出话头」在裁判读的那段转写里又长得像失败**。
+        """
         if self.ok:
-            mark = "ok"
-        elif self.declined:
+            return "ok"
+        if self.declined:
             # ⚠️ 不印 `FAIL`。这一行会进 transcript，也是人读报告时的依据 ——
             # 把"主动让出"印成 FAIL，读报告的人会去查一个不存在的 bug。
-            mark = "yield"
-        else:
-            mark = "FAIL"
-        return f"[{mark}] {self.tool}: {self.detail}"
+            return "yield"
+        return "FAIL"
+
+    def render(self) -> str:
+        return f"[{self.mark}] {self.tool}: {self.detail}"
 
 
 # --------------------------------------------------------------------------- #

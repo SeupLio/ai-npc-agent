@@ -97,6 +97,63 @@ def test_declined_renders_as_yield_not_fail() -> None:
     assert "[FAIL]" in _failed().render()
 
 
+def test_the_mark_has_exactly_one_producer() -> None:
+    """标记（`ok` / `yield` / `FAIL`）只许有一个产出点。
+
+    这条是踩出来的：`harness` 原来自己写了一份 `"ok" if result.ok else "!!"`，
+    与 `ActionResult.render()` **分家** ⇒ 加了 `declined` 之后，
+    `render()` 印 `[yield]`、**转写印 `[!!]`** —— 而裁判读的就是那段转写，
+    于是"主动让出话头"在裁判眼里又变成一次失败。**硬规矩 5「两个真相」。**
+    """
+    # 别的模块不许再按 `.ok` 拼标记。
+    #
+    # ⚠️ 判据是**这个三元表达式读的是不是 `ActionResult` 的 `.ok`**，
+    # 不是"有没有比较运算"。第一版写 `isinstance(n, ast.Compare) and n.left.attr == "ok"` ——
+    # 而 `"ok" if result.ok else "!!"` 里 `result.ok` 是**裸属性**（真值判断），
+    # **AST 里根本没有 Compare 节点** ⇒ 护栏空转，注入回归还是全绿。
+    # 这是本项目第 N 次"护栏写错了所以它一直是绿的"（硬规矩 8）。
+    #
+    # 只查**动作结果**那几个名字（`result` / `res`）：别的 `.ok` 不是这个类型 ——
+    # 裁判判决（`judgement.ok`）、评测报告（`report.ok`）、桥接操作（`took.ok`）
+    # 都**没有** `declined` 这个概念，不该被这条护栏管。
+    #
+    # 而且**读 `.ok` 本身不算违规** —— 违规的是"只读 `.ok` 就下结论"。
+    # 比如 `"red" if not result.ok and not result.declined else "green"` 是对的
+    # （它两个字段都读了）。判据：这个三元的**判据里有没有出现 `declined`**。
+    # 第一版把前者也一起禁了 ⇒ 又是一次"护栏自己写错"。
+    ACTION_RESULT_NAMES = {"result", "res", "action_result"}
+    offenders: list[str] = []
+    for py in sorted((REPO / "npc_agent").rglob("*.py")) + sorted(
+        (REPO / "scripts").rglob("*.py")
+    ):
+        src = py.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.IfExp):
+                continue
+
+            fails: list[ast.Attribute] = []
+            oks: list[ast.Attribute] = []
+            for n in ast.walk(node.test):
+                if not isinstance(n, ast.Attribute):
+                    continue
+                base = n.value
+                if not (isinstance(base, ast.Name) and base.id in ACTION_RESULT_NAMES):
+                    continue
+                if n.attr == "declined":
+                    fails.append(n)
+                elif n.attr == "ok":          # ⚠️ 只有 `.ok` 才算；`.passed` 是评测结果，不是动作结果
+                    oks.append(n)
+            # 读了动作结果的 `.ok`，却没读 `.declined` ⇒ 它分不出"让出"和"失败"。
+            if oks and not fails:
+                offenders.append(f"{py.relative_to(REPO)}:{node.lineno}")
+    assert offenders == [], f"又有地方只看 .ok 就下结论了：{offenders}"
+
+    # 而唯一那个产出点必须存在，且被转写用到。
+    assert isinstance(ActionResult(ok=True, tool="t").mark, str)
+    harness = (REPO / "npc_agent" / "eval" / "harness.py").read_text(encoding="utf-8")
+    assert "result.mark" in harness, "转写没在用唯一产出点"
+
+
 # --------------------------------------------------------------------------- #
 # 二、主动让出**不许**进反思
 # --------------------------------------------------------------------------- #

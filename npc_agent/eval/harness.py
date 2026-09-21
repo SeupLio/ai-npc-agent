@@ -360,8 +360,12 @@ class EvalHarness:
                     speaker = cast.name_of(turn.actor_id)
                     for action, result in zip(turn.actions, turn.results):
                         called_tools.append(action.tool)
-                        mark = "ok" if result.ok else "!!"
-                        transcript.append(f"  [{mark}] {speaker} {action.render()}")
+                        # ⚠️ 标记只从 `result.mark` 取，**这里不许自己再判一次 `ok`**。
+                        # 原来自写一份 `"ok" if result.ok else "!!"` ⇒ 与
+                        # `ActionResult.render()` 分家：render() 印 `[yield]`、
+                        # 这里印 `[!!]` ⇒ **「主动让出话头」在裁判读的这段转写里
+                        # 又长得像失败**（硬规矩 5「两个真相」）。
+                        transcript.append(f"  [{result.mark}] {speaker} {action.render()}")
                     if turn.say:
                         speeches.append(turn.say)
                         speakers.append(turn.actor_id)

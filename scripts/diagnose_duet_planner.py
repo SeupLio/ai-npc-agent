@@ -58,8 +58,9 @@ for index, line in enumerate(DEMO_SCRIPTS["duet"], 1):
         else:
             print("     计划：无", flush=True)
         for call, res in zip(turn.actions, turn.results):
-            flag = "ok" if res.ok else "FAIL"
-            print(f"     动作 {flag}: {call.tool} {call.args} -> {res.detail}",
+            # 标记从 `res.mark` 取 —— 唯一产出点。自己写 `"ok" if res.ok else "FAIL"`
+            # 会把「主动让出话头」印成 FAIL（那是正确行为，不是失败）。
+            print(f"     动作 {res.mark}: {call.tool} {call.args} -> {res.detail}",
                   flush=True)
 
 print("\n=== 终局 ===", flush=True)
