@@ -47,13 +47,38 @@ class OpenAICompatLLM(LLM):
         # 传输层重试次数（含首次）。**这不是"再试一次就好"的乐观，是有数的**：
         # 超时/预算修完之后，整臂 112/231 条（48%）至少回落一次，其中 **109 条是
         # 传输层故障** —— 请求压根没到模型那儿，重发是合理的。
-        #
-        # 而 `finish_reason=length`（预算被吃光）和"响应结构异常"**不重试**：
-        # 前者重发一次要再花一整次调用，且同样的预算很可能同样被吃光。
         transient_attempts: int = 3,
         # 退避基数（秒）：第 n 次重试前等 `backoff * 2**(n-1)` ⇒ 1s、2s。
         # 端点真的挂掉时一次调用最坏 3×180s —— 那时本来也什么都拿不到。
         transient_backoff: float = 1.0,
+        # 解析层重试次数（含首次）。**和上面那个是两回事**，所以是独立参数。
+        #
+        # 从前解析层（`finish_reason=length` / "空内容 + 长思维链"）**完全不在
+        # 重试覆盖范围里** —— 它们是在 HTTP 200 返回**之后**由解析层抛的，
+        # 而 `_attempt()` 只包住 `_post_json()`。那不是"我们决定不重试"，
+        # 是"这一层结构上没被包住"。
+        #
+        # 现在包的**依据是量出来的**（`reports/_analyze_parse_retry.py`，0 次新调用）：
+        #
+        #   * 真实跑批（`eval_model_planner.json`，**生产预算 16384**）里
+        #     解析层失败 **28** 条 = 空内容 25 + 被截断的半句话 3。
+        #     ⇒ 附八"把预算从 4096 提到 16384 就从根上修好了"**并不成立**。
+        #   * 那 25 条空内容失败的思维链长度：中位数 **16686**、均值 16503，
+        #     **76%（19/25）落在离 16384 只差 400 字以内**。
+        #     ⇒ 是"差一点点"，不是"差得远"。重试一次（思维链长度本身在抖）
+        #     就有很大机会落回预算内。
+        #   * 附九「二·补」已量出它是**抖动**而非必然：同 prompt 同预算各跑 10 次，
+        #     64→失败 3、96→1、128→1。
+        #
+        # 成本：只在**已经失败之后**才重试，所以期望调用数是 `1 + p`
+        # （p = 该预算下的单次失败率）。按实测 p=10% 算 ⇒ 期望多花 **10%** 的 token，
+        # 换回 **90%** 的失败。而配额耗尽的 429 **不在此列**（见下面的分类）。
+        parse_attempts: int = 2,
+        # 重试时把预算放大这个倍数 —— 因为病因就是"预算差一点点"。
+        # 原样重发等于赌思维链这次恰好更短；放大预算直接把病因挪开。
+        # 上限由 `parse_budget_cap` 兜住，避免极端情况把预算翻上天。
+        parse_budget_factor: float = 1.5,
+        parse_budget_cap: int = 65536,
     ) -> None:
         self.model = model or os.getenv("NPC_AGENT_MODEL", "")
         self.base_url = (
@@ -63,6 +88,12 @@ class OpenAICompatLLM(LLM):
         self.timeout = timeout
         self.transient_attempts = max(1, transient_attempts)
         self.transient_backoff = transient_backoff
+        self.parse_attempts = max(1, parse_attempts)
+        self.parse_budget_factor = max(1.0, parse_budget_factor)
+        self.parse_budget_cap = max(1, parse_budget_cap)
+        #: 解析层重试的次数与理由，供探针/报告读取（**别从外面猜**）。
+        self.parse_retries = 0
+        self.parse_retry_reasons: list[str] = []
 
     @property
     def available(self) -> bool:
@@ -135,14 +166,58 @@ class OpenAICompatLLM(LLM):
         if not self.available:
             raise LLMUnavailable("未配置 NPC_AGENT_MODEL，无法调用模型")
 
-        request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(self._payload(messages, temperature, max_tokens)).encode("utf-8"),
-            headers=self._headers(),
-            method="POST",
-        )
-        body = self._post_json(request)
+        # ⚠️ **两层重试，包的东西不一样，别混：**
+        #
+        #   ① 传输层（`_post_json` → `_attempt`）：请求压根没到模型 / 没回来。
+        #      重发同样的请求是合理的，而且在**同一层**里循环。
+        #   ② 解析层（这个循环）：HTTP 200 回来了，但内容不可用
+        #      （`finish_reason=length` / 空内容 + 长思维链）。
+        #      **从前它整个在重试覆盖范围之外** —— 不是"决定不重试"，
+        #      是抛出的位置在 `_attempt()` 包住的那段之外。
+        #
+        # ②之所以值得做，依据是量出来的（见 `parse_attempts` 的注释）：
+        # 病因是"预算差一点点"（76% 的失败思维链离预算不到 400 字），
+        # 而思维链长度本身在抖 ⇒ **重试时同时把预算放大**，直接挪开病因。
+        budget = max_tokens
+        last: LLMUnavailable | None = None
+        for attempt in range(self.parse_attempts):
+            request = urllib.request.Request(
+                f"{self.base_url}/chat/completions",
+                data=json.dumps(
+                    self._payload(messages, temperature, budget)
+                ).encode("utf-8"),
+                headers=self._headers(),
+                method="POST",
+            )
+            # 传输层故障由 `_post_json` 自己重试；它抛出来时不该再进解析层重试
+            # （重试的是"解析不出可用内容"，不是"请求失败"）。
+            body = self._post_json(request)
 
+            try:
+                content = self._extract_content(body)
+            except LLMUnavailable as exc:
+                last = exc
+                if attempt + 1 < self.parse_attempts:
+                    self.parse_retries += 1
+                    self.parse_retry_reasons.append(str(exc))
+                    budget = min(
+                        int(budget * self.parse_budget_factor), self.parse_budget_cap
+                    )
+                    continue
+                raise
+
+            return content
+
+        # 循环走完还没 return ⇒ 最后一次也没成功（理论上上一轮的 raise 已经抛出）
+        raise last or LLMUnavailable("解析层重试耗尽")
+
+    @staticmethod
+    def _extract_content(body: dict) -> str:
+        """从响应体里取出可用内容；取不出就抛 `LLMUnavailable`（**带上原因**）。
+
+        抽成一个方法，是为了让"哪些失败属于解析层"有**唯一**的定义 ——
+        重试循环和调用方都读它，不再各判一套。
+        """
         try:
             choice = body["choices"][0]
             message = choice["message"]

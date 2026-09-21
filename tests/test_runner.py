@@ -793,6 +793,8 @@ def test_resume_refuses_when_the_config_changed() -> None:
         ("llm_timeout", 60.0),
         # 重试次数同理：重试 1 次和重试 3 次的回落率不同。
         ("llm_retries", 1),
+        # 解析层重试（另一层）同样改回落率 —— 它会救回一部分"预算差一点点"的失败。
+        ("llm_parse_retries", 1),
         ("memory_top_k", 2),
         ("memory_consolidate_at", 8),
         ("memory_half_life", 5.0),

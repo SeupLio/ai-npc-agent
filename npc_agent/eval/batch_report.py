@@ -722,6 +722,10 @@ def _judge_block(judge_payload: dict[str, Any] | None) -> str:
             )
         # 解析失败的重试单独报：它不是网络抖动，而是**裁判预算被思维链吃穿**。
         # 这个数只要不是 0，处置办法就是加预算 / 换模型，和查网络完全不同。
+        #
+        # ⚠️ 口径：2026-09-20 起解析层多了一层**客户端**重试（`llm_parse_retries`），
+        # 大部分解析失败在客户端层就被吸收了、传不到裁判这个循环里
+        # ⇒ 这个数**偏低**，不是"解析失败只发生过这么多次"。
         parse_retries = int(coverage.get("judge_parse_retries") or 0)
         if parse_retries:
             coverage_note += (
@@ -732,7 +736,10 @@ def _judge_block(judge_payload: dict[str, Any] | None) -> str:
                 "重试能救回大部分，但根因是预算偏小 —— 下次开跑前把 "
                 "<code>JUDGE_MAX_TOKENS</code> 调大。"
                 "注意：改了预算会作废检查点（它在恢复关键字段里），"
-                "所以这件事要在开跑前决定，不能等跑完一半。</div>"
+                "所以这件事要在开跑前决定，不能等跑完一半。"
+                "<b>这个数偏低</b>：模型客户端自己也有一层解析层重试"
+                "（<code>llm_parse_retries</code>），大部分解析失败在那里就被救回了，"
+                "根本传不到裁判这层循环里。</div>"
             )
 
     return (

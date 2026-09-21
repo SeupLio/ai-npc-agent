@@ -109,6 +109,7 @@ def _build(args: argparse.Namespace):
         api_key=cfg.api_key,
         timeout=cfg.llm_timeout,
         retries=cfg.llm_retries,
+        parse_retries=cfg.llm_parse_retries,
     )
     return cfg, scenario, build_cast(scenario, llm, cfg)
 
@@ -885,6 +886,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
         # 而不是回到客户端那个写死的 60s。
         timeout=getattr(args, "timeout", 0.0) or cfg.llm_timeout,
         retries=cfg.llm_retries,
+        parse_retries=cfg.llm_parse_retries,
     )
     rubrics = [r.strip() for r in (args.rubrics or "").split(",") if r.strip()] or list(DEFAULT_RUBRICS)
     unknown = [r for r in rubrics if r not in RUBRICS]

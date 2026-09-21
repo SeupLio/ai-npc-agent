@@ -412,3 +412,197 @@ def test_retries_can_be_turned_off():
     """`1` = 不重试；`0` 会被夹到 1（不许构造出"一次都不试"的客户端）。"""
     assert OpenAICompatLLM(model="m", transient_attempts=1).transient_attempts == 1
     assert OpenAICompatLLM(model="m", transient_attempts=0).transient_attempts == 1
+
+
+# --------------------------------------------------------------------------- #
+# 解析层重试
+#
+# ⚠️ 这和上面那一节是**两回事**，别混：
+#
+#   ① 传输层重试（上一节）：请求压根没到模型 / 没回来 ⇒ `_post_json` 内部循环。
+#   ② 解析层重试（这一节）：**HTTP 200 回来了，但内容不可用**
+#      （`finish_reason=length` / 空内容 + 长思维链）。
+#      它从前整个在重试覆盖范围之外 —— 不是"决定不重试"，是抛出的位置
+#      在 `_attempt()` 包住的那段之外。
+#
+# 依据是量出来的（`reports/_analyze_parse_retry.py`，0 次新调用）：
+#   * 真实跑批（生产预算 16384）里解析层失败 **28** 条 =
+#     空内容 25 + 被截断的半句话 3。
+#   * 那 25 条的思维链长度中位数 **16686**，**76%（19/25）离 16384 不到 400 字**。
+#     ⇒ 是"差一点点"，重试一次（思维链长度本身在抖）很有机会落回预算内。
+# --------------------------------------------------------------------------- #
+
+
+def _flaky_parse(monkeypatch, *, failures: int, budgets: list[int] | None = None):
+    """让 `urlopen` 前 `failures` 次返回**空内容**（解析层失败），之后返回可用台词。
+
+    同时把每次请求的 `max_tokens` 记进 `budgets`，用来验证**重试时预算真的放大了**。
+    返回调用计数。
+    """
+    calls: list[int] = []
+    seen_budgets: list[int] = [] if budgets is None else budgets
+
+    def fake_urlopen(request, *a, **k):  # noqa: ANN001
+        calls.append(1)
+        seen_budgets.append(json.loads(request.data.decode("utf-8"))["max_tokens"])
+        if len(calls) <= failures:
+            return _FakeResponse(_body("", "length", reasoning="想" * 400))
+        return _FakeResponse(_body("好了。", "stop"))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return calls
+
+
+def _parse_retrying_client(**kw) -> OpenAICompatLLM:
+    return OpenAICompatLLM(
+        model="m", base_url="http://x/v1", api_key="k",
+        transient_backoff=0.0, **kw,
+    )
+
+
+def test_an_empty_content_response_is_retried_and_can_succeed(monkeypatch):
+    """解析层失败**必须能重试** —— 从前它整个在重试覆盖范围之外。
+
+    这是路线图上那条"解析层的失败还没被重试覆盖"的落地：
+    HTTP 200 回来了但内容不可用（预算被思维链吃光），重发一次即可。
+    """
+    calls = _flaky_parse(monkeypatch, failures=1)
+    llm = _parse_retrying_client()
+    assert llm.complete([{"role": "user", "content": "hi"}]) == "好了。"
+    assert len(calls) == 2, "空内容之后应该重发一次"
+    assert llm.parse_retries == 1, "重试次数要能被读到（别从外面猜）"
+
+
+def test_a_truncated_response_is_retried(monkeypatch):
+    """`finish_reason=length` 且**有内容**（半句话）同样算解析层失败 —— 会被重试。"""
+    calls: list[int] = []
+
+    def fake_urlopen(*a, **k):  # noqa: ANN001
+        calls.append(1)
+        if len(calls) == 1:
+            return _FakeResponse(_body("是啊，阳光都", "length"))
+        return _FakeResponse(_body("好了。", "stop"))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    llm = _parse_retrying_client()
+    assert llm.complete([{"role": "user", "content": "hi"}]) == "好了。"
+    assert len(calls) == 2
+    assert llm.parse_retries == 1
+
+
+def test_the_retry_escalates_the_budget(monkeypatch):
+    """⭐ 重试**不是**把同一个请求再发一遍 —— 它把预算放大。
+
+    病因量出来是"预算差一点点"（76% 的失败思维链离预算不到 400 字），
+    所以原样重发等于赌"思维链这次恰好更短"；放大预算直接把病因挪开。
+    这条锁的就是这个区别 —— 少了它，"重试"和"重试但没用"长得一样。
+    """
+    budgets: list[int] = []
+    calls = _flaky_parse(monkeypatch, failures=1, budgets=budgets)
+    llm = _parse_retrying_client(parse_budget_factor=2.0)
+    llm.complete([{"role": "user", "content": "hi"}], max_tokens=1000)
+    assert calls and budgets[0] == 1000, "第一次应该用调用方给的预算"
+    assert budgets[1] == 2000, f"重试预算没放大：{budgets}"
+
+
+def test_the_escalated_budget_is_capped(monkeypatch):
+    """放大有上限：不许把预算翻上天（那会变成一次昂贵的赌博）。"""
+    budgets: list[int] = []
+    _flaky_parse(monkeypatch, failures=1, budgets=budgets)
+    llm = _parse_retrying_client(parse_budget_factor=100.0, parse_budget_cap=8000)
+    llm.complete([{"role": "user", "content": "hi"}], max_tokens=1000)
+    assert budgets[1] == 8000, f"没被上限兜住：{budgets}"
+
+
+def test_a_parse_failure_survives_all_attempts(monkeypatch):
+    """重试用完还是失败 ⇒ **抛错**，而不是把空台词当成"模型说了空话"。"""
+    budgets: list[int] = []
+    calls = _flaky_parse(monkeypatch, failures=99, budgets=budgets)
+    llm = _parse_retrying_client(parse_attempts=2, parse_budget_factor=2.0)
+    with pytest.raises(LLMUnavailable) as err:
+        llm.complete([{"role": "user", "content": "hi"}], max_tokens=1000)
+    assert len(calls) == 2, "应该试满 parse_attempts 次"
+    assert llm.parse_retries == 1, "第一次之后重试了一次"
+    assert "空内容" in str(err.value), "错误信息要保留最后一次的原始原因"
+    assert len(llm.parse_retry_reasons) == 1
+
+
+def test_parse_retries_can_be_turned_off(monkeypatch):
+    """`parse_attempts=1` = 不重试（旧行为），`0` 会被夹到 1。"""
+    calls = _flaky_parse(monkeypatch, failures=99)
+    llm = _parse_retrying_client(parse_attempts=1)
+    with pytest.raises(LLMUnavailable):
+        llm.complete([{"role": "user", "content": "hi"}])
+    assert len(calls) == 1, "关闭后不该重试"
+    assert llm.parse_retries == 0
+    assert OpenAICompatLLM(model="m", parse_attempts=0).parse_attempts == 1
+
+
+def test_a_transport_failure_is_not_double_retried(monkeypatch):
+    """⭐ 两层重试**不许嵌套**：传输层故障由 `_post_json` 自己重试，
+    不该再进解析层的重试循环 —— 否则次数变成乘法，一次调用可能打 9 次。
+    """
+    calls: list[int] = []
+
+    def fake_urlopen(*a, **k):  # noqa: ANN001
+        calls.append(1)
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    llm = _parse_retrying_client(transient_attempts=3, parse_attempts=2)
+    with pytest.raises(LLMUnavailable):
+        llm.complete([{"role": "user", "content": "hi"}])
+    assert len(calls) == 3, f"传输层只该试 3 次，实测 {len(calls)} 次（两层嵌套了？）"
+    assert llm.parse_retries == 0, "传输层故障不该算作解析层重试"
+
+
+def test_a_successful_call_does_not_record_a_parse_retry(monkeypatch):
+    """正常路径不许记重试 —— 否则报告里的"重试了多少次"是虚的。"""
+    _flaky_parse(monkeypatch, failures=0)
+    llm = _parse_retrying_client()
+    llm.complete([{"role": "user", "content": "hi"}])
+    assert llm.parse_retries == 0
+    assert llm.parse_retry_reasons == []
+
+
+def test_the_parse_retry_default_is_two_attempts():
+    """默认 = 首发 + 1 次重试。
+
+    不是"重试到成功"：那样在端点真出问题时会把一次调用拖成很多次。
+    1 次重试刚好覆盖"思维链抖动"这一类（实测是主要病因）。
+    """
+    assert OpenAICompatLLM(model="m").parse_attempts == 2
+
+
+def test_the_eval_path_hands_the_configured_parse_retries_to_the_client():
+    """⭐ 配置要**真的接线**到客户端 —— 光在 `RuntimeConfig` 里写个字段不算数。
+
+    这条防的是"配置里写着一个不生效的开关"那一类假话：
+    字段存在、文档也写了，但没人把它传下去 ⇒ 改配置不会改变行为。
+    """
+    from npc_agent.eval.runner import _default_llm_factory
+
+    config = RuntimeConfig(
+        llm_provider="openai-compat", model="m", llm_parse_retries=4
+    )
+    llm = _default_llm_factory(config)()
+    assert getattr(llm, "parse_attempts", None) == 4, (
+        "`llm_parse_retries` 没传到客户端上 —— 改配置不会改变行为。"
+    )
+
+
+def test_the_parse_retry_defaults_agree():
+    """两个默认值必须一致（不许"两个真相"）。"""
+    assert RuntimeConfig().llm_parse_retries == OpenAICompatLLM().parse_attempts
+
+
+def test_the_parse_retry_is_not_the_transport_retry():
+    """两层重试**是独立的参数** —— 改一个不许悄悄动另一个。
+
+    混淆这两层是这一块最容易犯的错：它们包的东西不一样
+    （传输层 = 请求没到；解析层 = 内容不可用），所以必须能分开调。
+    """
+    llm = OpenAICompatLLM(model="m", transient_attempts=7, parse_attempts=3)
+    assert (llm.transient_attempts, llm.parse_attempts) == (7, 3)
+    other = OpenAICompatLLM(model="m", parse_attempts=5)
+    assert other.transient_attempts == 3, "改解析层不该动传输层的默认值"

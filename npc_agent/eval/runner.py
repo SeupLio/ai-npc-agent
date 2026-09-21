@@ -319,6 +319,10 @@ RESUME_CRITICAL_FIELDS = (
     # 重试次数同理：重试 3 次和重试 1 次的**回落率不同**，
     # 拼在一起那份报告就说不清自己是用哪种配置跑出来的。
     "llm_retries",
+    # 解析层重试（另一层）：它同样改回落率 —— 重试会救回一部分
+    # "预算差一点点"的失败。不进指纹的话，`--resume` 会把
+    # "解析层不重试跑出来的半批"和"会重试跑出来的另半批"拼成一份报告。
+    "llm_parse_retries",
     "memory_strategy",
     "memory_top_k",
     "memory_consolidate_at",
@@ -584,6 +588,7 @@ def _default_llm_factory(config: RuntimeConfig) -> Callable[[], LLM]:
         api_key=config.api_key,
         timeout=config.llm_timeout,
         retries=config.llm_retries,
+        parse_retries=config.llm_parse_retries,
     )
 
 

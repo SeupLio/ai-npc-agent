@@ -327,6 +327,7 @@ class EvalHarness:
                 api_key=self.config.api_key,
                 timeout=self.config.llm_timeout,
                 retries=self.config.llm_retries,
+                parse_retries=self.config.llm_parse_retries,
             )
         )
         # 一律走 Cast，哪怕场上只有一个 NPC。

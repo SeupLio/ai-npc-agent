@@ -77,6 +77,7 @@ def _make_llm(cfg: RuntimeConfig):
         api_key=cfg.api_key,
         timeout=cfg.llm_timeout,
         retries=cfg.llm_retries,
+        parse_retries=cfg.llm_parse_retries,
     )
 
 
