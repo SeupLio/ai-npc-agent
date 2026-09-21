@@ -331,6 +331,16 @@ class MinecraftEnv(Environment):
         只是 needs 是带数量的字典、多了一个 yields。
         规划器用 recipe_needs() 把两种写法归一化，所以它不需要知道
         自己在给哪个世界做计划。
+
+        ⚠️ **`knowledge` 必须一起暴露。** 原来漏了它，后果很具体：
+        `village.yaml` 写了四条世界知识（stonemasonry / torch_light /
+        cave_danger / cave_secret），`self.knowledge` 也读进来了、
+        `available_topics()` 也会算，但 `world_facts()` 不往外给 ——
+        于是 `agent._direct_answer()` 拿到的是空表，
+        **在体素世界里 NPC 永远答不上任何一个知识问题**，
+        全部落到「这个我还没想过，你怎么看？」。而星屿咖啡屋那边
+        （`StarIsleEnv.world_facts`）是一直给的。
+        「换环境不换行为」是这个世界存在的**理由**，这里少一个键就破了。
         """
         return {
             "locations": {
@@ -338,6 +348,7 @@ class MinecraftEnv(Environment):
             },
             "recipes": {k: dict(v) for k, v in MC_RECIPES.items()},
             "items": dict(BLOCK_NAMES),
+            "knowledge": {k: dict(v) for k, v in self.knowledge.items()},
         }
 
     def available_topics(self, actor_id: str) -> list[str]:

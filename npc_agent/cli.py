@@ -21,7 +21,7 @@ from typing import Optional
 
 from .cast import Cast, build_cast, load_cast
 from .config import RuntimeConfig, list_scenarios, load_scenario
-from .env import env_label, env_name_of
+from .env import build_env, env_label, env_name_of
 from .eval.harness import CASES_DIR
 from .eval.judge import (
     DEFAULT_JUDGE_CONCURRENCY,
@@ -1266,11 +1266,75 @@ def _cast_block(scenario: dict) -> str:
     return "场上的人（提到他们是正常的，不算编造）:\n" + "\n".join(parts)
 
 
+def _knowledge_block(scenario: dict) -> str:
+    """场景的**世界知识表** —— 漏了它，「事实一致」会惩罚正确的行为。
+
+    这张表是 NPC 的**知识库**，而 `agent._direct_answer()` 命中话题时
+    **一字不差地把 `text` 说出来**（`return str(entry.get("text") or "")`）。
+
+    可裁判从来没拿到过这张表。于是一条完全正确的台词会被判成编造：
+
+        [village] 台词: 火把别插太密，一支照八格，插密了反而看不清远处。
+                 理由: 台词里出现了具体数量"一支照八格"，属于编造现场
+                       未给出的具体数字，违反事实一致标准。
+
+    而这句正是 `configs/scenarios/village.yaml` 的 `torch_light.text`。
+    实测（`reports/judge_model.json`，1005 条判决）**23 条**是这么来的 ——
+    台词来自 `world.knowledge`，却被记成「编造」。`stonemasonry.text`
+    （"这村的墙都是河石砌的"）同样被判过。
+
+    和 `_cast_block` 是**同一个病**：给裁判的信息不全，它就会惩罚正确的行为,
+    而且惩罚得很讲道理 —— 按它拿到的材料，那确实像编造。
+
+    ⚠️ **必须走 `build_env(...).world_facts()["knowledge"]`，不能直接读
+    `scenario["world"]["knowledge"]`。** 知识表有**两个来源**：
+    `village` 写在 YAML 里，而四个咖啡屋场景写死在
+    `env/star_isle.py:KNOWLEDGE`（YAML 里只有 `knowledge_unlocked`，
+    没有 `knowledge` 键）。只读 YAML 会**静默漏掉 5 个场景里的 4 个** ——
+    而那看起来跟"修好了"一模一样。走 `world_facts()` 就是走 NPC 自己
+    读的那份，从根上只有一个真相。
+
+    👉 这里只放 `requires` 为空的条目：`cave_secret` / `hidden_menu`
+    这种要靠剧情解锁的，在**初始**配置下就是不该说的，给了裁判
+    等于反过来允许剧透。解锁状态是逐轮的，事后判分拿不到，
+    所以宁可不给 —— 少给只会漏判，多给会判错。
+    """
+    try:
+        env = build_env(scenario)
+        knowledge = (env.world_facts() or {}).get("knowledge") or {}
+    except Exception:
+        # 环境构造失败不该让整份报告炸掉：退回 YAML 里那份（可能为空）。
+        knowledge = ((scenario.get("world") or {}).get("knowledge") or {})
+
+    lines: list[str] = []
+    for _topic, entry in sorted(knowledge.items()):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("requires"):
+            # 要靠剧情解锁的知识，初始配置里还没有，给了会变成"允许剧透"。
+            continue
+        text = str(entry.get("text") or "").strip()
+        if not text:
+            continue
+        title = str(entry.get("title") or "").strip()
+        lines.append(f"  {title}：{text}" if title else f"  {text}")
+    if not lines:
+        return ""
+    return (
+        "场景设定（NPC 本来就懂这些，说出来**不算编造**；这是世界知识，不是现场变化）:\n"
+        + "\n".join(lines)
+    )
+
+
 def _scene_block(scenario: dict, scenario_id: str) -> str:
-    """场景的**静态**配置（有哪些人、物品在哪、有哪些地点）。
+    """场景的**静态**配置（有哪些人、物品在哪、有哪些地点、懂哪些知识）。
 
     刻意在函数名和注释里说清楚这是"初始配置"：事后判分拿不到当时的现场，
     用它去判「事实一致」会把"世界已经变了"误判成"NPC 在编造"。
+
+    这里放的都是**静态**的东西，事后判分拿得到 —— 所以给全了是对的，
+    给全了才不会罚正确行为。逐轮会变的状态（谁说了什么、东西挪没挪）
+    一律不放，见 `_knowledge_block` 和 `_cast_block` 的注释。
     """
     world = scenario.get("world") or {}
     items = world.get("items") or {}
@@ -1286,6 +1350,9 @@ def _scene_block(scenario: dict, scenario_id: str) -> str:
     pois = scenario.get("pois") or {}
     if pois:
         parts.append("  地点: " + "、".join(f"{k}({v.get('name', k)})" for k, v in sorted(pois.items())))
+    knowledge_block = _knowledge_block(scenario)
+    if knowledge_block:
+        parts.append(knowledge_block)
     return "\n".join(parts)
 
 

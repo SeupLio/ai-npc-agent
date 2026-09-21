@@ -1033,6 +1033,137 @@ def test_the_scene_block_does_not_leak_what_anyone_said() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 世界知识表：漏了它，「事实一致」会惩罚**正确的行为**
+#
+# 第三个同类型的 bug（前两个是漏演员表、人设块只取第一个 NPC）。
+# 实测（reports/judge_model.json，1005 条判决）有 23 条是这样判错的：
+#   [village] 台词: 火把别插太密，一支照八格，插密了反而看不清远处。
+#            理由: 「编造现场未给出的具体数字」
+# 而这句一字不差地来自 village.yaml 的 world.knowledge.torch_light.text,
+# agent._direct_answer() 就是原样把它说出来。
+# --------------------------------------------------------------------------- #
+def test_the_scene_block_carries_the_world_knowledge() -> None:
+    """NPC 照着自己懂的知识说话，不能被判成编造。
+
+    这是 23 条误判的直接原因：知识表没给裁判，于是
+    「照本宣科」看起来跟「凭空捏造」一模一样。
+    """
+    from npc_agent.cli import _scene_block
+
+    block = _scene_block(_duet_scenario(), "duet")
+    # 咖啡屋的三条知识（requires 为空的那些）都要在里面。
+    for text in (
+        "这家店开在星屿的旧灯塔下面",  # house_story
+        "水温低一点，闷蒸久一点",  # brewing
+        "露台朝北",  # constellation
+    ):
+        assert text in block, f"现场块里应该有知识条目：{text}"
+
+    assert "不算编造" in block, "要明说这是 NPC 本来就懂的，否则裁判还是按字面判"
+
+
+def test_the_scene_block_hides_knowledge_that_needs_unlocking() -> None:
+    """要靠剧情解锁的知识**不能**给裁判 —— 那是剧透。
+
+    `hidden_menu` 的 `requires` 是 `hidden_menu_unlocked`，
+    初始配置下 NPC 本来就不该说。把它放进材料，等于反过来
+    允许 NPC 一上来就抖出隐藏菜单。
+    """
+    from npc_agent.cli import _scene_block
+
+    block = _scene_block(_duet_scenario(), "duet")
+    assert "灯塔余晖" not in block, "未解锁的知识不该出现在判分材料里"
+
+
+def test_the_village_scene_gets_the_minecraft_knowledge() -> None:
+    """**回归护栏**：village 跑在 minecraft 环境上，知识表在 YAML 里。
+
+    这里踩过一个坑：知识表有**两个来源** ——
+      * 咖啡屋四个场景：写死在 `env/star_isle.py:KNOWLEDGE`（YAML 无 knowledge 键）；
+      * `village`：写在 `village.yaml` 的 `world.knowledge`。
+    只读 YAML 会静默漏掉咖啡屋（4/5），只读 star_isle 会静默漏掉 village。
+    所以必须走 `build_env(...).world_facts()` —— 那是 NPC 自己读的那一份。
+    """
+    from npc_agent.cli import _knowledge_block
+    from npc_agent.config import load_scenario
+
+    block = _knowledge_block(load_scenario("village"))
+    assert "火把别插太密，一支照八格" in block, (
+        "village 的知识表必须拿到 —— 实测 23 条误判里就有这一句"
+    )
+    assert "这村的墙都是河石砌的" in block
+    # cave_secret 的 requires 是 cave_lit，初始状态不给。
+    assert "洞底那道矿脉" not in block, "要等 cave_lit 的知识不能提前给"
+
+
+def test_the_cafe_scenarios_get_knowledge_that_only_lives_in_python() -> None:
+    """**这条才是让 `build_env` 那条路径变得不可替代的护栏。**
+
+    咖啡屋四个场景的 YAML 里**没有** `knowledge` 键 —— 知识表只存在于
+    `env/star_isle.py:KNOWLEDGE`。所以"退回只读 YAML"这个改法
+    在 village 上看不出来（village 恰好也写了 YAML），
+    必须拿咖啡屋场景来钉：
+
+        ❌ 只读 scenario["world"]["knowledge"] → 这里会空
+        ✅ 走 build_env(...).world_facts()      → 这里有三条
+
+    没有这一条，`_knowledge_block` 可以悄悄退化成"只修好 1/5 个场景"
+    而所有护栏全绿。
+    """
+    from npc_agent.cli import _knowledge_block
+    from npc_agent.config import load_scenario
+
+    for sid in ("duet", "icebreaker", "hosting", "tutorial"):
+        scenario = load_scenario(sid)
+        # 先确认前提成立：YAML 里确实没有 knowledge，否则这条测试没有鉴别力。
+        assert not ((scenario.get("world") or {}).get("knowledge")), (
+            f"{sid} 的 YAML 里出现了 knowledge 键，这条护栏的鉴别力没了 —— "
+            "需要换一个知识只存在于 Python 里的场景"
+        )
+        block = _knowledge_block(scenario)
+        assert "这家店开在星屿的旧灯塔下面" in block, (
+            f"{sid} 的知识表只写在 env/star_isle.py 里，"
+            "走 YAML 会拿到空表 —— 说明 _knowledge_block 没走 build_env"
+        )
+
+
+def test_the_minecraft_world_actually_exposes_knowledge() -> None:
+    """`MinecraftEnv.world_facts()` 必须给 `knowledge`。
+
+    原来它漏了这个键，于是 `agent._direct_answer()` 拿到空表 ——
+    在体素世界里 NPC **永远答不上任何知识问题**，全落到
+    「这个我还没想过，你怎么看？」。而星屿咖啡屋一直给。
+    「换环境不换行为」是这个场景存在的理由，少一个键就破了。
+    """
+    from npc_agent.config import load_scenario
+    from npc_agent.env import build_env
+
+    facts = build_env(load_scenario("village")).world_facts()
+    knowledge = facts.get("knowledge") or {}
+    assert knowledge, "MinecraftEnv.world_facts() 不能漏掉 knowledge"
+    assert "torch_light" in knowledge
+    assert knowledge["torch_light"]["text"] == (
+        "火把别插太密，一支照八格，插密了反而看不清远处。"
+    )
+    # 和星屿咖啡屋的结构保持一致（title / text / requires）。
+    assert set(knowledge["torch_light"]) >= {"title", "text", "requires"}
+
+
+def test_both_worlds_agree_on_whether_they_expose_knowledge() -> None:
+    """两个环境的 `world_facts()` 必须**同形**。
+
+    这一条是防"只修一边"的：星屿给 knowledge、体素不给，
+    两边的 NPC 行为就会不一样，而报告里看不出任何异常。
+    """
+    from npc_agent.config import load_scenario
+    from npc_agent.env import build_env
+
+    for sid in ("duet", "village"):
+        facts = build_env(load_scenario(sid)).world_facts()
+        assert facts.get("knowledge"), f"{sid} 的 world_facts 里没有 knowledge"
+
+
+# --------------------------------------------------------------------------- #
 # 上下文变了，检查点就必须作废
 # --------------------------------------------------------------------------- #
 def test_the_prompt_digest_changes_when_the_context_changes() -> None:
