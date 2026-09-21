@@ -46,6 +46,8 @@ from pathlib import Path
 
 import pytest
 
+from npc_agent.config import load_persona, load_scenario
+
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
 PKG = REPO_ROOT / "npc_agent"
@@ -170,3 +172,198 @@ def test_the_real_config_classes_have_no_unread_fields() -> None:
         "  2026-09-20：`RuntimeConfig` 21 → 22，加的是 `llm_parse_retries`；\n"
         "  它在 `cli` / `harness` / `runner` / `studio` 四处被读、且进了恢复指纹。"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 配置解析缓存
+#
+# 实测一次离线 eval（235 条）里 `load_yaml` 被调用 510 次、只涉及 8 个文件
+# （去重率 1.6%），单次解析约 2.9ms ⇒ 约 1.5s 花在反复读同一批 YAML。
+# 缓存把 510 次连续加载从 1.49s 降到 0.018s。
+#
+# 但缓存有个**不会报错**的失败模式：返回**共享**对象。谁改了一份，
+# 下一个调用方就拿到被改过的配置 —— 于是某几条用例莫名其妙地行为不同。
+# 所以下面三条护栏：缓存要**真的生效**、返回的对象要**互不共享**、
+# 且通用的 `load_yaml` **不许**被缓存（它接任意路径）。
+# --------------------------------------------------------------------------- #
+def _count_yaml_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """把 config.load_yaml 换成一个计数版，返回被读过的路径列表。"""
+    from npc_agent import config as cfg
+
+    reads: list[str] = []
+    real = cfg.load_yaml
+
+    def counting(path):
+        reads.append(str(path))
+        return real(path)
+
+    monkeypatch.setattr(cfg, "load_yaml", counting)
+    cfg.clear_config_cache()
+    return reads
+
+
+def test_the_persona_and_scenario_loads_are_cached(monkeypatch) -> None:
+    """同一份配置读 20 次，只应该真的解析 1 次。"""
+    reads = _count_yaml_reads(monkeypatch)
+    for _ in range(20):
+        load_persona("ayou")
+        load_scenario("village")
+    assert len(reads) == 2, (
+        f"缓存没生效：20 轮读了两份配置，实际解析 {len(reads)} 次（期望 2）。\n"
+        f"  读过的路径：{sorted(set(reads))}"
+    )
+
+
+def test_the_cache_returns_objects_that_are_not_shared(monkeypatch) -> None:
+    """**返回的必须是各自的副本** —— 这是缓存唯一的危险面。
+
+    如果两份拿到同一个 dict，改一份会污染缓存，进而污染**之后所有**调用方。
+    这类串味（aliasing）不报错，只让行为变得依赖于调用顺序。
+    """
+    _count_yaml_reads(monkeypatch)
+    first = load_scenario("village")
+    second = load_scenario("village")
+
+    assert first == second, "内容应该一致"
+    assert first is not second, "两次加载不能是同一个对象"
+
+    # 改第一份，第二份和"之后新拿的"都不该受影响
+    first["name"] = "被我改坏了"
+    assert second.get("name") != "被我改坏了", "改一份污染了另一份"
+    assert load_scenario("village").get("name") != "被我改坏了", "改一份污染了缓存"
+
+
+def test_the_cache_key_includes_the_folder(tmp_path, monkeypatch) -> None:
+    """`personas/x.yaml` 和 `scenarios/x.yaml` 不许互相覆盖。
+
+    ⚠️ **第一版这条护栏是假的。** 它拿 `ayou`（persona）和 `village`（scenario）
+    去测 —— 两者 **id 本来就不同**，就算缓存键里不带目录也不会撞车，
+    于是这条断言**永远绿**（反向测试注入"键不带 kind"时它照样绿）。
+    这正是本项目栽过好几次的那个坑：**护栏没跑在它要抓的现象会发生的场景上。**
+
+    修法：**先造出同名文件**（`personas/同名.yaml` + `scenarios/同名.yaml`，
+    内容不同），再断言两边读出来不一样。前提一成立，鉴别力就有了。
+    """
+    # 造一个只含"同名但内容不同"两个文件的假 configs/
+    (tmp_path / "personas").mkdir()
+    (tmp_path / "scenarios").mkdir()
+    (tmp_path / "personas" / "twin.yaml").write_text(
+        "name: 我是人设\n", encoding="utf-8"
+    )
+    (tmp_path / "scenarios" / "twin.yaml").write_text(
+        "name: 我是场景\n", encoding="utf-8"
+    )
+    from npc_agent import config as cfg
+
+    monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)
+    cfg.clear_config_cache()
+
+    persona = load_persona("twin")
+    scenario = load_scenario("twin")
+
+    # 前提断言：两个文件确实同名、内容确实不同 —— 不然这条测试没有鉴别力
+    assert persona["name"] == "我是人设", f"前提不成立：{persona}"
+    assert scenario["name"] == "我是场景", f"前提不成立：{scenario}"
+
+    # 换个顺序再读一遍：缓存键不带 kind 的话，第二次会拿到第一次的结果
+    assert load_scenario("twin")["name"] == "我是场景", (
+        "`scenarios/twin.yaml` 读到了 `personas/twin.yaml` 的内容 —— "
+        "缓存键里没带目录（kind）"
+    )
+    assert load_persona("twin")["name"] == "我是人设", (
+        "`personas/twin.yaml` 读到了 `scenarios/twin.yaml` 的内容 —— "
+        "缓存键里没带目录（kind）"
+    )
+
+    cfg.clear_config_cache()
+
+
+
+def test_the_generic_yaml_loader_is_not_cached(monkeypatch) -> None:
+    """**通用的 `load_yaml` 不许被缓存。**
+
+    它接任意路径（`eval/compare.py` 就传外部路径）。缓存它会让
+    "改了文件再读"静默拿到旧内容 —— 那是本项目最忌讳的那类静默故障。
+    这条护栏钉的是"缓存只加在按 id 的两个入口上"这个边界。
+    """
+    from npc_agent import config as cfg
+
+    reads: list[str] = []
+    real = cfg.load_yaml
+    monkeypatch.setattr(
+        cfg, "load_yaml", lambda p: (reads.append(str(p)), real(p))[1]
+    )
+    cfg.clear_config_cache()
+
+    cfg.load_yaml(REPO_ROOT / "configs" / "personas" / "ayou.yaml")
+    cfg.load_yaml(REPO_ROOT / "configs" / "personas" / "ayou.yaml")
+    assert len(reads) == 2, (
+        f"通用 load_yaml 被缓存了（读了两次文件但只解析 {len(reads)} 次）—— "
+        "外部路径会被静默地缓存成旧内容"
+    )
+
+
+def test_clear_config_cache_actually_invalidates(monkeypatch) -> None:
+    """`clear_config_cache()` 之后必须重新解析 —— 否则它是个假开关。"""
+    reads = _count_yaml_reads(monkeypatch)
+    load_persona("ayou")
+    load_persona("ayou")
+    assert len(reads) == 1, "缓存没生效，先看上面那条"
+
+    from npc_agent import config as cfg
+
+    cfg.clear_config_cache()
+    load_persona("ayou")
+    assert len(reads) == 2, (
+        f"clear_config_cache() 之后没有重新解析（仍是 {len(reads)} 次）—— "
+        "它没有真的清掉缓存"
+    )
+
+
+def test_the_cache_does_not_perturb_the_resume_fingerprint() -> None:
+    """**加缓存不许改变喂给裁判的上下文** —— 那会静默作废 `--resume`。
+
+    `judge_fingerprint` 里有一项 `prompt_digest`，覆盖人设块 + 现场块。
+    它的存在就是因为一条真实事故：改好现场块之后再 `--resume`，
+    新旧两批判决会被拼在一起，而它们是在两套 prompt 下判的 ——
+    **不报错，看起来只是"判完了"**。
+
+    所以缓存必须保证：**清不清缓存，渲染出来的块逐字节相同**。
+    深拷贝保证了这一点（内容相同、对象不同），但那是"实现上碰巧成立"，
+    得有一条护栏把它变成契约。
+    """
+    from npc_agent import config as cfg
+    from npc_agent.cli import _persona_block, _scene_block
+    from npc_agent.eval.judge import prompt_digest
+
+    def render() -> dict[str, str]:
+        scenario = load_scenario("village")
+        return {
+            "scene:village": _scene_block(scenario, "village"),
+            "persona:village:ayan": _persona_block(scenario, "阿岩"),
+        }
+
+    # ⚠️ **必须渲染三次**，而且中间那次不能清缓存 —— 否则整条测试
+    # 每次都在"缓存未命中"的路径上跑，**永远碰不到缓存命中**，
+    # 于是它测不出任何缓存引起的差异（第一版就是这么写的，
+    # 反向测试注入"命中时篡改内容"照样绿）。
+    cold = render()                     # ① 冷：真的解析
+    warm = render()                     # ② 热：**命中缓存** ← 关键
+    cfg.clear_config_cache()
+    cold_again = render()               # ③ 清后再冷
+
+    assert cold == warm, (
+        "缓存命中时渲染出的上下文和首次解析时不一样 —— "
+        "说明缓存改了喂给裁判的内容。\n"
+        f"  差异：{ {k: (cold[k], warm[k]) for k in cold if cold[k] != warm[k]} }"
+    )
+    assert cold == cold_again, (
+        "清缓存后渲染出的上下文变了。\n"
+        f"  差异：{ {k: (cold[k], cold_again[k]) for k in cold if cold[k] != cold_again[k]} }"
+    )
+    assert prompt_digest(cold) == prompt_digest(warm) == prompt_digest(cold_again), (
+        "指纹跟着缓存变了 —— `--resume` 会把两套 prompt 下的判决拼在一起"
+    )
+
+
+

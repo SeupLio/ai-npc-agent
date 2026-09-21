@@ -24,10 +24,10 @@ from .modules.memory import MemoryManager, MemoryStore
 from .modules.persona import Persona
 from .modules.planner import Planner, render_condition
 from .modules.reflection import Reflector
-from .modules.repetition import find_repeat, similarity
+from .modules.repetition import find_repeat
 from .modules.state import StateTracker
 from .modules.tools import ToolContext, ToolRegistry
-from .types import ActionCall, ActionResult, AgentTurn, Plan, PlanStep, Utterance
+from .types import ActionCall, AgentTurn, Plan, PlanStep, Utterance
 
 
 def _tag_plan(plan: Optional[Plan], source: str) -> Optional[Plan]:

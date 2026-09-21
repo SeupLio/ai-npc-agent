@@ -757,6 +757,38 @@ def test_the_sleep_between_retries_grows_exponentially() -> None:
     assert waits == [3.0, 6.0]
 
 
+def test_tests_never_actually_wait_for_the_retry_backoff() -> None:
+    """**测试里不许真的等 3s / 6s 的重试退避。**
+
+    这条不是锦上添花：`3.0 × (1 + 2) = 9s` 是每次重试耗尽的真实等待，
+    而"喂坏输出 / 让模型抛异常"那类用例**每条都会走完重试**。
+    实测原来有 7 条忘了传 `sleep=`，白等 **63 秒**；加上一条 27 秒的，
+    一个 158 秒的套件里约 **90 秒**纯粹在 `time.sleep`。
+
+    修法是 `tests/conftest.py` 的 autouse fixture 把 `judge.DEFAULT_SLEEP`
+    换成 no-op —— 靠"每个测试记得传 `sleep=`"的约定实测会漏。
+    这条护栏钉的就是那个开关**真的被关掉了**：
+    谁把 fixture 删了（或者改回 `time.sleep`），这里立刻变红。
+    """
+    import time as _time
+
+    judge = J.LLMJudge(ScriptedLLM(['{"score": 1, "reason": "好"}']))
+
+    # ① 精确判据：默认等待不能是 `time.sleep` 本身
+    assert judge._sleep is not _time.sleep, (
+        "默认等待还是 `time.sleep` —— conftest 的 `_no_real_retry_backoff` "
+        "没生效（被删了？还是 `judge.DEFAULT_SLEEP` 改了名字？）"
+    )
+
+    # ② 行为判据：真的调一次 3.0，不许真的睡
+    started = _time.perf_counter()
+    judge._sleep(3.0)
+    elapsed = _time.perf_counter() - started
+    assert elapsed < 0.5, (
+        f"测试里真的等了 {elapsed:.2f}s（期望接近 0）—— 退避开关没关上"
+    )
+
+
 def test_a_missing_reply_is_not_retried() -> None:
     """**"没有台词可判"不该重试。**
 

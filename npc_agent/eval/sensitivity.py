@@ -50,7 +50,10 @@ from ..modules.memory import MemoryManager, MemoryStore
 from ..modules.persona import Persona
 from ..modules.tools import ActionResult, ToolRegistry
 from .harness import EvalHarness, EvalReport
-from .harness import CASES_DIR  # noqa: F401  （对外暴露，方便调用方定位用例）
+# 这里原来还有一行 `from .harness import CASES_DIR  # noqa: F401 （对外暴露…）`。
+# 注释说"方便调用方定位用例"，但**没有任何调用方从本模块取它** ——
+# 要用的人（`cli.py` / `scripts/rescore_safety.py` / 测试）都直接从
+# `.harness` 拿。一行注释描述了一个没被实现的意图，删掉。
 
 #: 六个维度。顺序固定，报告表头按它来。
 DIMENSIONS: tuple[str, ...] = (

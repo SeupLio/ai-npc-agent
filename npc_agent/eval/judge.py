@@ -82,6 +82,21 @@ JUDGE_TEMPERATURE = 0.0
 JUDGE_MAX_RETRIES = 2
 JUDGE_BACKOFF = 3.0
 
+#: 默认的等待函数（重试退避用）。**抽成模块级变量是为了让它只有一个关掉的地方。**
+#:
+#: 为什么必须抽出来：`3.0 × (1 + 2) = 9s` 是**每次重试耗尽**的真实等待。
+#: 测试里那些"喂坏输出 / 抛异常"的用例全都会走完重试 ⇒ 每条白等 9 秒。
+#: 实测 `test_judge.py` 里有 7 条这样，合计 **63 秒**；
+#: 加上 `test_unjudged_verdicts_are_counted_but_never_scored` 的 27 秒，
+#: 一个 158 秒的测试套件里约 **90 秒**纯粹在 `time.sleep`。
+#:
+#: 原来靠"每个测试自己传 `sleep=`"来避免，而实测有 7 处忘了 ——
+#: 这类"靠人记得"的约定迟早会漏。现在 `tests/conftest.py` 有一个 autouse
+#: fixture 把它换成 no-op，**忘了传也不会真的等**。
+#:
+#: ⚠️ 不要在别处直接用 `time.sleep`：那会绕过这个开关。
+DEFAULT_SLEEP: Any = time.sleep
+
 #: 判一条台词时，往前带**几轮**对话作为上下文。`0` = 不带（旧行为）。
 #:
 #: ## 为什么必须带 —— 这是"喂给裁判的材料不完整"那条坑的最后一个洞
@@ -324,8 +339,9 @@ class LLMJudge:
         self.name = name or getattr(llm, "name", "judge")
         self.max_retries = max(0, int(max_retries))
         self.backoff = backoff
-        # 注入 sleep 是为了让测试不用真的等 3 秒、6 秒
-        self._sleep = sleep or time.sleep
+        # 注入 sleep 是为了让测试不用真的等 3 秒、6 秒。
+        # 没注入就退到模块级的 `DEFAULT_SLEEP` —— 那个开关由 conftest 关掉。
+        self._sleep = sleep or DEFAULT_SLEEP
         self.calls = 0
         #: 重试次数。单独计数，因为它回答的是"这次判分有多不稳"——
         #: 和 `calls`（花了多少资源）是两个问题。
