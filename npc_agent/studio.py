@@ -189,7 +189,13 @@ def _turn_payload(turn: Any, cast: Cast) -> dict[str, Any]:
             {
                 "tool": action.tool,
                 "render": action.render(),
-                "ok": result.ok,
+                # ⚠️ 发 `mark` 而不是 `ok`。只发 `ok` 的话，页面**分不出**
+                # 「真的失败了」和「按策略主动让出话头」——
+                # 于是那个正确行为在页面上会显示成红色的 `✗`。
+                # `mark` 是 `ActionResult` 上唯一那个产出点（见 `types.py`），
+                # 前端只管印，不自己判。
+                "mark": result.mark,
+                "declined": result.declined,
                 "detail": result.detail,
             }
             for action, result in zip(turn.actions, turn.results)
@@ -198,7 +204,16 @@ def _turn_payload(turn: Any, cast: Cast) -> dict[str, Any]:
             # 把它一起过滤掉就等于把"想说但被拦下了"整条信息丢掉，
             # 界面上只剩"没说话，但在忙自己的事"，而那是一句不实的话
             # （它其实什么都没做成）。
-            if action.tool != "speak" or not result.ok
+            #
+            # 「主动让出话头」算**没失败**，所以也要过滤掉 ——
+            # 它的信息量已经在"这一轮是别人说的"里了。
+            #
+            # ⚠️ 判据是 `not ok and not declined`，**不是** `not ok`。
+            # 从前这里写的是 `not result.ok`，而让出话头的 `ok` 也是 `False`
+            # ⇒ 让出的 speak 照样列出来，页面看见一条 `mark: yield` 动作 ——
+            # 和这行注释说的"会被过滤掉"正好相反（注释描述了一个没实现的意图）。
+            # 这是同一个缺陷的第三个出口：判据只认 `ok`，就永远分不出失败与让出。
+            if action.tool != "speak" or (not result.ok and not result.declined)
         ],
         "used_memories": [str(m) for m in (turn.used_memories or [])][:6],
         "violations": list(turn.persona_violations or []),

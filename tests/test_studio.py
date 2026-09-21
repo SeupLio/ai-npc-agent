@@ -339,8 +339,72 @@ def test_failed_speak_stays_visible_but_successful_speak_does_not() -> None:
     )
     got = _turn_payload(bad_turn, FakeCast())["actions"]
     assert len(got) == 1, "失败的 speak 被过滤掉了，界面上会看不到任何动作"
-    assert got[0]["ok"] is False
+    assert got[0]["mark"] == "FAIL"
     assert "发言权" in got[0]["detail"]
+
+
+def test_the_console_payload_can_tell_a_yield_from_a_failure() -> None:
+    """⭐ 页面必须能分出「主动让出话头」和「真的失败了」。
+
+    从前 payload 只发 `ok`（布尔），于是"按策略让出话头"这个**正确行为**
+    在自测平台上显示成红色的 `✗` —— 和真失败长得一模一样。
+    现在发 `mark`，页面只负责印（判据只有一个产出点）。
+
+    **这里还钉住过滤判据。** `_turn_payload` 会把成功的 `speak` 略去
+    （`say` 已经表达了它）。旧判据写的是 `not result.ok`，而**让出话头的
+    `ok` 也是 `False`** ⇒ 让出的 speak 照样被列进 `actions`，
+    页面上多出一条 `yield` 动作行 —— 和那段注释写的"会被过滤掉"正好相反。
+    判据必须是 `not ok and not declined`。
+    """
+    from npc_agent.studio import _turn_payload
+    from npc_agent.types import ActionCall, ActionResult, AgentTurn, OUTCOME_DECLINED
+
+    class FakeCast:
+        def name_of(self, pid: str) -> str:
+            return pid
+
+    speak = ActionCall(tool="speak", args={"text": "你好"})
+
+    def row(tool: str, result: ActionResult) -> list[dict]:
+        turn = AgentTurn(
+            tick=3, actor_id="a",
+            actions=[ActionCall(tool=tool, args={"text": "你好"})],
+            results=[result],
+        )
+        return _turn_payload(turn, FakeCast())["actions"]
+
+    # ① 让出话头：`ok=False`，但它是**正确行为** —— 必须和"成功"一样被略去。
+    yielded = ActionResult(
+        False, "speak", "发言占比 67% 已超上限，本轮主动让出话头",
+        outcome=OUTCOME_DECLINED,
+    )
+    got = row("speak", yielded)
+    assert got == [], (
+        f"让出的 speak 被列进了动作列表：{got}。"
+        "它的信息量已经在「这一轮是别人说的」里了，再列一遍只会让日志变吵。"
+    )
+
+    # ② 真失败：必须留着（`say` 是空的，滤掉就等于把"想说但被拦下了"整条丢掉）。
+    #    这一条是①的反向保障：判据不许宽到把真失败也一起滤掉。
+    failed = row("speak", ActionResult(False, "speak", "发言权已被收回"))
+    assert len(failed) == 1 and failed[0]["mark"] == "FAIL", (
+        f"真失败的 speak 被滤掉了，界面上会看不到任何动作：{failed}"
+    )
+
+    # ③ 别的工具让出时，标记必须是 `yield` 而不是 `FAIL`（页面据此印不同的符号）。
+    other = AgentTurn(
+        tick=4, actor_id="a",
+        actions=[ActionCall(tool="set_flag", args={"key": "x", "value": 1})],
+        results=[
+            ActionResult(
+                False, "set_flag", "本轮已有另一位 NPC 开口，我让出话头",
+                outcome=OUTCOME_DECLINED,
+            )
+        ],
+    )
+    row_other = _turn_payload(other, FakeCast())["actions"][0]
+    assert row_other["mark"] == "yield", f"让出被当成失败了：{row_other}"
+    assert row_other["declined"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -551,7 +615,11 @@ JS_BUILTINS: frozenset[str] = frozenset(
         # Math / JSON
         "abs", "round", "max", "min", "stringify",
         # fetch / Promise
-        "catch", "json", "status",
+        # ⚠️ `ok` 是 `Response.ok`（line 252 的 `if (!r.ok) throw`），不是 API 字段。
+        # 它从前**侥幸**没错报：后端那时也发一个 `ok` 字段（动作成功与否的布尔），
+        # 于是它被 API 词表兜住了。本轮把 payload 的 `ok` 换成 `mark`/`declined`
+        # 之后，这个真·内置成员才第一次显形 —— 这条白名单以前是靠巧合成立的。
+        "catch", "json", "status", "ok",
         # Error
         "message",
         # KeyboardEvent
@@ -658,6 +726,70 @@ def test_page_only_reads_fields_the_api_actually_returns(
         f"页面读了这些字段，但 API 响应里没有：{sorted(unknown)}。"
         "要么是拼错了，要么后端改了字段名 —— 两种都会让界面静默空白。"
         "如果它其实是 JS/DOM 内置成员，请加进 JS_BUILTINS 并写清理由。"
+    )
+
+
+def test_the_page_renders_a_yield_differently_from_a_failure() -> None:
+    """⭐ 页面的三种 `mark` 必须映到**三种不同的样子**。
+
+    后端发对了 `mark` 还不够 —— 页面若把 `yield` 和 `no` 映到同一个 CSS 类，
+    "主动让出话头"在界面上依旧和"真的失败了"长得一模一样。
+    判据：三个分支的 CSS 类两两不同，且 `.act.yield` 的确有样式定义
+    （否则浏览器会退回继承色 —— 看起来就像没定义）。
+    """
+    script = _page_script()
+    # 三个 mark 都要被**提到**（不写死具体表达式 —— 那是把页面的逻辑抄一遍，
+    # 抄错了反而会拦下正确的改写）。
+    for mark in ("ok", "yield", "no"):
+        assert f'"{mark}"' in script, (
+            f"页面里完全没有 {mark!r} 这个标记 —— 那一类动作会落到兜底样式"
+        )
+
+    # ⭐ 真正的判据：**把页面的表达式拿去跑**，看三种 mark 映出的类是否两两不同。
+    #    断言源码里有某个字符串做不到这件事 —— 页面可以用任何写法达成它。
+    node = os.environ.get("NPC_AGENT_NODE") or shutil.which("node")
+    if not node:
+        pytest.skip("找不到 node（装 Node.js，或用 NPC_AGENT_NODE 指定路径）")
+
+    match = re.search(r"const\s+cls\s*=\s*(.+?);\s*\n", script)
+    assert match, "页面里找不到算 CSS 类的那个表达式（`const cls = ...`）"
+    expr = match.group(1)
+    probe = (
+        'const marks = ["ok","yield","no"];\n'
+        "const out = marks.map((mark) => { const a = {mark}; return " + expr + "; });\n"
+        "process.stdout.write(JSON.stringify(out));\n"
+    )
+    handle, path = tempfile.mkstemp(suffix=".js", text=True)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            fh.write(probe)
+        proc = subprocess.run(
+            [node, path], capture_output=True, text=True, timeout=60
+        )
+        assert proc.returncode == 0, f"页面表达式跑不起来：{proc.stderr}"
+        classes = json.loads(proc.stdout)
+    finally:
+        os.unlink(path)
+
+    assert len(set(classes)) == 3, (
+        f"三种 mark 映出的 CSS 类有重复：{dict(zip(['ok','yield','no'], classes))}。"
+        "「主动让出话头」又会和「真的失败了」长得一模一样。"
+    )
+
+    # 样式表里三种类都要有定义，否则浏览器退回继承色，看起来像没定义。
+    css = PAGE.split("<style>", 1)[1].split("</style>", 1)[0]
+    colours: dict[str, str] = {}
+    for cls in ("ok", "yield", "no"):
+        found = re.search(rf"\.act\.{cls}\s*\{{([^}}]*)\}}", css)
+        assert found, f"`.act.{cls}` 没有样式定义 —— 那一类动作会退回继承色"
+        colours[cls] = found.group(1).strip()
+    assert len(set(colours.values())) == 3, (
+        f"三种 mark 的样式有重复，页面还是分不出让出与失败：{colours}"
+    )
+
+    # 符号也要分开：让出印 `↷`，失败印 `✗`。
+    assert "↷" in script and "✗" in script, (
+        "让出与失败没有用不同符号 —— 符号是最快能看出区别的地方"
     )
 
 

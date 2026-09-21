@@ -82,6 +82,8 @@ button.ghost{background:none}
 .turn .meta{color:var(--dim);font-size:12px}
 .act{font-family:var(--mono);font-size:12px}
 .act.ok{color:var(--ok)}
+/* 「按策略主动让出」——正确行为，用中性色，别用报错的红色。 */
+.act.yield{color:var(--dim)}
 .act.no{color:var(--bad)}
 .mem{font-size:12px;color:var(--dim);margin-top:3px}
 .pill{display:inline-block;padding:0 7px;border-radius:999px;font-size:11.5px;
@@ -380,9 +382,15 @@ function paint(d){
       ? "<div class='who p'>玩家 " + esc(ev.speaker_name) + "：</div>" + esc(ev.text)
       : "<div class='who'>（无人说话）</div>";
     const turns = (ev.turns || []).map((t) => {
-      const acts = (t.actions || []).map((a) =>
-        "<div class='act " + (a.ok ? "ok" : "no") + "'>▸ " + esc(t.name) + " " + esc(a.render) +
-        (a.ok ? "" : " ✗ " + esc(a.detail)) + "</div>").join("");
+      const acts = (t.actions || []).map((a) => {
+        // 颜色与符号都从后端发来的 `mark` 取 —— 页面**不自己判** `ok`。
+        // `yield`（按策略主动让出话头）是**正确行为**，不许印成红色的 ✗。
+        // 这里以前写的是 `a.ok ? "ok" : "no"`，于是"让出话头"在自测平台上
+        // 长得和"真的失败了"一模一样。
+        const cls = a.mark === "ok" ? "ok" : (a.mark === "yield" ? "yield" : "no");
+        const tail = a.mark === "ok" ? "" : " " + (a.mark === "yield" ? "↷ " : "✗ ") + esc(a.detail);
+        return "<div class='act " + cls + "'>▸ " + esc(t.name) + " " + esc(a.render) + tail + "</div>";
+      }).join("");
       const mems = (t.used_memories || []).length
         ? "<div class='mem'>用到的记忆：" + t.used_memories.map((m) => "<span class='pill'>" + esc(m) + "</span>").join("") + "</div>"
         : "";
