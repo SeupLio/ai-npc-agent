@@ -440,3 +440,109 @@ def test_planner_off_tags_heuristic_but_records_no_failure() -> None:
     assert agent.plan_sources().get("heuristic", 0) > 0
     assert agent.planner_failures == 0
     assert agent.planner_empty_plans == 0
+
+
+# --------------------------------------------------------------------------- #
+# 「让出」不许被记成「失败」—— 在**规划**里也一样
+# --------------------------------------------------------------------------- #
+def test_a_declined_plan_step_is_skipped_not_failed() -> None:
+    """⭐ 规划步骤里被「主动让出话头」挡下的那一步，必须是 `skipped`，不是 `failed`。
+
+    同一个假象的第五个出口，而且规模最大。`_run_plan` 里判的是
+    `if result.ok: done else: 重规划 → failed`，而**让出的 `ok` 也是 `False`** ——
+    于是发言权上限正常工作时，那一步被记成"失败"，还触发了一次重规划
+    （往计划里插一条「（重试）」并写上「重规划：发言占比 67% 已超上限」）。
+
+    实测（离线 235 条，A/B 对照）：
+
+    | 指标 | 修前 | 修后 |
+    |---|---|---|
+    | step 被误标 `failed` | 228 | **0** |
+    | `replan` 调用 | 309 | **93** |
+    | 其中理由含「让出/超上限」 | 216 | **0** |
+
+    同一个函数里另外两处让位（"话头给了同伴"、"本轮已经说过一句"）
+    **本来就写的 `skipped`** —— 这一处漏了，三处说法不一致。
+
+    脚本选 `village` 而不是 `tutorial`：**这个剧本里两件事同时发生**
+    —— 1 次「规划里被让出」**和** 14 次真失败（9 次进重规划），
+    所以同一条测试能同时钉住两个方向（让出必须 skipped、真失败必须仍然重规划）。
+    `tutorial` 的"拿铁"剧本只有让出、没有真失败，做不了反向保障；
+    "美式"剧本只有真失败、没有让出。
+    """
+    agent, env = build("village")
+
+    # ⚠️ **不能只看跑完之后 `active_plan` 里的 step。**
+    # 一次 `_run_plan` 里可能发生多次重规划，而 `replan()` 会**造一个新的 `Plan` 对象**
+    # （`self.active_plan = patched`）⇒ 被让出的那个 step 留在**旧**计划里，
+    # 跑完之后从 `active_plan` 已经看不到它了（实测踩过这个坑，
+    # 于是前提断言误报"这个剧本没产生让出"）。
+    # 所以改成在**每一步被处理时**就记下来。
+    declined_steps: list = []
+    replan_calls: list = []
+
+    real_replan = agent.planner.replan
+
+    def spy_replan(plan, step, reason, tracker):  # noqa: ANN001
+        replan_calls.append(reason)
+        return real_replan(plan, step, reason, tracker)
+
+    agent.planner.replan = spy_replan  # type: ignore[method-assign]
+
+    import npc_agent.agent as agent_mod
+    from npc_agent.modules import planner as planner_mod
+
+    # 给 `PlanStep` 的 status 装一个观察点：谁把它设成什么、note 是什么。
+    real_watch = planner_mod.Planner.replan
+    observed: dict[int, tuple[str, str]] = {}
+
+    real_run_plan = agent_mod.NPCAgent._run_plan
+
+    def spy_run_plan(self, turn, ctx, memories, utterance):  # noqa: ANN001
+        # 收集本轮**所有**被处理过的 step（含重规划换掉的旧计划里的）
+        def collect(plan_obj) -> None:  # noqa: ANN001
+            for step in getattr(plan_obj, "steps", []) or []:
+                note = getattr(step, "note", "") or ""
+                if "让出话头" in note or "超上限" in note:
+                    observed[id(step)] = (note, getattr(step, "status", "?"))
+
+        collect(getattr(self, "active_plan", None))
+        out = real_run_plan(self, turn, ctx, memories, utterance)
+        collect(getattr(self, "active_plan", None))
+        return out
+
+    agent_mod.NPCAgent._run_plan = spy_run_plan  # type: ignore[method-assign]
+    try:
+        drive(agent, env, [("player_a", "你好")] + [None] * 11)
+    finally:
+        agent_mod.NPCAgent._run_plan = real_run_plan  # type: ignore[method-assign]
+
+    declined_steps = list(observed.values())
+
+    # ⚠️ 前提：这个剧本必须**真的**产生一次「规划里被让出」。
+    #    没有的话这条测试什么都没验 —— 那种"永远绿"比没有测试更糟。
+    assert declined_steps, (
+        "这个剧本没产生「规划里被让出」的步骤，测试前提不成立 —— "
+        "换一个会触发发言占比上限的长剧本"
+    )
+
+    for note, status in declined_steps:
+        assert status == "skipped", (
+            f"被让出的那一步标成了 {status!r}，而不是 'skipped'。"
+            f"「主动让出话头」是发言权上限在做它该做的事，不是失败 ——"
+            f"标 failed 会往计划里插一条假的「（重试）」。note={note!r}"
+        )
+
+    # 而且**不许**为它触发重规划。
+    for reason in replan_calls:
+        assert "让出话头" not in reason and "超上限" not in reason, (
+            f"为「主动让出话头」触发了重规划（理由 {reason!r}）—— "
+            "让位不是失败，没有要修的东西"
+        )
+
+    # 反向保障：不许宽到把**真失败**也一起漏掉。
+    # 同一个剧本里有真失败（工具不存在 / 位置不存在），它们必须仍然进重规划。
+    assert replan_calls, (
+        "这个剧本里一次重规划都没有 —— 反向保障失效了，"
+        "说明判据可能把真失败也一起放过了"
+    )

@@ -716,6 +716,20 @@ class NPCAgent:
                 executed += 1
                 continue
 
+            # 「主动让出话头」**不是失败** —— 它是发言权上限在做它该做的事。
+            # 上面那个 `not ctx.allow_speech` 的闸门只能拦住"话头已经给同伴了"，
+            # 而"发言占比超上限"只有**执行之后**才知道（`_speak` 里判的）。
+            # 不在这里拦，它就会掉进下面的失败分支 ⇒
+            # 标 `failed` + note 写成那句让出文案 + **触发重规划**。
+            # 实测离线 235 条：**228 个** step 是这样被误标成 failed 的
+            # （228 个里 228 个 note 就是那句让出，**没有一个是真失败**）。
+            # 标 `skipped`，和上面两处同一种让位 —— 同一件事只有一种说法。
+            if result.declined:
+                step.status = "skipped"
+                step.note = result.detail
+                executed += 1
+                continue
+
             # --- 失败：先尝试重规划 ---
             key = self._step_key(step)
             retries = self._retry_counts.get(key, 0)
