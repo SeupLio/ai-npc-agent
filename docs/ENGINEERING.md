@@ -4101,3 +4101,131 @@ if result.declined:
 > 这个假象到此已经有**五个出口**：记忆、转写、控制台、网页、**规划状态机**。
 > 它们全都只因为**一个布尔**分不出"失败"与"正确地放弃"。
 > 而规划这一处最贵 —— 它不只是显示错，它**改坏了后续的行为**（重试步骤）。
+
+## 附十五：不变量靠「两份实现碰巧一致」维持 —— 以及一个场景选错的护栏
+
+**日期**：2026-09-20　**性质**：只加护栏，**不改产品代码**（基线不变）
+
+### 起因：一个"我知道有瑕疵但量不出危害"的顺序问题
+
+`NPCAgent._proactive_share()` 里有这么一段（`agent.py`）：
+
+```python
+topic = topics[0]
+self._shared_topics.add(topic)      # ← 先记进黑名单
+call = ActionCall("tell_fact", {"topic": topic}, reason="冷场，主动起个话头")
+result = self.registry.execute(call, ctx)
+if not result.ok:
+    return False                    # ← 失败也不撤销
+```
+
+`_shared_topics` 是**永久**黑名单（"试过就不再试，避免死循环"）。
+所以只要 `tell_fact` 失败一次，那个话题**这一局就再也不会被分享** ——
+哪怕失败原因（世界 flag）后来变了。
+
+**代码顺序看着确实可疑，但按本项目规矩：没量过就不改。** 于是先量。
+
+### 量第一遍：无危害
+
+`reports/_probe_share_blacklist.py`（离线 235 条，0 次模型调用）：
+
+```
+tell_fact_calls      164
+tell_fact_ok         164      ← 一次都没失败
+topic_blacklisted    164
+从未成功却被永久拉黑的话题数 = 0
+```
+
+**164 次调用全部成功。** 但如果只停在这里，结论会是"样本不够大"——
+而正确的追问是：**这个失败分支是"罕见"还是"结构上够不到"？**
+
+### 量第二遍：为什么结构上够不到
+
+`_proactive_share` 选话题时已经过了一道筛子 `t in self.env.available_topics(self.id)`。
+而 `available_topics()`（`star_isle.py:293`）和 `_h_tell_fact()`（`:569`）
+**各自实现了一遍同样的检查**：
+
+| 检查 | `available_topics` | `_h_tell_fact` |
+|---|---|---|
+| topic 在 KNOWLEDGE 里 | 遍历 `KNOWLEDGE` | `KNOWLEDGE.get(topic)` |
+| `requires` 已满足 | 不满足则 `continue` | 不满足则 `_fail` |
+| 无 `requires` 时须已解锁 | 未解锁则 `continue` | 未解锁则 `_fail` |
+
+**逻辑逐条等价** ⇒ `_proactive_share` 永远选不到会失败的话题。
+`reports/_probe_topic_agreement.py` 穷举 flag 组合验证：**16/16 格完全一致**。
+
+⇒ 结论修正：不是"样本不够"，是**结构上够不到**。那个顺序 bug 目前**无害**。
+
+### ⚠️ 但"无害"是**借来的** —— 借据是两份实现的巧合
+
+既然无害性来自"两份实现恰好等价"，那**任何一处单独改动都会让它从无害变有害**。
+这一点必须量，否则"不改"的决定就没有依据。
+
+`reports/_probe_topic_divergence.py`：只让 `available_topics` 漏掉
+「无 `requires` 时须已解锁」那一条（模拟"将来有人只改了一处"）：
+
+| 臂 | passed | `tell_fact` 失败 | 失败却被永久拉黑 |
+|---|---|---|---|
+| A 原样 | 235/235 | **0** | **0** |
+| B 漏一条 | 235/235 | **25** | **25** |
+
+**两条信息**：
+1. 不变量**可被破坏**，代价是 25 个话题被永久拉黑 ⇒ 值得写护栏。
+2. **分数仍是 235/235（满分）** ⇒ 现有 235 条用例**一条都抓不到**。
+   这正是本项目的招牌缺陷类：**结构上对指标不可见**。
+
+### ✅ 做法：把不变量本身钉住（不改产品代码）
+
+新增 `tests/test_minecraft_env.py::test_every_topic_available_topics_offers_is_one_tell_fact_accepts`
+（`@parametrize` 两个世界），穷举 flag 组合，逐话题断言：
+
+> `topic in available_topics(actor)` **当且仅当** `tell_fact(topic).ok`
+
+因为产品代码本来就满足它，这条护栏**加进去是绿的** ——
+它的价值不在于"发现了 bug"，而在于**把那个巧合变成契约**：
+以后谁单独改一处，立刻变红。
+
+### ⚠️⚠️ 我第一版护栏是**永远绿的** —— 因为场景选错了
+
+第一版用的是 `icebreaker`。跑：**2 passed**。注入分家缺陷（删掉那条检查）再跑：
+**还是 2 passed。** ——**护栏根本没在查东西。**
+
+查下去发现：`icebreaker` 的 `knowledge_unlocked` 恰好覆盖了
+**所有**"无 `requires`"的话题 ⇒ 那条检查在该场景上**恒为空转**。
+
+| 场景 | `knowledge_unlocked` | 无 requires 却**未**解锁 |
+|---|---|---|
+| `icebreaker` | brewing, constellation, house_story | **（无）** ← 空转 |
+| `duet` | brewing, constellation, house_story | （无） |
+| `tutorial` | brewing, house_story | constellation |
+| **`village`** | cave_danger, stonemasonry, torch_light | **brewing, constellation, house_story** |
+
+改用 `village`，并**加一条前提断言**（"这个场景里真的存在被锁住的话题吗"）：
+
+- 注入分家 ⇒ **立即变红**，且报的名字正是那三对：
+
+```
+AssertionError: available_topics 与 tell_fact 对同一个话题给出了相反判定 ——
+`_proactive_share()` 会把失败的话题永久拉黑，且分数看不出来：
+  [flags=none] topic='brewing' available_topics=True tell_fact.ok=False
+               detail='关于「手冲的门道」你今天还没打算聊'
+  [flags=none] topic='constellation' available_topics=True tell_fact.ok=False ...
+```
+
+这是我**第三次**在同一个坑上翻车（前两次：一个剧本里"真失败"从不发生、
+一个剧本里 `ok=False` 只出现一次且是"让出"）。
+**共同点：护栏在一个"该发生的现象不发生"的场景上跑。**
+⇒ 已提炼成判据：**每条讲性质的测试，先断言使它能失败的那个前提。**
+
+### 与遗留项的关系
+
+**这一轮只加护栏、不改代码**，所以：
+- 离线基线 **235/235 不变**（产品代码一行没动）
+- 那个"先拉黑后执行"的顺序问题**仍然存在**，但现在它有了契约保护 ——
+  只要两份实现保持等价，它就无害；一旦分家，护栏先红。
+- 测试 934 → **936 收集**（+2，parametrize 两个世界）
+
+**没有修复它**，因为量下来它**没有可观测的危害**。
+本项目规矩："不发布没量过的改动" —— 它的对偶同样成立：
+**也不修"没量出危害"的缺陷**。改一个 164/164 都走不到的 `if` 分支，
+风险大于收益，且会让"为什么改"无法用数字回答。

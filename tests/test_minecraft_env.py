@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import sys
 import textwrap
@@ -863,3 +864,90 @@ def test_village_persona_exists_and_fits_the_world() -> None:
     assert persona["name"] == "阿岩"
     assert persona["style"]["sentence_max"] >= 1
     assert persona["utterance_templates"]["fallback"]
+
+
+# --------------------------------------------------------------------------- #
+# 两个真相：`available_topics` 与 `tell_fact` 必须**全称一致**
+# --------------------------------------------------------------------------- #
+def _require_flags() -> list[str]:
+    """所有 `requires` 条件（用来穷举世界状态）。"""
+    from npc_agent.env.star_isle import KNOWLEDGE
+
+    return sorted({e["requires"] for e in KNOWLEDGE.values() if e.get("requires")})
+
+
+def _all_topics() -> list[str]:
+    from npc_agent.env.star_isle import KNOWLEDGE
+
+    return sorted(KNOWLEDGE)
+
+
+def _make_env(world: str, actor: str, scenario: str):  # noqa: ANN202
+    if world == "star":
+        return StarIsleEnv(load_scenario(scenario), actor, "阿柚")
+    return MinecraftEnv(load_scenario(scenario), actor, "阿岩")
+
+
+#: 必须用**真的锁了话题**的场景。`icebreaker` 里 `knowledge_unlocked` 恰好
+#: 覆盖了所有"无 requires"的话题 ⇒ 那条检查在它上面**恒为空转**，
+#: 拿它跑这条护栏会得到"永远绿"的假象（实测：把检查删掉照样全绿）。
+#: `village` 锁住 3 个、`tutorial` 锁住 1 个。
+@pytest.mark.parametrize(
+    ("world", "scenario"), [("star", "village"), ("voxel", "village")]
+)
+def test_every_topic_available_topics_offers_is_one_tell_fact_accepts(
+    world: str, scenario: str
+) -> None:
+    """`available_topics` 说能聊 ⇒ `tell_fact` 必须说能讲；反之亦然。
+
+    **为什么这条值得单独钉住**：`_proactive_share()` 会先把候选话题记进
+    `_shared_topics`（**永久**黑名单）**再**执行 `tell_fact`，失败也不撤销。
+    只要上面那个全称性质成立，它就永远选不到会失败的话题 ——
+    那条顺序 bug 因此是**无害的**。
+
+    但这个性质来自**两份各自实现的检查**（`StarIsleEnv.available_topics`
+    和 `StarIsleEnv._h_tell_fact`）。任何一处单独改动都会让它们分家，
+    而实测分家之后：**25 个话题被永久拉黑、分数仍是 235/235** ——
+    现有测试一条都抓不到。所以这条护栏是那个「无害」结论的**唯一**依据。
+
+    穷举：把 `requires` 条件的每一种组合都摆一遍，逐话题比对两处判定。
+    """
+    actor = "ayou" if world == "star" else "ayan"
+    flags = _require_flags()
+    topics = _all_topics()
+
+    # ⚠️ **前提必须先量**：这个场景里真的存在"被锁住的话题"吗？
+    # 没有的话，那条检查恒为空转，整条护栏就只是一句永远成立的话。
+    probe = _make_env(world, actor, scenario)
+    locked = [t for t in topics if t not in probe.available_topics(actor)]
+    assert locked, (
+        f"场景 {scenario!r} 里没有任何被锁住的话题 —— "
+        f"这条护栏在该场景上恒为空转，换一个真的会锁话题的场景"
+    )
+
+    divergent: list[str] = []
+    checked = 0
+    for r in range(len(flags) + 1):
+        for combo in itertools.combinations(flags, r):
+            env = _make_env(world, actor, scenario)
+            for f in combo:
+                env.dispatch(actor, ActionCall("set_flag", {"key": f, "value": "1"}))
+
+            offered = set(env.available_topics(actor))
+            for topic in topics:
+                checked += 1
+                res = env.dispatch(actor, ActionCall("tell_fact", {"topic": topic}))
+                if (topic in offered) != bool(res.ok):
+                    divergent.append(
+                        f"[flags={','.join(combo) or 'none'}] topic={topic!r} "
+                        f"available_topics={topic in offered} "
+                        f"tell_fact.ok={res.ok} detail={res.detail!r}"
+                    )
+
+    # 前提：真的检查了足够多的格子（否则循环写错也会「全绿」）
+    assert checked >= 8, f"只检查了 {checked} 格，穷举没跑起来"
+    assert not divergent, (
+        "available_topics 与 tell_fact 对同一个话题给出了相反判定 —— "
+        "`_proactive_share()` 会把失败的话题永久拉黑，且分数看不出来：\n  "
+        + "\n  ".join(divergent[:8])
+    )

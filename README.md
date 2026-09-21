@@ -461,6 +461,20 @@ python scripts/measure_planner.py --runs 4 --mode heuristic  # 对照组：离�
     而漏掉的那种（"占比超上限"）只有**执行之后**才知道，
     前面的 `not ctx.allow_speech` 闸门**结构上拦不住**。
     详见 `docs/ENGINEERING.md` 附十四。
+16. **⭐ 「无害」可能是借来的 —— 借据是两份实现的巧合一致。** `_proactive_share()`
+    把候选话题记进 `_shared_topics`（**永久**黑名单）**先于**执行 `tell_fact`，
+    失败也不撤销 ⇒ 失败一次，那个话题这一局就再也不会被分享。
+    量下来**目前无害**：`available_topics()` 说能聊的话题，`tell_fact` 一定说能讲 ——
+    但那是因为**两份各自实现的检查恰好等价**（穷举 flag 组合 **16/16** 一致）。
+    只让其中一份漏掉一条检查（模拟"将来有人只改一处"）：
+    `tell_fact` 失败 **0 → 25** 次、**25** 个话题被永久拉黑 ——
+    而**分数仍是 235/235（满分）**，235 条用例**一条都抓不到**。
+    修法：**不改产品代码、只把不变量变成契约** —— 新增护栏穷举 flag 组合，
+    断言 `topic in available_topics()` **当且仅当** `tell_fact(topic).ok`。
+    ⚠️ 而这条护栏的**第一版是永远绿的**：场景用了 `icebreaker`，
+    它的 `knowledge_unlocked` 恰好覆盖全部"无 requires"话题 ⇒ 那条检查恒为空转，
+    注入缺陷照样全绿。换 `village`（锁住 3 个）并**加一条前提断言**后才真的会红。
+    详见 `docs/ENGINEERING.md` 附十五。
 
 ---
 
@@ -494,7 +508,7 @@ game-npc-agent/
 ├── configs/scenarios/       场景与人设（YAML，加场景不用改代码）
 ├── docs/                    报告 + 详细工程记录
 ├── scripts/                 重生成报告 / 跑批 / 桥 / 探针
-└── tests/                  934 个单元与端到端测试
+└── tests/                  936 个单元与端到端测试
 ```
 
 ---
@@ -528,7 +542,7 @@ game-npc-agent/
 
 ```bash
 python -m pytest tests
-# 932 passed, 2 skipped
+# 934 passed, 2 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -536,7 +550,7 @@ python -m pytest tests
 > 你只会看到进度点和 `[100%]`，然后什么都没有，看起来像跑崩了（退出码还是 0）。
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**，改了命令不改输出会红。
 
-> 收集到的是 **934** 条，默认跳过 **2** 条：
+> 收集到的是 **936** 条，默认跳过 **2** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）
 > 和 `tests/test_docs_freshness.py` 里那条慢速报告校验（约 2 分钟，`NPC_AGENT_DOC_FRESHNESS=1` 才跑）。
 
@@ -550,7 +564,7 @@ README 里的测试数、离线基线、报告覆盖数、每条被文档化的�
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 934 个测试
+- [x] 六维评测 harness + 936 个测试
 - [x] **自测控制台 `studio`**：一条命令起个网页，离线可玩，数字与命令行逐字一致
 - [x] **评测敏感性**：注入缺陷，证明满分不是"护栏从不报警"
 - [x] **跨世界覆盖报告**：同一套 Agent 在两个世界上的成绩
@@ -694,6 +708,14 @@ README 里的测试数、离线基线、报告覆盖数、每条被文档化的�
       护栏把页面里那个表达式**抽出来交给 node 真的跑一遍**，
       断言三种 `mark` 映出的 CSS 类两两不同（反向测试：合流即红）。
       见 `docs/ENGINEERING.md` 附十三，护栏 `tests/test_studio.py`（38 条）
+- [x] **把「两份实现碰巧一致」变成契约**（2026-09-20，**只加护栏不改代码**）：
+      `_proactive_share()` 先拉黑话题再执行 `tell_fact`，失败不撤销。
+      量下来目前无害，但无害的依据是两份各自实现的检查恰好等价
+      （穷举 flag 组合 16/16 一致）。破坏其中一份 ⇒ `tell_fact` 失败 **0 → 25**、
+      **25** 个话题被永久拉黑，而**分数仍是 235/235**。新增护栏把
+      「`available_topics` 说能聊 ⟺ `tell_fact` 说能讲」钉死。
+      ⚠️ 第一版护栏是**永远绿的**（场景 `icebreaker` 上那条检查恒为空转），
+      换 `village` + 前提断言后才真的会红。见 `docs/ENGINEERING.md` 附十五
 - [x] **同一个假象的第五个出口（规模最大）**（2026-09-20）：`_run_plan()`
       判的是 `if result.ok: done else: 重规划 → failed`，而让出的 `ok` 也是 `False`。
       离线 235 条 A/B：**228 个** step 被误标 `failed`（note 全是那句让出，
