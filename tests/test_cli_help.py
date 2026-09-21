@@ -53,8 +53,8 @@ from pathlib import Path
 
 import pytest
 
-from npc_agent.cli import build_parser, judge_history_turns
-from npc_agent.eval.judge import JUDGE_HISTORY_TURNS
+from npc_agent.cli import build_parser, judge_history_turns, judge_samples
+from npc_agent.eval.judge import JUDGE_HISTORY_TURNS, JUDGE_SAMPLES
 
 ROOT = Path(__file__).resolve().parent.parent
 CLI = ROOT / "npc_agent" / "cli.py"
@@ -255,4 +255,53 @@ def test_the_flag_reaches_the_judge_constructor() -> None:
     src = CLI.read_text(encoding="utf-8")
     assert "history_turns=judge_history_turns(args)" in src, (
         "`cmd_judge` 没有把 `--judge-history-turns` 接到 `LLMJudge` 上"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 5 —— `--judge-samples` 的翻译
+#
+# 同一个 `or` 陷阱，但这里 `0` **更有理由被传**（有人会想"关掉重复采样省钱"），
+# 所以它比 `--judge-history-turns` 更危险：静默变成默认票数之后，
+# 报告里还写着 `samples: 5`，看起来完全正常。
+# --------------------------------------------------------------------------- #
+def test_zero_samples_falls_back_to_one_not_to_the_default() -> None:
+    """`0` 票 = 必然"未判"的死配置 ⇒ 夹到 **1**，不是夹到默认票数。
+
+    ⚠️ 这里刻意区分两个"安全值"：
+      - `None`（没传）→ 默认票数（由 `JUDGE_SAMPLES` 决定）；
+      - `0`（显式传）→ **1**（旧行为），因为 0 票什么都不判。
+    如果两者都翻成默认票数，那么"我想省掉重复采样的钱"这个意图
+    会被悄悄执行成"请多花 (默认票数-1) 倍的钱" —— 方向正好相反。
+    """
+    assert JUDGE_SAMPLES >= 1
+    assert judge_samples(argparse.Namespace(judge_samples=None)) == JUDGE_SAMPLES
+    assert judge_samples(argparse.Namespace(judge_samples=0)) == 1
+    assert judge_samples(argparse.Namespace(judge_samples=-4)) == 1
+    assert judge_samples(argparse.Namespace(judge_samples=5)) == 5
+
+
+def test_the_samples_default_is_the_sentinel_not_the_value() -> None:
+    """参数定义必须是 `default=None`，否则 `0` 表达不出"关掉重复采样"。"""
+    parser = build_parser()
+    assert parser.parse_args(["judge"]).judge_samples is None
+    assert parser.parse_args(["judge", "--judge-samples", "5"]).judge_samples == 5
+    assert parser.parse_args(["judge", "--judge-samples", "0"]).judge_samples == 0
+
+
+def test_the_samples_flag_reaches_the_judge_constructor() -> None:
+    """`cmd_judge` 必须把 `judge_samples(args)` 接到 `LLMJudge` 上。
+
+    ⚠️ 断言里带 `=`（`samples=judge_samples(args)`）而不是只搜 `samples=`：
+    `history_turns=judge_history_turns(args)` 里也含子串 `samples` 吗？不含。
+    但反过来，若只搜 `judge_samples(` 就会漏掉"参数加了、函数写了、
+    却没接到构造函数上"这个形状 —— 而它正是前一次两个 bug 的共同长相。
+    """
+    src = CLI.read_text(encoding="utf-8")
+    assert "samples=judge_samples(args)" in src, (
+        "`cmd_judge` 没有把 `--judge-samples` 接到 `LLMJudge` 上"
+    )
+    # 报告里也必须能读到票数 —— 它决定"这条判决是单次读数还是多数票"。
+    assert '"judge_samples": judge.samples' in src, (
+        "票数没有写进报告 ⇒ 读报告的人不知道这些判决采了几票"
     )

@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,34 @@ def _default_env() -> dict[str, str]:
     return env
 
 
+def _subprocess_basetemp() -> Path:
+    """子进程 pytest 的 `--basetemp` —— 放**系统临时根**里，不放仓库里。
+
+    ## 为什么不能放在 `REPO_ROOT` 下（一次真事故）
+
+    这里原本是 `REPO_ROOT / ".pytest_bt_skipcount"`。它**在自己的机器上
+    能跑**，但在 WorkBuddy 沙箱里会稳定炸：
+
+    沙箱的 safe-delete shim 对**批量删除**有一个 50 条目的闸门
+    （`_check_bulk_delete_guard` → 起一个 Node helper 查计数，状态存在
+    `%TEMP%/codebuddy-safe-delete-bulk/<hash>/state.json`）。它按**路径前缀
+    家族**计数 —— 仓库里的 `.pytest_bt_*` 会和 `reports/_pytmp*` 之类一起
+    把家族顶到阈值上，然后**每一次**删除都被拒（`SAFE_DELETE_BULK_REJECTED`），
+    而且那个计数**锁存**：错误信息会一直重放最初那个路径，哪怕它早已不存在。
+
+    症状极其误导：`_default_skip_count()` 的子进程被杀掉 → 本文件 223 行
+    的护栏报"目标自己跑挂了"，看起来像测试坏了，其实是**子进程的临时目录
+    落在仓库里**。整套因此稳定报 `1 failed`，而单独跑那些用例全绿。
+
+    而 `%TEMP%` 下的删除是 shim **明确放行**的（`_is_under_os_tmp_dir`）。
+    实测：在 `%TEMP%` 里 `rmtree` 一个 60 文件的目录直接通过，
+    同样的事在 `reports/` 下必被拦。**所以临时目录就该放临时根里。**
+    """
+    root = Path(tempfile.gettempdir()) / "game-npc-agent-pytest"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "basetemp"
+
+
 def _pytest_subprocess_args() -> list[str]:
     """跑子进程 pytest 时统一带的参数。
 
@@ -65,7 +94,7 @@ def _pytest_subprocess_args() -> list[str]:
     """
     return [
         "-q", "-rs", "-p", "no:cacheprovider",
-        f"--basetemp={REPO_ROOT / '.pytest_bt_skipcount'}",
+        f"--basetemp={_subprocess_basetemp()}",
     ]
 README = REPO_ROOT / "README.md"
 

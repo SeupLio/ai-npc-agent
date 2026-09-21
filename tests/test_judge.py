@@ -1374,3 +1374,270 @@ def test_the_calibration_set_cannot_see_dialogue_history() -> None:
     prompts = ["\n".join(m.get("content", "") for m in call) for call in llm.calls]
     assert prompts, "一次 prompt 都没抓到 —— 这条断言什么都没验证"
     assert all("【之前的对话】" not in p for p in prompts)
+
+
+# --------------------------------------------------------------------------- #
+# 铁律四：一条判决是一个读数，不是一个测量
+#
+# 实测（`scripts/probe_judge_samples.py`，2026-09-20）：`JUDGE_TEMPERATURE = 0.0`、
+# prompt 逐字节相同，同一条台词判两次仍有约 22% 的概率给出**相反**的结论。
+# 所以"判一次"给出来的东西是**某一次运行的读数**，不是"裁判的判断力"。
+#
+# 修法是重复采样取多数。下面钉住这个机制的每一处会静默坏掉的地方。
+# --------------------------------------------------------------------------- #
+def _voting_llm(votes: list[str]) -> ScriptedLLM:
+    """按顺序吐 `votes` 的模型。票数用完就抛（`ScriptedLLM` 的既有行为）。
+
+    用它而不是 `lambda`：`lambda` 是**无状态**的，投几票都返回同一个值，
+    于是"多数票机制"这个测试对象根本没被触发 —— 一条永远绿的断言。
+    """
+    return ScriptedLLM(list(votes))
+
+
+def test_default_samples_is_one_and_matches_the_old_behaviour() -> None:
+    """`samples` 默认 1 ⇒ 与旧行为**逐字节相同**。默认路径不能变。"""
+    llm = _voting_llm(['{"score": 1, "reason": "还行"}'])
+    judge = J.LLMJudge(llm, rubrics=["in_character"])
+    assert judge.samples == J.JUDGE_SAMPLES == 1
+    verdict = judge.judge("in_character", reply="嗯——坐吧。")
+    assert verdict.judged and verdict.score == 1.0
+    assert len(llm.calls) == 1, "默认票数下只该调一次模型"
+    assert verdict.samples == 1
+    assert verdict.scores == (1.0,)
+
+
+def test_majority_wins_and_the_tally_is_reported() -> None:
+    """3 票 1、1 票 0 ⇒ 判 1，而且**票型要能被读到**。
+
+    票型是"这条判决可不可信"的直接答案：5:0 和 3:2 都判 1，
+    但后者说明这条本来就摇摆，只是被多数票压住了。只留一个多数票
+    就把这个区别抹掉了。
+    """
+    llm = _voting_llm([
+        '{"score": 1, "reason": "贴合人设"}',
+        '{"score": 1, "reason": "还行"}',
+        '{"score": 0, "reason": "太生硬"}',
+        '{"score": 1, "reason": "可以"}',
+    ])
+    judge = J.LLMJudge(llm, rubrics=["in_character"], samples=4)
+    verdict = judge.judge("in_character", reply="嗯——坐吧。")
+    assert verdict.score == 1.0, "3 票对 1 票，多数是 1"
+    assert verdict.samples == 4
+    assert verdict.scores == (1.0, 1.0, 0.0, 1.0)
+    assert verdict.unanimous is False
+    assert verdict.agreement == pytest.approx(0.75)
+    assert "3:1" in verdict.reason, (
+        "票型没写进理由 ⇒ 报告里 5:0 和 3:2 长得一模一样"
+    )
+    assert len(llm.calls) == 4
+
+
+def test_the_reason_comes_from_the_winning_side() -> None:
+    """理由必须来自**多数派**。
+
+    拿少数派那句理由去解释多数票的结论，会让人读到一个和结论相反的解释，
+    而它看上去完全正常 —— 这正是最贵的那类 bug：不报错，只是说反话。
+    """
+    llm = _voting_llm([
+        '{"score": 0, "reason": "少数派理由"}',
+        '{"score": 1, "reason": "多数派理由"}',
+        '{"score": 1, "reason": "多数派理由二"}',
+    ])
+    judge = J.LLMJudge(llm, rubrics=["in_character"], samples=3)
+    verdict = judge.judge("in_character", reply="嗯。")
+    assert verdict.score == 1.0
+    assert "少数派理由" not in verdict.reason
+    assert "多数派理由" in verdict.reason
+
+
+def test_all_votes_unjudged_stays_unjudged_not_zero() -> None:
+    """每一票都没判成 ⇒ **未判**，不是 0 分。铁律一在采样路径上同样成立。"""
+    llm = _voting_llm(["没法解析的东西", "还是没法解析"])
+    judge = J.LLMJudge(llm, rubrics=["in_character"], samples=2, max_retries=0)
+    verdict = judge.judge("in_character", reply="嗯。")
+    assert verdict.judged is False
+    assert verdict.score is None
+    assert verdict.samples == 0
+    assert verdict.scores == (None, None), "票型要留住『两票都没判成』"
+
+
+def test_partially_judged_votes_still_produce_a_verdict() -> None:
+    """一票判成、一票没判成 ⇒ 按**有效票**出结论，而不是整条作废。
+
+    整条作废是更"保守"的写法，但它会静默地让报告少掉一批判决 ——
+    而未判是合法返回值、不报错，所以没人会发现样本变少了。
+
+    ⚠️ 注意 `agreement` 这里 = 1.0：**有效票**只有一票（1.0），它自己跟
+    自己一致。这不是"两票一致"，而是"只有一票有效"。要区分这两件事，
+    看 `samples`（1）而不是 `agreement`。返回 `None` 是错的 ——
+    那会和"整条未判"撞成同一个值。
+    """
+    llm = _voting_llm(["没法解析", '{"score": 1, "reason": "贴合"}'])
+    judge = J.LLMJudge(llm, rubrics=["in_character"], samples=2, max_retries=0)
+    verdict = judge.judge("in_character", reply="嗯。")
+    assert verdict.judged and verdict.score == 1.0
+    assert verdict.samples == 1, "只有一票有效"
+    assert verdict.scores == (None, 1.0)
+    assert verdict.agreement == 1.0
+
+
+def test_a_tie_resolves_to_pass_and_the_rule_is_pinned() -> None:
+    """平票取 **1**。
+
+    这是一个**真实的判断**，不是实现细节：本项目更怕把对的判成错的
+    （那会让人去改本来没问题的行为），所以平票时"通过"是保守的一侧。
+    钉住它是为了让下一个人改它的时候必须是有意的。
+    """
+    llm = _voting_llm([
+        '{"score": 1, "reason": "可以"}',
+        '{"score": 0, "reason": "不行"}',
+    ])
+    judge = J.LLMJudge(llm, rubrics=["in_character"], samples=2)
+    verdict = judge.judge("in_character", reply="嗯。")
+    assert verdict.score == 1.0, "平票取 1（见 `_majority` 的 docstring）"
+
+
+def test_samples_are_clamped_to_at_least_one() -> None:
+    """0 票不是"省钱的配置"，是一个必然返回"未判"的死配置 —— 夹到 1。"""
+    llm = _voting_llm(['{"score": 1, "reason": "可以"}'])
+    assert J.LLMJudge(llm, samples=0).samples == 1
+    assert J.LLMJudge(llm, samples=-3).samples == 1
+
+
+def test_calls_are_counted_but_not_multiplied_by_rubrics() -> None:
+    """调用数必须**正好**是 票数 × 标准数 × 对数。
+
+    这条来自一次真实事故：第一版在投票循环里 `self.sample_calls += 1`，
+    实测报出 126 次而实际只有 14 次（探针里）—— 因为 `judge_pairs`
+    对每一对都要判 `len(rubrics)` 个标准，在 `judge()` 那一层加一，
+    等于把"标准数"又乘了一遍。判决结果完全正常，**只有调用数看得出来**。
+    """
+    llm = ScriptedLLM(lambda _p: '{"score": 1, "reason": "可以"}')
+    judge = J.LLMJudge(llm, rubrics=["grounded", "responsive"], samples=3)
+    pairs = [
+        {"speaker": "阿柚", "player": f"第{k}句", "reply": f"回第{k}句"} for k in range(4)
+    ]
+    judge.judge_pairs(pairs, persona="你是阿柚", scene="吧台")
+
+    # 4 对 × 2 个标准 × 3 票 = 24
+    assert len(llm.calls) == 24, f"期望 24 次调用，实际 {len(llm.calls)} 次"
+    assert judge.calls == 24
+    # 重复采样多花的 = 24 - 4×2 = 16
+    assert judge.replicated_calls == 16, (
+        f"重复采样调用数算错了：{judge.replicated_calls}"
+    )
+
+
+def test_replicated_calls_is_zero_when_not_sampling() -> None:
+    """票数 1 时，花在重复上的调用必须是 0（不是"无限"也不是负数）。"""
+    llm = ScriptedLLM(lambda _p: '{"score": 1, "reason": "可以"}')
+    judge = J.LLMJudge(llm, rubrics=["grounded"], samples=1)
+    judge.judge_pairs(
+        [{"speaker": "阿柚", "player": "嗨", "reply": "嗨"}], persona="你是阿柚"
+    )
+    assert judge.calls == 1
+    assert judge.replicated_calls == 0
+
+
+def test_judge_pairs_does_not_silently_ignore_a_sample_override() -> None:
+    """`judge_pairs(samples=...)` 必须真的生效。
+
+    ⚠️ 这条针对一个具体的写法陷阱：如果把票数交给 `judge_reply()`
+    这个辅助函数，它用的是实例上的 `self.samples` —— 传进去的 `samples=`
+    会被**静默忽略**。调用方以为改了票数，报告里还是老值，而哪里都不报错。
+    所以这里直接数模型调用：票数 4、1 对、1 个标准 ⇒ 必须正好 4 次。
+    """
+    llm = ScriptedLLM(lambda _p: '{"score": 1, "reason": "可以"}')
+    judge = J.LLMJudge(llm, rubrics=["grounded"], samples=1)
+    judge.judge_pairs(
+        [{"speaker": "阿柚", "player": "嗨", "reply": "嗨"}],
+        persona="你是阿柚",
+        samples=4,
+    )
+    assert len(llm.calls) == 4, (
+        f"传了 samples=4 却只调了 {len(llm.calls)} 次 —— 票数参数被静默忽略了"
+    )
+
+
+def test_the_shared_judge_instance_keeps_its_own_sample_count() -> None:
+    """共享实例的 `self.samples` 不能被一次带 `samples=` 的调用改掉。
+
+    判分在一个长跑作业里共享**一个** `LLMJudge` 实例
+    （见 `judge_report_cases` 的"为什么可以共享一个 judge 实例"）。
+    如果某次调用顺手把实例属性改了而不还原，**后面所有**判决都会悄悄换票数。
+    """
+    llm = ScriptedLLM(lambda _p: '{"score": 1, "reason": "可以"}')
+    judge = J.LLMJudge(llm, rubrics=["grounded"], samples=1)
+    judge.judge_pairs(
+        [{"speaker": "阿柚", "player": "嗨", "reply": "嗨"}],
+        persona="你是阿柚",
+        samples=3,
+    )
+    assert judge.samples == 1, "实例的票数被一次调用改掉了 —— 后面所有判决都会跟着变"
+
+
+def test_samples_changes_the_fingerprint_and_is_resume_critical() -> None:
+    """票数改结果 ⇒ 必须进指纹，否则 `--resume` 会拼出两张皮的报告。"""
+    llm = ScriptedLLM(lambda _p: '{"score": 1, "reason": "ok"}')
+    results: list[dict] = []
+    fp1 = J.judge_fingerprint(J.LLMJudge(llm, samples=1), results)
+    fp5 = J.judge_fingerprint(J.LLMJudge(llm, samples=5), results)
+    assert fp1["samples"] == 1 and fp5["samples"] == 5
+    assert fp1 != fp5, "指纹没变 ⇒ 单次判决和多数票判决会被混进同一份报告"
+    assert "samples" in J.JUDGE_RESUME_CRITICAL_FIELDS
+
+
+def test_an_unjudged_verdict_has_no_agreement() -> None:
+    """没判成时 `agreement` 是 `None`，**不是 0**。
+
+    `0.0` 会被下游当"票数很分裂"读，而真实情况是"一票都没拿到" ——
+    两个不同的故事。同铁律一：没测到和测得差不能长得一样。
+    """
+    llm = ScriptedLLM(lambda _p: "没法解析")
+    judge = J.LLMJudge(llm, rubrics=["grounded"], samples=2, max_retries=0)
+    verdict = judge.judge("grounded", reply="嗯。")
+    assert verdict.judged is False
+    assert verdict.agreement is None
+    assert verdict.agreement != 0
+
+
+def test_a_legacy_single_verdict_has_the_same_field_shape_as_a_sampled_one() -> None:
+    """一票的判决 `unanimous` 为真、`agreement` 为 1.0、`scores` 有那一票。
+
+    ## 为什么这条重要 —— 字段形状不一致会让新旧判决不可比
+
+    第一版只在采样路径填 `scores`，于是 `samples=1` 的判决是 `scores=()`，
+    `agreement` 算出来是 `None`。后果不是崩溃，是**旧判决和新判决看起来
+    像两种东西**：读报告的人分不清"没记票型"和"票型是空的"，
+    而 `agreement=None` 又和"这条根本没判"撞成同一个值。
+    """
+    llm = _voting_llm(['{"score": 0, "reason": "不行"}'])
+    judge = J.LLMJudge(llm, rubrics=["grounded"], samples=1)
+    verdict = judge.judge("grounded", reply="嗯。")
+    assert verdict.score == 0.0
+    assert verdict.unanimous is True
+    assert verdict.agreement == 1.0
+    assert verdict.scores == (0.0,), (
+        "单票路径没填票型 ⇒ 它和采样判决的字段形状不一样，放一起比就是错的"
+    )
+
+
+def test_sample_splits_counts_content_that_was_merely_masked() -> None:
+    """`sample_splits` 数的正是"本来不稳、被多数票压住了"的条数。
+
+    它**不是**"噪声有多大"的度量（那要去探针里量）：它只说明这批内容
+    有没有踩到。所以这里同时钉住"齐的时候是 0"和"不齐的时候是 1"。
+    """
+    llm = _voting_llm([
+        '{"score": 1, "reason": "可以"}',
+        '{"score": 1, "reason": "可以"}',
+        '{"score": 1, "reason": "可以"}',
+        '{"score": 1, "reason": "可以"}',
+        '{"score": 0, "reason": "不行"}',
+        '{"score": 1, "reason": "可以"}',
+    ])
+    judge = J.LLMJudge(llm, rubrics=["grounded"], samples=3)
+    judge.judge("grounded", reply="第一句")
+    assert judge.sample_splits == 0, "3:0 不该被记成不齐"
+    judge.judge("grounded", reply="第二句")
+    assert judge.sample_splits == 1, "2:1 应该被记成不齐"

@@ -40,7 +40,7 @@ import hashlib
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -87,6 +87,28 @@ JUDGE_BACKOFF = 3.0
 #: 4 轮是个折中：再往前，prompt 里塞的多半是已经判过的内容（判分成本线性上涨），
 #: 而且裁判更容易被远处的台词带跑。这个值进指纹 —— 改了它就作废旧检查点。
 JUDGE_HISTORY_TURNS = 4
+
+#: 同一条台词判**几次**，取多数票。`1` = 旧行为（单次判决，原样返回）。
+#:
+#: ## 为什么必须重复 —— `temperature=0` 不等于确定性
+#:
+#: 这条是被量出来的，不是推出来的。实测（脚本
+#: `scripts/probe_judge_samples.py`，2026-09-20）：**同一个 prompt 逐字节相同**、
+#: `JUDGE_TEMPERATURE = 0.0`，同一条台词判两次仍有约 22% 的概率给出相反的结论。
+#: 换句话说，**现有报告里的每一个判分数字（包括 kappa）都只是"某一次运行的读数"**，
+#: 不是"裁判的判断力"。一个不可复现的测量不是测量。
+#:
+#: 缓解办法**不是继续调 temperature**（它已经是 0 了，没有更低的挡位），
+#: 而是**重复采样取多数**：把模型的随机性当成噪声，用多次投票把它压下去。
+#:
+#: ## 多数票只消随机噪声，消不掉系统性偏见
+#:
+#: 位置偏见、宽松/严厉倾向这类偏差，投一百次票还是同一个方向 ——
+#: 它们要靠 `compare_pairwise` 那种"交换顺序再问一遍"的机制来测。
+#: 别把多数票当成"判决变准了"的证明。
+#:
+#: 票数进指纹 —— 同一批报告里混着 1 票和 5 票的判决就没人能解释了。
+JUDGE_SAMPLES = 1
 
 
 # --------------------------------------------------------------------------- #
@@ -197,17 +219,55 @@ JUDGE_MAX_TOKENS = 4096
 # --------------------------------------------------------------------------- #
 @dataclass
 class Verdict:
-    """一次判决。`score=None` 表示**没判**，不是判了 0 分。"""
+    """一次判决。`score=None` 表示**没判**，不是判了 0 分。
+
+    `samples` 是这次判决**实际采了几票**（默认 1 = 单次）。当它 > 1 时，
+    `scores` 里是每一票的原始分数（`None` = 那一票没判成），`score` 是多数票。
+    把票型一路带到报告里，是因为**"3 票全 1"和"3 票里 2 票 1"是两个不同的证据**
+    —— 后者说明这条本来就摇摆，只是多数票恰好压到了 1。
+    只留一个多数票，这种摇摆就被抹掉了，而它正是"这条判决可不可信"的答案。
+    """
 
     rubric: str
     score: Optional[float]
     reason: str = ""
     raw: str = ""
     error: str = ""
+    #: 实际采到的票数（不含没判成的）。`0` 表示一票都没拿到。
+    samples: int = 1
+    #: 每一票的分数，`None` = 那一票没判成。顺序 = 调用顺序。
+    scores: tuple[Optional[float], ...] = ()
 
     @property
     def judged(self) -> bool:
         return self.score is not None
+
+    @property
+    def unanimous(self) -> bool:
+        """所有有效的票都指向同一个结论。
+
+        只在 `judged` 为真时有意义。`samples <= 1` 时恒为真 —— 一票没有
+        "不一致"可言（这也是旧行为：旧的单次判决不该被新字段标成"不齐"）。
+        """
+        known = [s for s in self.scores if s is not None]
+        if len(known) <= 1:
+            return True
+        return len(set(known)) == 1
+
+    @property
+    def agreement(self) -> Optional[float]:
+        """多数票占总有效票的比例。`1.0` = 全票一致，`0.6` = 3/5。
+
+        没判成时返回 `None`（**不是 0** —— "一票都没拿到"和"票数很分裂"
+        是两个不同的故事，混在一起会让均值变成假数字，同本文件铁律一）。
+        """
+        known = [s for s in self.scores if s is not None]
+        if not known or self.score is None:
+            return None
+        return max(
+            sum(1 for s in known if s == self.score),
+            sum(1 for s in known if s != self.score),
+        ) / len(known)
 
     @classmethod
     def unjudged(cls, rubric: str, error: str, raw: str = "") -> "Verdict":
@@ -215,9 +275,9 @@ class Verdict:
 
         模型不可用 / 解析不了 / 分数越界，全都走这里。
         调用方必须能区分"裁判说 0 分"和"裁判没说话" ——
-        把后者记成前者，均值就变成了一个假的数字。
+        把后者记成前者的，均值就变成了一个假的数字。
         """
-        return cls(rubric=rubric, score=None, error=error, raw=raw)
+        return cls(rubric=rubric, score=None, error=error, raw=raw, samples=0)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -226,6 +286,11 @@ class Verdict:
             "score": self.score,
             "reason": self.reason,
             "error": self.error,
+            # 下面两个字段是"这条判决有多可信"的直接答案。**旧报告里没有它们**
+            # （那时的判决真的只判了一次），读的时候要区分"没记"和"记了 1"
+            # —— 同本项目那条"取不到 ≠ 没有"。
+            "samples": self.samples,
+            "agreement": self.agreement,
         }
 
 
@@ -244,6 +309,7 @@ class LLMJudge:
         backoff: float = JUDGE_BACKOFF,
         sleep: Any = None,
         history_turns: int = JUDGE_HISTORY_TURNS,
+        samples: int = JUDGE_SAMPLES,
     ) -> None:
         self.llm = llm
         self.rubrics = list(rubrics)
@@ -264,10 +330,40 @@ class LLMJudge:
         self.parse_retries = 0
         #: 判分时往前带几轮对话。`0` = 旧行为（只看当前这一对）。
         self.history_turns = max(0, int(history_turns))
+        #: 一条台词判几次取多数。`1` = 旧行为（单次判决原样返回）。
+        #: **下限是 1**：0 票等于没判，那不是"更省钱的配置"，是一个必然
+        #: 返回"未判"的死配置 —— 与其让它安静地什么都不判，不如夹到 1。
+        self.samples = max(1, int(samples))
+        #: 采到了 >1 票但票型**不齐**的次数。它回答"这批判决里有多少条
+        #: 本来就不稳、只是被多数票压住了"。**0 不代表噪声不存在** ——
+        #: 它只说明这批内容恰好没踩到；噪声底要去 `probe_judge_samples` 量。
+        self.sample_splits = 0
 
     @property
     def available(self) -> bool:
         return bool(getattr(self.llm, "available", False))
+
+    @property
+    def replicated_calls(self) -> int:
+        """有多少次调用是**花在重复采样上**的（相对每条只判一次）。
+
+        ## ⚠️ 这是**算出来的**，不是每投一票加一
+
+        第一版在投票循环里 `self.sample_calls += 1`，实测把数字放大成 **9 倍**
+        （报 126，实际 14）。原因：`judge_pairs()` 对**每一对**都要判
+        `len(rubrics)` 个标准，而票数是对**每个标准**各投一次 ——
+        在 `judge()` 那一层加一，等于把"标准数 × 对数"又乘了一遍，
+        而真实调用数由 `_judge_once` 里的 `self.calls += 1` 已经数准了。
+
+        这正是本项目反复踩的那类坑：**一个派生量被当成独立量记了一遍，
+        于是它和真相各说各话，而且不报错。** 能算就别记。
+
+        公式：重复采样让"每条判决"多花的调用 = `(票数 - 1) × 判决数`。
+        判决数 ≈ `calls`（每次成功调用正好产出一票），所以直接用 `calls` 推。
+        没判成的调用不进 `calls`，会略微低估 —— 这个方向是对的：
+        **宁可少报，不要多报**。
+        """
+        return max(0, self.calls // self.samples * (self.samples - 1)) if self.samples > 1 else 0
 
     # ------------------------------------------------------------------ #
     def judge(
@@ -279,7 +375,22 @@ class LLMJudge:
         player: str = "",
         reply: str = "",
         history: str = "",
+        samples: Optional[int] = None,
     ) -> Verdict:
+        """判一条台词。`samples > 1` 时判多次取多数（见 `_majority`）。
+
+        ## 为什么把重复放在这一层，而不是放在调用方
+
+        调用方有四个（校准、留出集、`judge_pairs`、探针）。把"判 N 次取多数"
+        写在调用方，等于在四个地方各抄一遍 —— 迟早有一个地方漏掉，
+        而它**不会报错**，只会让一部分报告是 1 票、一部分是 5 票，
+        最后拼成一份没人能解释的报告（同本项目"两个真相"那条坑）。
+
+        `samples` 不传就用实例上的 `self.samples`；`samples == 1` 时
+        **逐字节等于旧行为**：一次调用、原样返回，`scores` 里只有一票。
+        这样默认路径的性能和输出格式都不变，
+        也就不会让已经跑完的报告因为这次改动而失效。
+        """
         rubric = RUBRICS.get(rubric_key)
         if rubric is None:
             raise KeyError(f"未知的评判标准 {rubric_key!r}，可选：{sorted(RUBRICS)}")
@@ -289,6 +400,108 @@ class LLMJudge:
             # 没有台词就没得判。记成"没判"而不是"0 分"：
             # 沉默可能是正确的（发言占比到顶了就该闭嘴），规则指标已经在别处管这件事。
             return Verdict.unjudged(rubric_key, "没有台词可判")
+
+        votes_count = self.samples if samples is None else max(1, int(samples))
+        if votes_count <= 1:
+            single = self._judge_once(
+                rubric_key, persona=persona, scene=scene, player=player,
+                reply=reply, history=history,
+            )
+            # `scores` 也要填上 —— 单票路径和 N 票路径的**字段形状必须一样**。
+            # 第一版只在采样路径填了 `scores`，于是 `samples=1` 的判决
+            # `scores=()` 而 `agreement` 算成 `None`。后果不是崩溃，是
+            # **旧判决和新判决看起来像两种东西**：读报告的人分不清
+            # "没记票型"和"票型是空的"，而 `agreement=None` 又和"未判"
+            # 撞成同一个值。字段在两条路径上一致，才谈得上"可以放在一起比"。
+            return replace(
+                single, samples=1, scores=(single.score,) if single.judged else (None,)
+            )
+
+        votes: list[Verdict] = []
+        for _ in range(votes_count):
+            votes.append(
+                self._judge_once(
+                    rubric_key, persona=persona, scene=scene, player=player,
+                    reply=reply, history=history,
+                )
+            )
+        merged = self._majority(rubric_key, votes)
+        if merged.samples > 1 and not merged.unanimous:
+            self.sample_splits += 1
+        return merged
+
+    @staticmethod
+    def _majority(rubric_key: str, votes: list[Verdict]) -> Verdict:
+        """把 N 票合成一票。**未判的票不进投票，但也不假装没发生。**
+
+        规则：
+          - 一票都没判成 → 返回 `unjudged`（**不是 0 分**，铁律一）。
+          - 只要有一票判成 → 按**有效票**取多数；同票时取 1
+            （平票时"通过"是保守的一侧：本项目更怕把对的判成错的，
+             因为那会让人去改本来没问题的行为）。
+          - `reason` 取**多数派**里第一条理由，票型做成 `[n:m]` **前缀**写进 `reason`。
+
+        平票取 1 这个选择**必须写下来**。它是个真实的判断，不是实现细节 ——
+        不写清楚，下一个人会以为 1 是随手写的，然后改成 0 而不知道自己在改什么。
+        """
+        known = [v for v in votes if v.judged]
+        scores: tuple[Optional[float], ...] = tuple(v.score for v in votes)
+        if not known:
+            # 保留了原始原因：不然"裁判连不上"会被记成"解析失败"。
+            first = votes[0] if votes else None
+            return Verdict(
+                rubric=rubric_key,
+                score=None,
+                error=(first.error if first else "没有拿到任何判决"),
+                raw=(first.raw if first else ""),
+                samples=0,
+                scores=scores,
+            )
+
+        ones = sum(1 for v in known if v.score and v.score >= 1.0)
+        zeros = len(known) - ones
+        # 平票取 1（见 docstring）。
+        winner = 1.0 if ones >= zeros else 0.0
+        # 理由取**多数派**里的：拿少数派那句理由去解释多数票的结论，
+        # 会让人读到一个和结论相反的解释，而且它看上去完全正常。
+        representative = next(
+            (v for v in known if bool(v.score and v.score >= 1.0) == (winner == 1.0)),
+            known[0],
+        )
+        tally = f"{int(ones)}:{int(zeros)}"
+        # 票型记进 `reason` 的**前缀**而不是新开字段：下游计算只读 `score`，
+        # 而"这条是 4:1 还是 5:0"是给人看的证据。多一个字段就要动
+        # 报告结构、指纹、以及所有读报告的地方 —— 为了一个诊断信息不值。
+        # 前缀写法保证它不会被误当成理由本身。
+        return Verdict(
+            rubric=rubric_key,
+            score=winner,
+            reason=f"[{tally}] {representative.reason}",
+            raw=representative.raw,
+            samples=len(known),
+            scores=scores,
+        )
+
+    # ------------------------------------------------------------------ #
+    def _judge_once(
+        self,
+        rubric_key: str,
+        *,
+        persona: str = "",
+        scene: str = "",
+        player: str = "",
+        reply: str = "",
+        history: str = "",
+    ) -> Verdict:
+        """判**一次**。这是原来那个 `judge()`，逐字保留。
+
+        不带重复逻辑 —— 重复在 `judge()` 里，这一层只管"投一票"。
+        分开是为了让 `samples == 1` 的路径和旧代码完全一致（可对照 diff 确认），
+        也让"一票"这件事本身能单独测。
+        """
+        rubric = RUBRICS.get(rubric_key)
+        # 未知标准 / 不可用 / 空台词在前面已经拦掉了；这里**不重复拦**
+        # （拦两遍就会有两个真相：改一处漏一处，且不报错）。
 
         prompt = self._build_prompt(rubric, persona, scene, player, reply, history)
 
@@ -424,6 +637,7 @@ class LLMJudge:
         scene: str = "",
         progress: Any = None,
         history_turns: Optional[int] = None,
+        samples: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """对一串 (玩家说 → NPC 回) 逐条判分。
 
@@ -433,22 +647,39 @@ class LLMJudge:
 
         `history_turns` 不传就用实例上的 `self.history_turns`。
         每一对带的是**它前面**那几轮 —— 见 `history_block`。
+
+        `samples` 同理，不传用 `self.samples`。它**不进指纹的初始化参数**
+        是故意的：`LLMJudge` 是长跑里共享的一个实例，探针要在不重建实例的
+        情况下切换票数（见 `scripts/probe_judge_samples.py`）。而指纹读的是
+        `judge.samples`（实例属性）—— 探针不跑指纹，跑批走 CLI 构造实例，
+        两条路都拿得到真实生效的值。
         """
         turns = (
             self.history_turns if history_turns is None else max(0, int(history_turns))
         )
+        votes = self.samples if samples is None else max(1, int(samples))
         out: list[dict[str, Any]] = []
         for index, pair in enumerate(pairs):
             block = persona
             if persona_of is not None:
                 block = persona_of(pair.get("speaker", "")) or persona
-            verdicts = self.judge_reply(
-                persona=block,
-                scene=scene,
-                player=pair.get("player", ""),
-                reply=pair.get("reply", ""),
-                history=history_block(pairs, index, turns),
-            )
+            history = history_block(pairs, index, turns)
+            verdicts = [
+                self.judge(
+                    key,
+                    persona=block,
+                    scene=scene,
+                    player=pair.get("player", ""),
+                    reply=pair.get("reply", ""),
+                    history=history,
+                    # 显式传票数，**不走 `judge_reply()`**：那个辅助函数用的
+                    # 是实例上的 `self.samples`，把 `samples=` 参数交给它
+                    # 会被**静默忽略** —— 调用方以为改了票数，报告里还是老值，
+                    # 而且哪里都不报错。宁可在这里多写三行 `judge(...)`。
+                    samples=votes,
+                )
+                for key in self.rubrics
+            ]
             out.append({"pair": pair, "verdicts": [v.to_dict() for v in verdicts]})
             if progress:
                 progress(f"  裁判 {index + 1}/{len(pairs)} …")
@@ -1127,12 +1358,17 @@ def report_digest(results: list[dict[str, Any]]) -> str:
 
 #: 判分侧影响结果的配置字段。和跑批那边同理：**并发数不在里面** ——
 #: 它只影响判多久，不影响判出什么。
+#:
+#: `samples` **在里面**。票数改结果：同一句台词 1 票和 5 票可能给出相反
+#: 的结论（这正是要重复采样的理由）。不带上它，`--resume` 会把
+#: "单次判的"和"多数票判的"拼成一份报告，而报告上写着同一个票数。
 JUDGE_RESUME_CRITICAL_FIELDS = (
     "judge",
     "rubrics",
     "max_tokens",
     "temperature",
     "history_turns",
+    "samples",
 )
 
 
@@ -1182,6 +1418,9 @@ def judge_fingerprint(
         # 可能判出相反的分数（见 `JUDGE_HISTORY_TURNS`）。不带进指纹的话，
         # `--resume` 会把"没带历史判的"和"带了历史判的"拼成一份报告。
         "history_turns": judge.history_turns,
+        # 一条判几次取多数。同样**改结果** —— 而且它改的正是"这次判分
+        # 有多可信"，所以更不能和 1 票的判决混在一起（见 `JUDGE_SAMPLES`）。
+        "samples": judge.samples,
         "report_digest": report_digest(results),
         # 上下文指纹。没给就留空串 —— 空串和历史检查点里的"没有这个键"
         # 不相等，所以**加了这一项之后旧检查点一律拒绝恢复**，这是对的：

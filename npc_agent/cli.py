@@ -27,6 +27,7 @@ from .eval.judge import (
     DEFAULT_JUDGE_CONCURRENCY,
     JUDGE_HISTORY_TURNS,
     JUDGE_MAX_TOKENS,
+    JUDGE_SAMPLES,
 )
 from .eval.judge import DEFAULT_RUBRICS as DEFAULT_RUBRIC_KEYS
 from .eval.runner import DEFAULT_BACKOFF, DEFAULT_CONCURRENCY, DEFAULT_MAX_RETRIES
@@ -817,6 +818,25 @@ def judge_history_turns(args: argparse.Namespace) -> int:
     return max(0, int(raw))
 
 
+def judge_samples(args: argparse.Namespace) -> int:
+    """把 `--judge-samples` 翻成实际生效的票数。
+
+    ## ⚠️ 为什么不直接 `getattr(...) or JUDGE_SAMPLES`
+
+    同 `judge_history_turns()`：`or` 把 **0** 和"没传"混成同一件事。
+    这里 `0` 尤其容易被传 —— 有人会想"关掉重复采样省点钱"。用 `or` 的话，
+    传 0 会**静默**变成默认票数，报告里还写着 `samples: 5`，看起来完全正常。
+
+    翻成 `max(1, ...)` 而不是 `max(0, ...)`：0 票 = 必然"未判"，
+    那不是省钱的配置，是一个什么都不判的死配置。夹到 1（=旧行为）
+    并让报告显示 1，至少是自洽的。护栏见 `tests/test_cli_help.py`。
+    """
+    raw = getattr(args, "judge_samples", None)
+    if raw is None:
+        return JUDGE_SAMPLES
+    return max(1, int(raw))
+
+
 def cmd_judge(args: argparse.Namespace) -> int:
     """LLM-as-judge：先校准裁判，再（可选）用它判一份跑批报告。
 
@@ -878,6 +898,10 @@ def cmd_judge(args: argparse.Namespace) -> int:
         # 翻译（含 `0` 不许被当成"没传"）在 `judge_history_turns()` 里，
         # 那样这个坑才测得到 —— 写在这儿就只能靠跑一次真模型才发现。
         history_turns=judge_history_turns(args),
+        # 一条台词判几次取多数。**默认 1 = 旧行为**，因为重复采样按票数
+        # 线性涨价，而长跑批已经是四小时量级 —— 该不该开、开几票，
+        # 得由使用者看着实测数字定，不能替他们默认花这笔钱。
+        samples=judge_samples(args),
         name=cfg.model or "judge",
     )
 
@@ -895,6 +919,9 @@ def cmd_judge(args: argparse.Namespace) -> int:
     payload: dict[str, object] = {
         "judge_model": cfg.model or cfg.llm_provider,
         "judge_history_turns": judge.history_turns,
+        # 票数必须能被读到，不能只藏在指纹哈希里 —— 它决定"这条判决
+        # 是单次读数还是多数票"，而两者不该被放在一起比。
+        "judge_samples": judge.samples,
     }
 
     # ---- 1) 校准（永远先做） ----
@@ -1127,6 +1154,15 @@ def cmd_judge(args: argparse.Namespace) -> int:
             f"（未判不会被当成 0 分）"
         )
         console.print(coverage["verdict"])
+        # 票数不是 1 的时候才提它 —— 不开重复采样时说一句"我用的是 1 票"
+        # 是噪音，而**开着的时候不说**就是在藏一个会改结论的配置。
+        if judge.samples > 1:
+            console.print(
+                f"  重复采样：每条判 {judge.samples} 次取多数｜"
+                f"票型不齐 {judge.sample_splits} 条"
+                f"（这些是本来就不稳、被多数票压住的）｜"
+                f"其中 {judge.replicated_calls} 次调用花在重复上"
+            )
         for key, stats in sorted(summary["by_rubric"].items()):
             console.print(
                 f"  {RUBRICS[key].name}: 通过率 {stats['pass_rate']:.0%}"
@@ -1679,6 +1715,22 @@ def build_parser() -> argparse.ArgumentParser:
              "0 = 不带（旧行为：裁判只看「玩家刚说」+「NPC 的台词」）。"
              "不带历史时，同一句回复在不同上下文中对错相反，而裁判看不见 —— "
              "它会按拿到的材料判得没错，然后判错正确的行为",
+    )
+    p_judge.add_argument(
+        "--judge-samples",
+        dest="judge_samples",
+        type=int,
+        default=None,
+        # ⚠️ 下面 `22%%` 和 `50%%` 里的双写不是笔误：argparse 会对 help 串
+        # 再做一次 `%` 格式化（`_expand_help`），裸 `%` 会让**渲染到这个选项的
+        # `--help`** 直接抛 `ValueError: unsupported format character`（实测过，
+        # 而且 `build_parser()` / `parse_args()` 都发现不了 —— 它们不求值 help）。
+        # 护栏：`tests/test_cli_help.py::test_no_help_string_contains_a_bare_percent`。
+        help=f"一条台词判几次取多数（默认 {JUDGE_SAMPLES} = 单次，旧行为）。"
+             "实测 temperature=0、prompt 逐字节相同，同一条判两次仍有约 22%% 的概率"
+             "给出相反结论，所以单次判决只是一个读数、不是裁判的能力。"
+             "取多数能压掉随机噪声，成本按票数线性上涨。"
+             "注意：多数票消不掉系统性偏见（位置、宽松倾向）",
     )
     p_judge.add_argument("--progress", action="store_true", help="逐条打印判分进度")
     p_judge.add_argument(
