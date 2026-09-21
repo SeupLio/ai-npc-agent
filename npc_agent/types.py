@@ -96,17 +96,67 @@ class ActionCall:
         return f"{self.tool}({inner})"
 
 
+#: `ActionResult.outcome` 的合法取值。
+#:
+#: 为什么**不能**只看 `ok`：`ok=False` 混着两类完全不同的东西 ——
+#:
+#: * `"failed"`  —— 动作**真的**没做成（位置不对、材料不够、台词越界）。
+#:                  这是该被反思、该写成教训的。
+#: * `"declined"` —— 动作**按策略主动让出**（发言占比到顶让出话头、
+#:                  这一轮已经有人开口了）。**这是正确行为**，
+#:                  不是失败，不该反思、不该写进记忆。
+#:
+#: ## 这个字段是被量出来的，不是设计洁癖
+#:
+#: 实测（`scripts/probe_advice_coverage.py`，离线跑批 235 条）：
+#: 反思一共往记忆里写了 **457** 条，其中 **139 条（30.4%）** 是
+#: 「让出话头」被当成失败 —— 而整份语料里**最高频的**那条反思正是这个：
+#:
+#:     教训：speak 失败（发言占比 67% 已超上限，本轮主动让出话头）。
+#:     我说话太多了，这一轮把机会留给玩家。        ← 出现 122 次
+#:
+#: 句子自己都写着「**主动**让出话头」，却顶着「教训：」和「失败」。
+#: 而反思是**以 `importance=0.85` 进记忆、并被 `Plan` 的 prompt
+#: 以【想起的事】取的** ⇒ 配了真实模型时，模型会读到这份假的自我评价：
+#: 「我说话太多了」。**它被告知自己有个毛病，而那个"毛病"是它守规矩。**
+#:
+#: 判据不能用 `detail` 文本匹配 —— 那是本项目反复踩的坑（按一串特征
+#: 串认类，上游一改文案就静默失效）。所以让**产出方**直接声明意图。
+OUTCOME_FAILED = "failed"
+OUTCOME_DECLINED = "declined"
+
+
 @dataclass
 class ActionResult:
-    """工具执行结果。失败时 detail 会作为 Reflection 的输入信号。"""
+    """工具执行结果。失败时 detail 会作为 Reflection 的输入信号。
+
+    `outcome` 区分「真的失败了」和「按策略主动让出」——
+    只有前者该进反思（见上面 `OUTCOME_*` 的注释）。
+    """
 
     ok: bool
     tool: str
     detail: str = ""
     state_delta: dict[str, Any] = field(default_factory=dict)
+    #: `ok=False` 时它才被读。默认 `"failed"` —— 也就是**默认最坏**：
+    #: 忘了声明的调用点会被当成真失败（多想一次），而不是被当成
+    #: "主动让出"（漏掉一次该学的教训）。两者的代价不对称。
+    outcome: str = OUTCOME_FAILED
+
+    @property
+    def declined(self) -> bool:
+        """按策略主动让出，不是失败。"""
+        return (not self.ok) and self.outcome == OUTCOME_DECLINED
 
     def render(self) -> str:
-        mark = "ok" if self.ok else "FAIL"
+        if self.ok:
+            mark = "ok"
+        elif self.declined:
+            # ⚠️ 不印 `FAIL`。这一行会进 transcript，也是人读报告时的依据 ——
+            # 把"主动让出"印成 FAIL，读报告的人会去查一个不存在的 bug。
+            mark = "yield"
+        else:
+            mark = "FAIL"
         return f"[{mark}] {self.tool}: {self.detail}"
 
 

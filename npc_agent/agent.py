@@ -266,7 +266,7 @@ class NPCAgent:
             )
         )
         self.reflector = Reflector(
-            self.persona, self.memory, self.llm, reflect_every=self.config.reflect_every
+            self.persona, self.memory, reflect_every=self.config.reflect_every
         )
         self.active_plan: Optional[Plan] = None
         self.turn_index = 0

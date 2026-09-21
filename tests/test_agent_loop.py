@@ -69,10 +69,47 @@ def test_replan_after_failed_delivery() -> None:
 
 
 def test_reflection_records_lesson_after_failure() -> None:
+    """**真的失败**要留下教训。
+
+    ⚠️ 这条测试原来用的是"正常点单一杯拿铁"的剧本，而那个剧本里
+    七轮**一次真失败都没有** —— 它当时之所以绿，是因为那轮 NPC 撞到了
+    发言占比上限、被记成「教训：speak 失败（…主动让出话头）」，
+    也就是说**它在断言一个把"守规矩"当失败的缺陷**
+    （139/457 = 30.4% 的假教训，见 `docs/ENGINEERING.md` 附十二）。
+
+    现在换成一个**真的会失败**的剧本：把拿铁倒到客人手上之前，
+    客人已经走了（`give_item` → "小鹿在门口，不在你身边"）。
+    """
     agent, env = build("tutorial")
-    drive(agent, env, [("player_a", "阿柚，能给我来杯拿铁吗？")] + [None] * 6)
+    turns = drive(agent, env, [("player_a", "给我来杯美式")] + [None] * 6)
+
+    # 先确认这一轮**确实**发生过真失败 —— 否则这条测试会退化成"永远绿"。
+    real_failures = [
+        r for t in turns for r in t.results if not r.ok and not r.declined
+    ]
+    assert real_failures, "这个剧本没有产生真失败，测试前提不成立"
+
     lessons = agent.reflector.render_lessons()
-    assert "教训" in lessons
+    assert "教训" in lessons, f"真失败没有留下教训：{lessons!r}"
+    assert real_failures[0].tool in lessons
+
+
+def test_a_correctly_yielded_floor_is_not_a_lesson() -> None:
+    """反例：**守规矩让出话头**不许被记成教训。
+
+    同一条正常点单剧本，唯一的 `ok=False` 是发言占比到顶后主动让出 ——
+    那是正确行为。以前它被写成教训（"我说话太多了"），
+    而那条教训会以 `importance=0.85` 进记忆、被规划 prompt 取走。
+    """
+    agent, env = build("tutorial")
+    turns = drive(agent, env, [("player_a", "阿柚，能给我来杯拿铁吗？")] + [None] * 6)
+
+    declined = [r for t in turns for r in t.results if r.declined]
+    assert declined, "这个剧本没有让出话头的事件，测试前提不成立"
+    assert all("[yield]" in r.render() for r in declined)
+
+    lessons = agent.reflector.render_lessons()
+    assert "说话太多" not in lessons, f"守规矩被记成了毛病：{lessons!r}"
 
 
 def test_hosting_scenario_completes() -> None:

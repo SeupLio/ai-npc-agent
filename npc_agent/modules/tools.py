@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from ..env.base import Environment, ToolSpec
-from ..types import ActionCall, ActionResult
+from ..types import OUTCOME_DECLINED, ActionCall, ActionResult
 from .memory import MemoryManager
 from .persona import Persona
 from .state import StateTracker
@@ -100,7 +100,11 @@ class ToolRegistry:
             return ActionResult(False, INTERNAL_SPEAK, "没有内容可说")
         if not ctx.allow_speech:
             return ActionResult(
-                False, INTERNAL_SPEAK, "本轮已有另一位 NPC 开口，我让出话头"
+                False,
+                INTERNAL_SPEAK,
+                "本轮已有另一位 NPC 开口，我让出话头",
+                # 这是调度规则在做它该做的事，不是 NPC 没做成什么事。
+                outcome=OUTCOME_DECLINED,
             )
         violations = ctx.persona.check(text, ctx.tracker.world_flags)
         if any(v.startswith("出戏词") or v.startswith("剧透") for v in violations):
@@ -113,6 +117,8 @@ class ToolRegistry:
                 False,
                 INTERNAL_SPEAK,
                 f"发言占比 {share:.0%} 已超上限，本轮主动让出话头",
+                # 同上：这是发言权上限在生效，是**正确行为**。
+                outcome=OUTCOME_DECLINED,
             )
         styled = ctx.persona.apply_style(text)
         ctx.env.broadcast(ctx.actor_id, styled)
