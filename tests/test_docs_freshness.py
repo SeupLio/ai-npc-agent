@@ -27,8 +27,11 @@
 归一化只抹时长 —— 别的数字（通过数、指标均值、用例名）一个都不许抹，
 抹多了这条断言就变成永真式。函数在 `scripts/regen_docs.py:normalize_report`。
 
-第 3 条里 `ablation` 要跑约 2 分钟，所以默认跳过（和端到端测试同一个约定）：
-设 `NPC_AGENT_DOC_FRESHNESS=1` 才跑。`worlds` 是秒级，默认就跑。
+第 3 条曾经把 `ablation` 排除在默认之外（它那时要跑约 2 分钟），代价是**同一个毛病
+又犯了一次**：入库的 `ablation.html` 停在「共 1090 句」，而代码早已是 1153 句 ——
+护栏是绿的，因为它压根没在跑。根因是检查点逐条落盘（O(N²)，见附十九），修掉之后
+`ablation` 只要 **~5 秒**，于是三份**全部默认就跑**，不再留"设了环境变量才验"的灰区。
+`test_every_offline_report_is_verified_by_default` 钉住这条：不许再有灰区。
 """
 
 from __future__ import annotations
@@ -60,10 +63,9 @@ def _load_regen():
 
 regen_docs = _load_regen()
 
-# 秒级，默认就跑
-FAST_OFFLINE = ("worlds", "sensitivity")
-# 约 2 分钟，默认跳过；设 NPC_AGENT_DOC_FRESHNESS=1 才跑
-SLOW_OFFLINE = ("ablation",)
+# 全部离线报告都默认验。`ablation` 曾经要 ~99s（检查点 O(N²)）所以被排除在外，
+# 修好后 ~5s ⇒ 归队。判据不是"它慢不慢"，而是"默认跑批能不能替我们看见它"。
+FAST_OFFLINE = ("worlds", "sensitivity", "ablation")
 
 
 def _docs_html() -> list[str]:
@@ -206,12 +208,18 @@ def test_fast_offline_reports_match_the_code(name: str, tmp_path: Path) -> None:
     _assert_matches_code(name, tmp_path)
 
 
-@pytest.mark.parametrize("name", SLOW_OFFLINE)
-def test_slow_offline_reports_match_the_code(name: str, tmp_path: Path) -> None:
-    """分钟级的那几份，默认跳过（和端到端测试同一个约定）。"""
-    if os.environ.get("NPC_AGENT_DOC_FRESHNESS") != "1":
-        pytest.skip(f"没设 NPC_AGENT_DOC_FRESHNESS=1，跳过慢速报告校验（{name}）")
-    _assert_matches_code(name, tmp_path)
+def test_every_offline_report_is_verified_by_default() -> None:
+    """不许有"自称离线可复现、却默认不验"的灰区。
+
+    这正是 `ablation.html` 栽过**两次**的地方：分类说它可复现，而默认跑批里
+    没有任何一条会碰它 ⇒ 它过期了也没人知道。**护栏不是"写了就行"，
+    它必须跑在默认会发生的场景上** —— 否则它通过的理由和它要证明的事无关。
+    """
+    missing = sorted(set(regen_docs.OFFLINE_REPORTS) - set(FAST_OFFLINE))
+    assert not missing, (
+        f"这些报告被归成「离线可复现」，却不在默认校验里：{missing}。"
+        "要么加进 FAST_OFFLINE，要么把它改成快照（SNAPSHOT_REPORTS）。"
+    )
 
 
 def test_the_freshness_check_itself_can_fail(tmp_path: Path) -> None:

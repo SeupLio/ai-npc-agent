@@ -551,7 +551,7 @@ game-npc-agent/
 ├── configs/scenarios/       场景与人设（YAML，加场景不用改代码）
 ├── docs/                    报告 + 详细工程记录
 ├── scripts/                 重生成报告 / 跑批 / 桥 / 探针
-└── tests/                  968 个单元与端到端测试
+└── tests/                  974 个单元与端到端测试
 ```
 
 ---
@@ -585,7 +585,7 @@ game-npc-agent/
 
 ```bash
 python -m pytest tests
-# 966 passed, 2 skipped
+# 973 passed, 1 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -593,9 +593,10 @@ python -m pytest tests
 > 你只会看到进度点和 `[100%]`，然后什么都没有，看起来像跑崩了（退出码还是 0）。
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**，改了命令不改输出会红。
 
-> 收集到的是 **968** 条，默认跳过 **2** 条：
-> `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）
-> 和 `tests/test_docs_freshness.py` 里那条慢速报告校验（约 2 分钟，`NPC_AGENT_DOC_FRESHNESS=1` 才跑）。
+> 收集到的是 **974** 条，默认跳过 **1** 条：
+> `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）。
+> 报告新鲜度校验（`tests/test_docs_freshness.py`）**三份离线报告全部默认就跑** ——
+> 不再有"慢到只能手动验"的那一档。
 
 除了常规单测，仓库里有一批**护栏测试**在守"文档不许说假话"：
 README 里的测试数、离线基线、报告覆盖数、每条被文档化的命令，都真的跑一遍去核对。
@@ -607,7 +608,7 @@ README 里的测试数、离线基线、报告覆盖数、每条被文档化的�
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 三套可配置场景（破冰 / 新手指引 / 游戏主持）
-- [x] 六维评测 harness + 968 个测试
+- [x] 六维评测 harness + 974 个测试
 - [x] **自测控制台 `studio`**：一条命令起个网页，离线可玩，数字与命令行逐字一致
 - [x] **评测敏感性**：注入缺陷，证明满分不是"护栏从不报警"
 - [x] **跨世界覆盖报告**：同一套 Agent 在两个世界上的成绩

@@ -36,11 +36,15 @@ from npc_agent.eval.report import _METRIC_LABELS
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
 
-# 这些环境变量会把"默认跳过"的用例打开（慢速 / 需要外部依赖）。
-# 数"默认跳过几条"时必须把它们摘掉，否则：
-# 外层带着 `NPC_AGENT_DOC_FRESHNESS=1` 跑整套时，子进程会真的去跑那 2 分钟，
-# 于是既慢、又数出 0 条跳过，护栏反而红 —— 一个"因为环境太全"而失败的护栏。
-OPT_IN_ENV_VARS = ("NPC_AGENT_DOC_FRESHNESS", "NPC_AGENT_MC_E2E")
+# 这些环境变量会把"默认跳过"的用例打开（需要外部依赖）。
+# 数"默认跳过几条"时必须把它们摘掉，否则外层带着它跑整套时，子进程会真的
+# 去跑那些需要真机的用例，于是既慢、又数出 0 条跳过，护栏反而红 ——
+# 一个"因为环境太全"而失败的护栏。
+#
+# `NPC_AGENT_DOC_FRESHNESS` 曾经也在这里，2026-09-21 **删掉了**：报告新鲜度现在
+# 全部默认就跑（没有慢到只能手动跑的那一档了），而**一个不再打开任何东西的
+# 开关留着就是撒谎**。
+OPT_IN_ENV_VARS = ("NPC_AGENT_MC_E2E",)
 
 
 def _default_env() -> dict[str, str]:
@@ -208,17 +212,25 @@ README_COUNT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # 一个把标签和数值配错的护栏，比没有护栏更糟 —— 它会给假话盖章。
 _PASSED_LINE = re.compile(r"#\s*(\d+) passed(?:,\s*(\d+) skipped)?")
 
-# 默认会被跳过的目标 —— README 里那句 "2 skipped" 说的就是它们。
+# 测试那一节正文里还印着「默认跳过 **N** 条」。它和上面那个 `skipped` 是
+# **两个量**（名单里的目标数 vs 实测跳过数），只是现在恰好相等 —— 不许靠巧合。
+# 这一处曾经**没有任何东西在守**：名单从 2 条减到 1 条之后，
+# 收集数被同步脚本改掉了，"默认跳过 **2** 条"留在原地，README 印着假话而护栏全绿。
+_SKIP_PROSE = re.compile(r"默认跳过 \*\*(\d+)\*\* 条")
+
+# 默认会被跳过的目标 —— README 里那句 "N skipped" 说的就是它们。
 # 可以写整个文件，也可以写到具体用例（node id）。
 #
 # 这份名单**故意写死**：它是"默认环境下哪些测试不跑"的唯一真相来源。
 # 新增一个默认跳过的用例时，这里要改，README 也要改 —— 这正是想要的。
 # 忘了改不会静默通过：`skipped` 对不上就会红，逼你回来看这份名单。
+#
+# ⭐ `scripts/sync_doc_counts.py` 也**从这份名单推导**跳过数（不再手抄）——
+# 它曾经写死 `skipped = 2` 并注释了那两条是谁，结果其中一条不再默认跳过后，
+# 那个 2 就变成了假话。**能推导的别手抄。**
 DEFAULT_SKIPPED_TARGETS: tuple[str, ...] = (
     # 整个文件都跳过（需要真实 Minecraft 服务端）
     "tests/test_minecraft_e2e.py",
-    # 只有这条跳过（跑一次约 2 分钟，所以默认不跑）
-    "tests/test_docs_freshness.py::test_slow_offline_reports_match_the_code",
 )
 
 # `-rs` 会给每个跳过组印一行 `SKIPPED [n] 路径:行号: 原因`
@@ -233,9 +245,10 @@ def _default_skip_count() -> int:
     fixture 体）。所以只能真跑一遍这些目标 —— 而它们本来就是
     "跑起来立刻跳过"，代价是秒级，不是分钟级。
 
-    为什么要支持 node id 而不只是文件：慢速用例**和快用例在同一个文件里**
-    （`test_docs_freshness.py` 里只有一条是默认跳过的）。
-    按文件粒度算，会把同文件里那些正常跑的用例也当成跳过，于是数出 6 而不是 2。
+    为什么要支持 node id 而不只是文件：曾经有一条慢速用例**和快用例在同一个文件里**
+    （`test_docs_freshness.py` 里只有一条默认跳过）。按文件粒度算，会把同文件里那些
+    正常跑的用例也当成跳过，数出来的比真实的大。**那条已经归队**（见附十九），
+    现在名单里只剩整文件，但将来仍可能放进 node id，所以按 target 原样跑。
     """
     total = 0
     for target in DEFAULT_SKIPPED_TARGETS:
@@ -353,6 +366,8 @@ def test_readme_test_counts_match_reality() -> None:
     )
     passed = int(passed_line.group(1))
     skipped = int(passed_line.group(2) or 0)
+    # 跳过数要用来校验**两处**（输出行 + 正文那句），所以提到分支外算一次。
+    real_skips = _default_skip_count()
     if passed + skipped != actual:
         wrong["测试一节的输出"] = (
             f"{passed} passed + {skipped} skipped = {passed + skipped}，"
@@ -361,17 +376,28 @@ def test_readme_test_counts_match_reality() -> None:
     else:
         # 光校验"加起来对"还不够：`579 passed, 0 skipped` 也能凑出 579，
         # 而那**正是**这条护栏以前逼出来的假话。所以跳过数要单独验一遍。
-        real_skips = _default_skip_count()
         if skipped != real_skips:
             wrong["测试一节的跳过数"] = (
                 f"README 说跳过 {skipped} 条，默认环境实际跳过 {real_skips} 条"
                 f"（{', '.join(DEFAULT_SKIPPED_TARGETS)}）"
             )
 
+    # 正文那句「默认跳过 **N** 条」也要对上 —— 它曾经完全没人守。
+    prose = _SKIP_PROSE.search(text)
+    assert prose, (
+        f"README 里找不到「默认跳过 **N** 条」，正则过期了：{_SKIP_PROSE.pattern}"
+    )
+    if int(prose.group(1)) != real_skips:
+        wrong["正文里的默认跳过条数"] = (
+            f"README 正文说默认跳过 {prose.group(1)} 条，"
+            f"而 `DEFAULT_SKIPPED_TARGETS` 是 {real_skips} 条"
+        )
+
     assert not wrong, (
         f"README 里的测试数和实际对不上（实际收集 {actual}）：{wrong}。"
         "改了测试就顺手把 README 里那几处数字一起改掉：目录树、路线图写收集数，"
-        "测试一节写 `passed, skipped`，且两者相加必须等于收集数。"
+        "测试一节写 `passed, skipped`，且两者相加必须等于收集数；"
+        "正文那句「默认跳过 **N** 条」也要对上 `DEFAULT_SKIPPED_TARGETS`。"
     )
 
 
@@ -731,4 +757,112 @@ def test_the_readme_baseline_check_can_actually_fail(tmp_path: Path) -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# 手册（`docs/ENGINEERING.md`）里的测试数
 
+#: 手册里「测试」那一节：标题 → 该节正文（到下一个二级标题为止）。
+#:
+#: ⚠️ **必须只扫这一节，不能扫整份文件。** 散文里**会引用**这类输出行的形状 ——
+#: 附十九里就写着"曾经印着 `# 656 passed, 2 skipped`"。整份扫会把散文当成真输出，
+#: 护栏立刻变成误报机器，然后下一个人给它加个 skip 关掉 —— 被关掉的护栏比没有更糟。
+_HANDBOOK_SECTION = re.compile(r"^## 测试\s*$(?P<body>.*?)(?=^## |\Z)", re.M | re.S)
+
+
+def _handbook_test_section(text: str) -> str:
+    m = _HANDBOOK_SECTION.search(text)
+    assert m, (
+        "手册里找不到「## 测试」这一节 —— 标题改过了，先修这条护栏的正则，"
+        "否则它会永远绿（找不到东西可查 = 没查）。"
+    )
+    return m.group("body")
+
+
+def _readme_counts() -> tuple[int, int]:
+    """README 里那句 `# N passed, M skipped` 的 (passed, skipped)。
+
+    README 那一行已经被 `test_readme_test_counts_match_reality` 钉住了，
+    所以拿它当基准是安全的。
+    """
+    m = _PASSED_LINE.search(README.read_text(encoding="utf-8"))
+    assert m, f"README 里找不到测试输出行，正则过期了：{_PASSED_LINE.pattern}"
+    return int(m.group(1)), int(m.group(2) or 0)
+
+
+def _assert_handbook_matches(text: str, want: tuple[int, int]) -> None:
+    found = [
+        (int(a), int(b))
+        for a, b in re.findall(
+            r"# (\d+) passed, (\d+) skipped", _handbook_test_section(text)
+        )
+    ]
+    assert found, (
+        "「测试」一节里找不到 `# N passed, M skipped` —— 版式改过了，"
+        "先修这条护栏的正则，否则它会永远绿。"
+    )
+    wrong = [f for f in found if f != want]
+    assert not wrong, (
+        f"手册「测试」一节里印的是 {wrong}，而 README（已被护栏钉住）是 {want}。"
+        "改了测试就顺手把 `docs/ENGINEERING.md` 那一节也改掉。"
+    )
+
+
+def test_the_handbook_test_section_matches_the_readme() -> None:
+    """`docs/ENGINEERING.md` 的「测试」一节也必须印当前数字。
+
+    它曾经印着 `# 656 passed, 2 skipped`（实际 970/1）而**没人发现** ——
+    因为 `reports/_sync_handbook_counts.py` 同步的是**另一份**手册
+    （`米哈游Agent实习_面试作战手册.html`，在仓库外），
+    这份 markdown 根本没有任何东西在守它。
+
+    ⭐ 同一个病的第三次：**手抄的数字 + 没有护栏 = 迟早变成假话**。
+    """
+    _assert_handbook_matches(
+        (REPO_ROOT / "docs" / "ENGINEERING.md").read_text(encoding="utf-8"),
+        _readme_counts(),
+    )
+
+
+def test_the_handbook_number_guard_can_actually_fail() -> None:
+    """反向测试：三种坏法都必须红。
+
+    数字过期 / 读不到输出行 / 连「## 测试」这一节都找不到 ——
+    少验一种，"永远绿"就会从那个缺口漏进来。
+
+    ⚠️ 那个"过期数字"**从当前真实值推导**（`real[0] - 1`），不手抄：
+    手抄的话，真实值一变，这条反向测试就悄悄变成"测一个不存在的值"。
+    """
+    real = _readme_counts()
+    stale = (real[0] - 1, real[1])
+    with pytest.raises(AssertionError):
+        _assert_handbook_matches(
+            f"## 测试\n\n```bash\npython -m pytest tests\n"
+            f"# {stale[0]} passed, {stale[1]} skipped\n```\n",
+            real,
+        )
+    with pytest.raises(AssertionError):
+        _assert_handbook_matches("## 测试\n\n这一节里没有任何输出行\n", real)
+    with pytest.raises(AssertionError):
+        _assert_handbook_matches("## 别的\n没有测试节\n", real)
+
+
+def test_the_guard_ignores_that_shape_in_prose() -> None:
+    """散文里引用同样的形状**不算数** —— 否则护栏会误报。
+
+    附十九里就写着"曾经印着 `# 656 passed, 2 skipped`"。扫整份文件的话，
+    那句散文会被当成真输出、护栏当场变红 —— 而它**不该**红。
+    这条断言是"只扫「## 测试」这一节"那个决定的守门人。
+
+    ⚠️ 这里的数字也**全部推导**：散文用 `real[0] + 7`（明显不同的值），
+    真输出用 `real`。写死任何一个，这条测试都会在下一次数字变动时
+    因为一个**正当的**理由变红。
+    """
+    real = _readme_counts()
+    prose = (real[0] + 7, real[1])
+    text = (
+        "## 附十九：某次复盘\n\n"
+        f"它曾经印着 `# {prose[0]} passed, {prose[1]} skipped`，"
+        f"而实际是 {real[0]}/{real[1]}。\n\n"
+        "## 测试\n\n```bash\npython -m pytest tests\n"
+        f"# {real[0]} passed, {real[1]} skipped\n```\n"
+    )
+    _assert_handbook_matches(text, real)  # 不该红

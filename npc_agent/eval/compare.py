@@ -235,6 +235,25 @@ def free_speech_rate(speeches: list[str], patterns: list[re.Pattern[str]]) -> fl
 # --------------------------------------------------------------------------- #
 # 三、对照跑批
 
+#: 两次落盘之间至少间隔多少秒。
+#:
+#: 检查点是为了**长跑批崩了不白跑**（真实模型一跑半小时）。但"每条用例都落一次"
+#: 会让代价变成 O(N²)：`_refresh()` 要遍历**迄今全部**结果、`save()` 要序列化
+#: **整份增长中的报告**，而这两件事逐条做、做 N 次。
+#:
+#: 实测（236 条 × 5 档的离线消融，各测两遍）：逐条落盘 **1180 次**、耗时 **~98–158s**；
+#: 按时间节流后 **10 次**、**~5–9s**。落盘次数是**确定性**的，耗时随机器负载漂 ——
+#: 复现时以次数为准。
+#: 换来的只是"崩溃时少丢最后 5 秒" —— 对几秒就跑完的离线跑批毫无意义，
+#: 对半小时的模型跑批也无关痛痒。**别为了一个只在长跑批里有用的保护，
+#: 让短跑批付几十倍的代价。**
+#:
+#: ⚠️ **别顺手把 `runner.py` / `judge.py` 的逐条落盘也改成节流。** 那两处每条用例要
+#: 几秒到十几分钟（真实模型调用），落盘那几十毫秒是噪声；而且长跑批**真的需要**
+#: 逐条保护（崩了最多丢一条）。判据是**比值**（落盘一次的代价 / 单条用例的代价），
+#: 不是"形状一样就一起改"。
+CHECKPOINT_MIN_INTERVAL_SEC = 5.0
+
 
 @dataclass
 class Comparison:
@@ -254,9 +273,11 @@ class Comparison:
     ) -> "Comparison":
         """逐个规格跑批。逐个而不是并行，是因为真实模型端点通常有并发限制。
 
-        ``checkpoint`` 指定一个路径，每跑完一条用例就把当前结果落盘。
+        ``checkpoint`` 指定一个路径，跑批过程中**按时间节流**落盘
+        （见 `CHECKPOINT_MIN_INTERVAL_SEC`：最多每 5 秒一次，跑完再补一次）。
         这不是过度设计：真实模型的跑批动辄半小时（单次推理 ~9s × 几十轮），
         如果只在最后写一次文件，中途任何一次崩溃都会让几十分钟白跑。
+        但也**不能每条用例都落** —— 那是 O(N²)，短跑批会白付 8 倍代价。
 
         ``on_case`` 是每条用例结束后的回调，用来打进度 ——
         跑批过程中最怕的就是"看起来卡住了"，其实只是在慢慢跑。
@@ -283,18 +304,30 @@ class Comparison:
                     "use_llm_speech": cfg.use_llm_speech,
                 }
             )
-            # 先把 outcome 挂进列表，之后每跑一条用例就刷新它，
-            # 这样 checkpoint 里始终是一份"已完成部分"的完整报告。
+            # 先把 outcome 挂进列表；之后按 `CHECKPOINT_MIN_INTERVAL_SEC` 的节奏
+            # 刷新它，这样 checkpoint 里始终是一份"已完成部分"的完整报告 ——
+            # 但**不是**每条用例都刷新（那是 O(N²)，见那个常量的注释）。
             outcome = RunOutcome(spec=spec, report=report)
             self.outcomes.append(outcome)
 
+            last_save = 0.0
             for case_index, case in enumerate(cases, 1):
                 report.results.append(harness.run_case(case))
-                self._refresh(outcome, patterns, started)
-                if checkpoint:
+                # ⚠️ 刷新 + 落盘**不要每条用例都做** —— 逐条做就是 O(N²)。
+                # 详见 `CHECKPOINT_MIN_INTERVAL_SEC`：实测这一步占掉全程 90% 以上的时间。
+                if checkpoint and time.time() - last_save >= CHECKPOINT_MIN_INTERVAL_SEC:
+                    self._refresh(outcome, patterns, started)
                     self.save(checkpoint)
+                    last_save = time.time()
+                # `on_case` 只用来打进度（它只读 `report.passed/total`），
+                # 所以**不**为它刷新派生指标 —— 那会把 O(N²) 加回来。
                 if on_case:
                     on_case(spec, case, case_index, len(cases), outcome)
+
+            # 这一档跑完：刷新一次保证派生指标是完整的，再落一次盘保证检查点最新。
+            self._refresh(outcome, patterns, started)
+            if checkpoint:
+                self.save(checkpoint)
 
             if progress:
                 progress(

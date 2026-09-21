@@ -270,3 +270,53 @@ def test_even_comparison_is_paired():
     )
     assert comparison.is_paired() is True
     assert comparison.paired_count() == 3
+
+# --------------------------------------------------------------------------- #
+# 检查点的落盘节奏：不许退化成"每条用例一次"
+
+
+def test_the_checkpoint_is_not_written_once_per_case(tmp_path, monkeypatch):
+    """检查点按**时间**节流，不是每条用例落一次。
+
+    逐条落盘是 O(N²)：`_refresh()` 每次都要遍历**迄今全部**结果，
+    `save()` 每次都要序列化**整份增长中的报告**。实测 235 条 × 5 档的
+    离线消融因此要 98.6s，节流后 4.5s —— 而它换来的只是"崩溃时少丢最后 5 秒"。
+    """
+    from npc_agent.eval.compare import Comparison
+
+    writes: list[str] = []
+    monkeypatch.setattr(Comparison, "save", lambda self, path: writes.append(str(path)))
+
+    Comparison(base_config=RuntimeConfig(), limit=40).run(
+        [RunSpec(label="离线", provider="null")], checkpoint=tmp_path / "ckpt.json"
+    )
+
+    assert writes, "跑完那一档至少要落一次盘，否则检查点功能没了"
+    assert len(writes) <= 3, (
+        f"40 条用例落了 {len(writes)} 次盘 —— 落盘节奏退化成逐条了。"
+        "那会把离线消融从 ~5s 拉回 ~99s。"
+    )
+
+
+def test_the_checkpoint_cadence_guard_can_actually_fail(tmp_path, monkeypatch):
+    """反向测试：把间隔设成 0，上面那条护栏必须红。
+
+    不这么做的话，"落盘次数很少"可能只是因为 `save()` 压根没被调用 ——
+    那样护栏就是靠"什么都没发生"通过的。
+    """
+    from npc_agent.eval import compare as compare_mod
+
+    monkeypatch.setattr(compare_mod, "CHECKPOINT_MIN_INTERVAL_SEC", 0.0)
+    writes: list[str] = []
+    monkeypatch.setattr(
+        compare_mod.Comparison, "save", lambda self, path: writes.append(str(path))
+    )
+
+    compare_mod.Comparison(base_config=RuntimeConfig(), limit=40).run(
+        [RunSpec(label="离线", provider="null")], checkpoint=tmp_path / "ckpt.json"
+    )
+
+    assert len(writes) >= 40, (
+        f"间隔设成 0 时应该退化成逐条（期望 >=40 次），实际 {len(writes)} 次 —— "
+        "说明反向测试没打到点子上，上面那条护栏也就不可信。"
+    )
