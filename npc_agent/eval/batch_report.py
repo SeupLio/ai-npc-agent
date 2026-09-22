@@ -17,8 +17,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 # 复用对照报告里的样式基元，避免两套 HTML 慢慢长歪。
@@ -990,15 +988,3 @@ def render_batch_html(
     )
 
 
-def write_batch_html(
-    payload: dict[str, Any] | str | Path,
-    out_path: str | Path,
-    title: str = "真实模型跑批报告",
-    subtitle: str = "",
-) -> Path:
-    if isinstance(payload, (str, Path)):
-        payload = json.loads(Path(payload).read_text(encoding="utf-8"))
-    target = Path(out_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render_batch_html(payload, title, subtitle), encoding="utf-8")
-    return target

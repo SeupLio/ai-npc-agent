@@ -2094,7 +2094,7 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
 
 ```bash
 python -m pytest tests
-# 989 passed, 1 skipped
+# 995 passed, 1 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -2105,7 +2105,7 @@ python -m pytest tests
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**
 > （见 `tests/test_test_hygiene.py`），改了命令不改输出会红。
 
-> 收集到的是 **990** 条，默认跳过 **1** 条：
+> 收集到的是 **996** 条，默认跳过 **1** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）。
 > 报告新鲜度校验曾经也在这份名单里（约 2 分钟、要设环境变量），2026-09-21 起
 > **默认就跑** —— 见附十九。

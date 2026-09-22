@@ -109,17 +109,6 @@ class MeteredLLM(LLM):
             raise
 
 
-def metered_factory(inner_factory: Callable[..., LLM], label: str = "") -> Callable[[], LLM]:
-    """构造"每条用例一个新的计数器 + 新的模型客户端"的工厂。
-
-    每条用例一份，是为了让计数天然线程安全 —— 不需要锁，
-    也不会把 A 用例的失败算到 B 用例头上。
-    """
-
-    def make() -> LLM:
-        return MeteredLLM(inner_factory(), label=label)
-
-    return make
 
 
 # --------------------------------------------------------------------------- #
