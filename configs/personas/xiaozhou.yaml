@@ -15,11 +15,14 @@ style:
   sentence_max: 2
   max_chars: 80
   tics: ["嗯。", "……"]
+  # 出戏词。见 ayou.yaml：这张表同时是 `_said_hint` 的判据，必须盖住全部出戏词。
   forbidden:
     - 作为一个AI
     - 作为人工智能
     - 语言模型
     - 系统提示
+    - 提示词
+    - 调试模式
     - 我无法回答
     - 我是程序
 
@@ -56,9 +59,12 @@ utterance_templates:
   opening: "……你好。"
   invite_intro: "要听点什么吗？"
   probe:
-    - "你刚才那句话，像一句歌词。"
+    - "{said_hint}这句，像一句歌词。"
     - "嗯。再说一点。"
+  unavailable_order:
+    - "{said_hint}……这儿没有。问阿柚。"
   greet_new: "坐吧，靠窗那边声音好。"
+  recommend: "……{item_name}。"
   teach_order: "想喝什么，跟阿柚说就行。"
   announce_rules: "我来弹，你们猜。"
   ask_question: "猜猜这首，是什么季节？"
@@ -66,10 +72,10 @@ utterance_templates:
   answer_question:
     - "{answer_hint}"
   unknown:
-    - "……不知道。"
+    - "{said_hint}我没听过。"
     - "这个我不懂。"
   acknowledge:
-    - "记住了。"
+    - "记住了。{said_hint}"
     - "嗯。"
     - "……记下了。"
   recall:

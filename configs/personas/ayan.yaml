@@ -19,12 +19,14 @@ style:
   sentence_max: 2          # 和咖啡屋的店主用同一个字段约束话量
   max_chars: 80
   tics: ["行。", "手上有活，你说。"]
-  forbidden:               # 出戏词：一旦出现就算人设崩塌
+  # 出戏词。见 ayou.yaml：这张表同时是 `_said_hint` 的判据，必须盖住全部出戏词。
+  forbidden:
     - 作为一个AI
     - 作为人工智能
     - 语言模型
     - 系统提示
     - 提示词
+    - 调试模式
     - 我无法回答
     - 我是程序
     - 我的设定
@@ -61,6 +63,7 @@ self_facts:
 # 短、直、不绕弯，别把三个变体写成同一种客套。
 utterance_templates:
   opening: "行。{topic_hint}"
+  recommend: "{item_name}吧，实在。"
   accept_order: "行，我这就去。"
   deliver_order: "{item_name}给你。"
   greet_new: "生面孔？我是阿岩，村口的石匠。"
@@ -69,10 +72,12 @@ utterance_templates:
   # 有测试（test_variants_across_intents_are_also_distinct）自动挡这个。
   wrap_up: "就到这儿。剩下的明天再说。"
   probe:
-    - "{target}刚说的，你再讲讲。"
+    - "{said_hint}那就往细里说说。"
     - "行，{target}往细里说说。"
+  unavailable_order:
+    - "{said_hint}这儿没有，换一样。"
   acknowledge:
-    - "{target}说的我记下了。"
+    - "{said_hint}我记下了。"
     - "行，记下了。"
     - "嗯，{target}继续说。"
   recall:
@@ -81,7 +86,7 @@ utterance_templates:
   answer_question:
     - "{answer_hint}"
   unknown:
-    - "这个我说不好。"
+    - "{said_hint}这个我说不好。"
     - "不清楚，我不瞎讲。"
   fallback:
     - "行，你说。"

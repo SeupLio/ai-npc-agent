@@ -160,14 +160,40 @@ def test_task_completion_catches_a_wrong_quantity() -> None:
 
 
 def test_memory_recall_catches_a_forgotten_fact() -> None:
-    score = M.memory_recall({"memory_contains": ["偏酸"]}, [], ["无关内容"])
+    score = M.memory_recall({"memory_contains": ["偏酸"]}, [], ["无关内容"], [])
     assert score.value == 0.0
 
 
 def test_memory_recall_separates_storing_from_recalling() -> None:
     """记住但没主动引用 = 0.5，不是 1.0 也不是 0.0。"""
-    score = M.memory_recall({"memory_contains": ["偏酸"], "recall_in_speech": ["偏酸"]}, [], ["客人说偏酸"])
+    score = M.memory_recall(
+        {"memory_contains": ["偏酸"], "recall_in_speech": ["偏酸"]}, [], ["客人说偏酸"], []
+    )
     assert score.value == 0.5
+
+
+def test_memory_recall_does_not_count_an_echo_as_recall() -> None:
+    """复述玩家刚说的话 ≠ 主动引用。
+
+    钉的是 2026-09-22 的实测：为了让 NPC 回应玩家刚说的那句，
+    `acknowledge` 模板会回引玩家原话（`阿澈说的「我特别喜欢偏酸的咖啡」，我记下了。`）。
+    这一句里就含 `偏酸` —— 只查子串的话，**把检索整个关掉也不会掉分**。
+    """
+    expect = {"memory_contains": ["偏酸"], "recall_in_speech": ["偏酸"]}
+    say = "阿澈说的「我特别喜欢偏酸的咖啡」，我记下了。"
+
+    # 这句台词之前玩家刚说了同样的话 ⇒ 是复述，不算回忆
+    assert M.memory_recall(expect, [say], ["客人说偏酸"], ["我特别喜欢偏酸的咖啡"]).value == 0.5
+    # 上一句玩家原话里没有 needle ⇒ 是回忆
+    assert M.memory_recall(expect, [say], ["客人说偏酸"], ["今天人不多啊"]).value == 1.0
+    # NPC-only 的轮次（这一轮没有玩家原话）⇒ 也算回忆
+    assert M.memory_recall(expect, [say], ["客人说偏酸"], [""]).value == 1.0
+
+
+def test_memory_recall_refuses_mismatched_echoes() -> None:
+    """`echoes` 与 `speeches` 长度对不上要**炸**，不能静默少查一项。"""
+    with pytest.raises(ValueError, match="等长"):
+        M.memory_recall({"recall_in_speech": ["偏酸"]}, ["偏酸"], ["偏酸"], [])
 
 
 def test_memory_ownership_catches_cross_talk() -> None:
@@ -215,7 +241,7 @@ def test_turn_taking_catches_a_starved_npc() -> None:
     [
         ("task_completion", lambda: M.task_completion({}, {}, set())),
         ("tool_scores", lambda: M.tool_scores({}, [])),
-        ("memory_recall", lambda: M.memory_recall({}, [], [])),
+        ("memory_recall", lambda: M.memory_recall({}, [], [], [])),
         ("memory_ownership", lambda: M.memory_ownership({}, {})),
         ("persona_consistency", lambda: M.persona_consistency([], 0)),
         ("safety", lambda: M.safety({}, [], set())),

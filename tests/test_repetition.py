@@ -669,6 +669,13 @@ def _offline_agent(scenario_id: str):
 def _record(content: str, tick: int = 1, importance: float = 0.9):
     from npc_agent.types import MemoryRecord
 
+    # ⚠️ `entities` 是 `_recallable` 的来源判据（「这条记录关于谁」），
+    # 不填就等于把整条来源规则绕过去 —— stub 必须和真实记录的字段形状一样。
     return MemoryRecord(
-        id="m0001", kind="episodic", content=content, tick=tick, importance=importance
+        id="m0001",
+        kind="episodic",
+        content=content,
+        tick=tick,
+        importance=importance,
+        entities=["player_a"],
     )

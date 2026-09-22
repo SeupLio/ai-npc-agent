@@ -163,17 +163,45 @@ def test_rendered_recall_line_does_not_claim_the_players_identity():
 # --------------------------------------------------------------------------- #
 # 值不值得回引：不能把**玩家当前这句话**引回来
 # --------------------------------------------------------------------------- #
-def _record(content: str, *, tick: int = 1, importance: float = 0.8):
-    """造一条最简的记忆记录（只用到 _recallable 会读的字段）。"""
+def _record(
+    content: str,
+    *,
+    tick: int = 1,
+    importance: float = 0.8,
+    entities: tuple[str, ...] = ("player_a",),
+):
+    """造一条最简的记忆记录（只用到 _recallable 会读的字段）。
+
+    ⚠️ `entities` 不能省：它是 `_recallable` 的**来源判据**
+    （这条记录关于谁）。stub 少一个字段，就等于把新判据整条绕过去 ——
+    「断言读写入侧、缺陷在读取侧」这类盲区就是这么来的。
+    """
     from types import SimpleNamespace
 
-    return SimpleNamespace(content=content, tick=tick, importance=importance)
+    return SimpleNamespace(
+        content=content, tick=tick, importance=importance, entities=list(entities)
+    )
+
+
+def _agent():
+    """一个最小可用的离线 agent —— `_recallable` 现在要读"谁是玩家"和说话人。"""
+    from npc_agent.cast import build_cast
+    from npc_agent.config import RuntimeConfig, load_scenario
+    from npc_agent.llm import build_llm
+
+    return build_cast(load_scenario("icebreaker"), build_llm("null"), RuntimeConfig()).lead
 
 
 def _utterance(text: str):
     from types import SimpleNamespace
 
-    return SimpleNamespace(text=text, tick=99, is_question=text.endswith(("？", "?")))
+    # `speaker_id` 不能省：回引要指向**当前说话人**（见 `_recallable` 第 4 条）。
+    return SimpleNamespace(
+        text=text,
+        tick=99,
+        speaker_id="player_a",
+        is_question=text.endswith(("？", "?")),
+    )
 
 
 def test_current_question_is_not_recallable():
@@ -186,51 +214,58 @@ def test_current_question_is_not_recallable():
 
     问句里的「习惯」是线索词，于是它被当成值得回引的记忆。
     """
-    from npc_agent.agent import NPCAgent
+    agent = _agent()
 
     question = "阿柚，你还记得我习惯坐哪儿吗？"
     # 记忆库里只有"这句问话本身"（真实路径里 observe 会把它写进去）
     only_question = [_record(f"阿澈说：{question}")]
 
-    assert not NPCAgent._has_recallable(
+    assert not agent._has_recallable(
         only_question, now=100, utterance=_utterance(question)
     ), "把玩家当前这句问话引回来了 —— 会说出「你之前提过阿柚，我还记得你…」"
-    assert NPCAgent._recallable(only_question, now=100, utterance=_utterance(question)) == []
+    assert agent._recallable(only_question, now=100, utterance=_utterance(question)) == []
 
 
 def test_earlier_statement_is_still_recallable():
     """反向：**更早**那条真正的偏好仍然要能被回引 —— 别把功能一起关掉。"""
-    from npc_agent.agent import NPCAgent
+    agent = _agent()
 
     question = "阿柚，你还记得我习惯坐哪儿吗？"
     memories = [
         _record(f"阿澈说：{question}"),          # 本轮这句，要排除
         _record("阿澈说：我习惯坐靠窗的位子。"),   # 更早那条，要留下
     ]
-    picked = NPCAgent._recallable(memories, now=100, utterance=_utterance(question))
+    picked = agent._recallable(memories, now=100, utterance=_utterance(question))
     assert [r.content for r in picked] == ["阿澈说：我习惯坐靠窗的位子。"]
 
 
-def test_recallable_still_requires_the_three_conditions():
-    """`_recallable` 的三个条件一个都不能少：过去 / 够重要 / 含线索词。"""
-    from npc_agent.agent import NPCAgent
+def test_recallable_still_requires_every_condition():
+    """`_recallable` 的每个条件一个都不能少：
+    过去 / 含线索词 / 够重要 / **来源是玩家**。"""
+    agent = _agent()
 
     q = _utterance("在吗？")
     # 含线索词、够重要、但**不是过去**（tick 不早于 now）
-    assert NPCAgent._recallable([_record("我习惯坐靠窗", tick=100)], 100, q) == []
+    assert agent._recallable([_record("我习惯坐靠窗", tick=100)], 100, q) == []
     # 是过去、含线索词、但**不重要**
-    assert NPCAgent._recallable([_record("我习惯坐靠窗", importance=0.5)], 100, q) == []
+    assert agent._recallable([_record("我习惯坐靠窗", importance=0.5)], 100, q) == []
     # 是过去、够重要、但**没有线索词**
-    assert NPCAgent._recallable([_record("今天天气不错")], 100, q) == []
-    # 三个都满足 → 留下
-    assert len(NPCAgent._recallable([_record("我习惯坐靠窗")], 100, q)) == 1
+    assert agent._recallable([_record("今天天气不错")], 100, q) == []
+    # 是过去、够重要、含线索词，但**不是玩家说的**（entities 是同伴 NPC）
+    npc_said = [_record("第一次来吧？我请你一杯。", entities=("ayou",))]
+    assert agent._recallable(npc_said, 100, q) == []
+    # 是过去、够重要、含线索词，但**是别人说的**（不是当前说话人）
+    other = [_record("我习惯坐靠窗", entities=("player_b",))]
+    assert agent._recallable(other, 100, q) == []
+    # 每一条都满足 → 留下
+    assert len(agent._recallable([_record("我习惯坐靠窗")], 100, q)) == 1
 
 
 def test_recallable_without_utterance_is_backward_compatible():
     """不传 utterance 时保持老语义（主动开口那条路径就是不带 utterance 调的）。"""
-    from npc_agent.agent import NPCAgent
+    agent = _agent()
 
     memories = [_record("我习惯坐靠窗的位子。")]
-    assert NPCAgent._has_recallable(memories, now=100)
-    assert NPCAgent._has_recallable(memories, now=100, utterance=None)
+    assert agent._has_recallable(memories, now=100)
+    assert agent._has_recallable(memories, now=100, utterance=None)
 

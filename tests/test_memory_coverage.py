@@ -92,6 +92,41 @@ def player_name_recall_needles(
     return out
 
 
+def recall_needles_only_while_the_player_says_them(
+    cases: list[dict],
+) -> list[tuple[str, str]]:
+    """找出**每一轮都可能只是复述**的 recall 断言。
+
+    判据：把用例摊成逐轮，玩家那一轮的原话记为 `said`（NPC-only 轮次记空串）。
+    如果 needle **在每一轮的 `said` 里都出现**，那么 NPC 无论在哪一轮说出来，
+    都可能只是回引玩家刚说的话 —— 这条断言永远测不到检索。
+
+    ⚠️ 这不是假想。2026-09-22 为了让 NPC 回应玩家刚说的那句，`acknowledge`
+    模板开始回引玩家原话（`阿澈说的「我特别喜欢偏酸的咖啡」，我记下了。`），
+    而 needle 就是 `偏酸`。于是 **6 条 recall 用例全部变成「复述即满分」**：
+    把检索整个关掉，memory 维度掉分从 −0.013 变成 **0.000**，
+    `retrieval_disabled` 直接变成存活变异（报告全绿，`caught=False`）。
+
+    这和「拿玩家名当 needle」是同一个家族 —— needle 必须**只有记忆里才有**。
+    玩家刚说过的词，在场所有人的上下文里都有。
+    """
+    out: list[tuple[str, str]] = []
+    for case in cases:
+        said: list[str] = []
+        for turn_spec in case.get("turns") or []:
+            if isinstance(turn_spec, dict) and turn_spec.get("text"):
+                said.append(str(turn_spec["text"]))
+            else:
+                said.append("")
+        if not said:
+            said = [""]
+        for needle in (case.get("expect") or {}).get("recall_in_speech") or []:
+            text = str(needle)
+            if all(text in line for line in said):
+                out.append((str(case.get("id")), text))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # 护栏
 # --------------------------------------------------------------------------- #
@@ -197,4 +232,54 @@ def test_the_player_name_guard_can_actually_fail() -> None:
     # 没有 recall 断言的用例不该被误报
     assert player_name_recall_needles(
         [{"id": "write_only", "expect": {"memory_contains": ["阿澈"]}}], names
+    ) == []
+
+
+def test_recall_needles_can_be_said_on_a_turn_the_player_is_not_saying_them() -> None:
+    r"""recall needle 必须至少有一轮**玩家没说它** —— 否则断言可以被复述满足。"""
+    cases = recall_asserting_cases(_all_cases())
+    assert cases, "一条 recall 用例都没有？"
+
+    offenders = recall_needles_only_while_the_player_says_them(cases)
+    assert not offenders, (
+        f"这些 recall 断言每一轮玩家都在说同一个词：{offenders}。"
+        "NPC 只要回引玩家原话就能满足它 —— 关掉检索也不会掉分。"
+        "给用例留一个玩家没说这句话的轮次（`null` 或换一句话）。"
+    )
+
+
+def test_the_echo_guard_can_actually_fail() -> None:
+    """判据必须真的抓得住「每一轮玩家都在说这个词」的写法。"""
+    # 正常写法：留了 NPC-only 轮次 ⇒ 不报
+    assert recall_needles_only_while_the_player_says_them(
+        [
+            {
+                "id": "ok",
+                "turns": [{"text": "我口味偏酸"}, None, {"text": "你还记得吗"}, None],
+                "expect": {"recall_in_speech": ["偏酸"]},
+            }
+        ]
+    ) == []
+
+    # 污染写法：每一轮玩家原话里都有 needle ⇒ 必须抓到
+    caught = recall_needles_only_while_the_player_says_them(
+        [
+            {
+                "id": "bad",
+                "turns": [{"text": "我口味偏酸"}] * 3,
+                "expect": {"recall_in_speech": ["偏酸"]},
+            }
+        ]
+    )
+    assert caught == [("bad", "偏酸")], f"漏检或误报：{caught}"
+
+    # 没有 recall 断言的用例不该被误报
+    assert recall_needles_only_while_the_player_says_them(
+        [
+            {
+                "id": "write_only",
+                "turns": [{"text": "偏酸"}],
+                "expect": {"memory_contains": ["偏酸"]},
+            }
+        ]
     ) == []

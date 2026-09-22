@@ -230,7 +230,7 @@ class Cast:
         """这一轮里真的开过口的 NPC。
 
         以环境里的发言记录为准，而不是 turn.say ——
-        被点名时先应的那一声（``_quick_acknowledge``）不写 turn.say，
+        工具层拦下的那次 `speak`（``allow_speech=False``）不会写 turn.say，
         只看 turn.say 会漏判，于是两个 NPC 在同一 tick 都开口。
         """
         return {

@@ -28,6 +28,8 @@ from __future__ import annotations
 import pytest
 
 from npc_agent.env.conditions import CONDITION_KINDS
+from npc_agent.env.star_isle import RECIPES
+from npc_agent.modules.planner import ORDER_PATTERNS
 from npc_agent.llm.null import NullLLM
 from npc_agent.modules.persona import Persona
 from npc_agent.modules.planner import Planner, render_condition
@@ -241,3 +243,54 @@ def test_the_model_being_absent_is_not_counted_as_a_failure() -> None:
     planner = Planner(Persona.from_dict({"id": "x", "name": "小舟"}), NullLLM())
     assert planner.plan_with_llm(_StubTracker(), None, [], "工具表") is None
     assert planner.empty_plans == 0 and planner.failures == 0
+
+
+# --------------------------------------------------------------------------- #
+# 菜单：**两张表**必须点名同一批东西
+# --------------------------------------------------------------------------- #
+def menu_mismatch(
+    recognised: set[str], recipes: set[str]
+) -> tuple[list[str], list[str]]:
+    """返回（点得到但做不出的, 做得出来但点不到的）。"""
+    return sorted(recognised - recipes), sorted(recipes - recognised)
+
+
+def test_the_menu_has_exactly_one_source_of_truth() -> None:
+    """认单的表和造步骤的表必须一致。
+
+    `plan_for_utterance` 认单靠 `ORDER_PATTERNS`（写死在代码里），
+    `_plan_serve` 造步骤靠 `world_facts()["recipes"]`（世界配置）。
+    **两张表**，各自演进 ⇒ 漂移是时间问题，而漂移时两边都不报错：
+
+      - 配方表多一项、识别表没有 ⇒ 玩家点得到的东西，NPC 说「做不了」
+      - 识别表多一项、配方表没有 ⇒ NPC 接下一个做不出来的单
+
+    实测（2026-09-22）：`手冲` 正是第一种。`configs/personas/ayou.yaml`
+    的 `self_facts` 说「手冲还算拿得出手」、`unavailable_order` 还拿它当替代品
+    推荐，`KNOWLEDGE` 里有一条「手冲的门道」，**唯独 `RECIPES` 里没有它**。
+    于是「帮我做一杯手冲」得到「我们这儿做不了，换一杯？」——
+    而 NPC 下一句可能就是「手冲要不要试试？」。
+
+    这是附十五那条「不变量靠两份实现碰巧一致维持」的同一个形状：
+    今天两张表**恰好**一样，所以没人发现它们是两张表。
+    """
+    recognised = {item_id for _, item_id in ORDER_PATTERNS}
+    recipes = set(RECIPES)
+
+    assert recognised, "识别表是空的 —— 这条护栏在空转"
+    assert recipes, "配方表是空的 —— 这条护栏在空转"
+
+    unreachable, unorderable = menu_mismatch(recognised, recipes)
+    assert not unreachable and not unorderable, (
+        f"菜单有两张表，它们对不上："
+        f"点得到但做不出 {unreachable}；做得出来但点不到 {unorderable}。"
+        "补的时候**两张一起改**，并确认别名不冲突（`手冲` 必须排在 `拿铁` 前面）。"
+    )
+
+
+def test_the_menu_mismatch_judgement_can_actually_fail() -> None:
+    """反向测试：判据必须真的分得出两种不一致，也放得过一致。"""
+    assert menu_mismatch({"latte"}, {"latte"}) == ([], [])
+    assert menu_mismatch({"latte", "ghost"}, {"latte"}) == (["ghost"], [])
+    assert menu_mismatch({"latte"}, {"latte", "pour_over"}) == ([], ["pour_over"])
+    assert menu_mismatch(set(), {"latte"}) == ([], ["latte"])

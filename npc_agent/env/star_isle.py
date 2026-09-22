@@ -48,6 +48,14 @@ RECIPES: dict[str, dict[str, Any]] = {
     "latte": {"name": "拿铁", "needs": ["beans", "milk"], "station": "kitchen"},
     "lemonade": {"name": "柠檬水", "needs": ["lemon"], "station": "counter"},
     "apple_pie": {"name": "苹果派", "needs": ["apple"], "station": "kitchen"},
+    # ⚠️ `手冲` 原来是**漏的**，而全项目的文案都当它存在：
+    #   - `configs/personas/ayou.yaml` 的 `self_facts`：「手冲还算拿得出手」
+    #   - 同一张卡的 `unavailable_order`：「这个真没有——手冲要不要试试？」
+    #     （拿一个做不出来的东西当替代品）
+    #   - 下面 `KNOWLEDGE["brewing"]` 的标题就是「手冲的门道」
+    # 于是玩家说「帮我做一杯手冲」，得到的是「我们这儿做不了，换一杯？」。
+    # 这张表是**唯一**决定"做不做得出"的地方，所以补在这里。
+    "pour_over": {"name": "手冲", "needs": ["beans"], "station": "counter"},
 }
 
 # 知识库。requires 不为空时，需要对应世界标记才允许透露 —— 这是"不剧透"的实现。

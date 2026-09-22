@@ -25,7 +25,17 @@ from .persona import Persona
 from .state import StateTracker
 
 # 玩家点单的意图识别（离线路径）
+#
+# ⚠️ **这张表和 `env/star_isle.RECIPES` 必须点名同一批东西。**
+# 认单靠这张表，造步骤靠 `world_facts()["recipes"]` —— **两张表**，
+# 各自演进就会漂移，而漂移时两边都不报错：配方表多一项 ⇒ 玩家点得到的东西
+# NPC 说「做不了」；识别表多一项 ⇒ NPC 接下了一个做不出来的单。
+# `tests/test_planner.py::test_the_menu_has_exactly_one_source_of_truth` 钉住它。
+#
+# `手冲` 必须排在 `拿铁` **前面**：`拿铁` 那条含 `咖啡`，
+# 而「手冲咖啡」两边的模式都命中，顺序决定谁赢。
 ORDER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(手冲|pour\s*over|pour-over)", re.I), "pour_over"),
     (re.compile(r"(拿铁|咖啡|latte)", re.I), "latte"),
     (re.compile(r"(柠檬水|柠檬|lemonade)", re.I), "lemonade"),
     (re.compile(r"(苹果派|苹果|apple\s*pie)", re.I), "apple_pie"),

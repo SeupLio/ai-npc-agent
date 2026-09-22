@@ -339,6 +339,9 @@ class EvalHarness:
         expect = case.get("expect") or {}
         transcript: list[str] = []
         speeches: list[str] = []
+        #: 与 `speeches` 等长：每句台词之前那句**玩家原话**（NPC-only 轮次是空串）。
+        #: 只用来判「这句台词是回忆还是复述」——见 `metrics.memory_recall`。
+        echoes: list[str] = []
         speakers: list[str] = []
         violations: list[list[str]] = []
         called_tools: list[str] = []
@@ -350,10 +353,13 @@ class EvalHarness:
                 repeat = int(turn_spec.get("repeat", 1))
             for _ in range(repeat):
                 utterance = None
+                #: 这一轮玩家说的原话；NPC-only 的轮次留空。
+                said_now = ""
                 if isinstance(turn_spec, dict) and turn_spec.get("text"):
                     utterance = env.record_player_utterance(
                         turn_spec.get("player", "player_a"), turn_spec["text"]
                     )
+                    said_now = turn_spec["text"]
                     transcript.append(f"玩家[{utterance.speaker_name}] {utterance.text}")
 
                 # 一轮 = 一个 tick：剧组里所有 NPC 依次行动，最多一个人开口。
@@ -369,6 +375,7 @@ class EvalHarness:
                         transcript.append(f"  [{result.mark}] {speaker} {action.render()}")
                     if turn.say:
                         speeches.append(turn.say)
+                        echoes.append(said_now)
                         speakers.append(turn.actor_id)
                         # 评测侧自己算，**不读 `turn.persona_violations`** ——
                         # 那是被测方自己算的（见 evaluator_persona_violations）。
@@ -395,7 +402,10 @@ class EvalHarness:
         # 记忆是每个 NPC 私有的，所以分开取。"谁记住了"本身就是多 Agent 的评测点。
         memories = cast.memory_contents()
         memory_score = M.memory_recall(
-            expect, speeches, [c for contents in memories.values() for c in contents]
+            expect,
+            speeches,
+            [c for contents in memories.values() for c in contents],
+            echoes,
         )
         ownership = M.memory_ownership(expect, memories)
         if ownership.value < memory_score.value:

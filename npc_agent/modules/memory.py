@@ -206,7 +206,13 @@ class MemoryManager:
 
     # ------------------------------------------------------------------ #
     def observe(self, utterance: Utterance, npc_id: str) -> Optional[MemoryRecord]:
-        """把一条玩家发言写进记忆。NPC 自己的话不重复记。"""
+        """把一条发言写进记忆。NPC 自己的话不重复记。
+
+        ``entities`` 记的是**说话人 id**，它同时是「这条记录关于谁」的声明 ——
+        多 NPC 场景里，同伴说的话也记（后面得接得上），但它的 entities
+        是那个 NPC 的 id，于是「能不能被当成玩家说过的话回引」这件事
+        由 `NPCAgent._recallable` 按来源判，不用在这里另打标签。
+        """
         if utterance.speaker_id == npc_id:
             return None
         content = f"{utterance.speaker_name}说：{utterance.text}"

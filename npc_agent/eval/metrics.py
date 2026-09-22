@@ -199,13 +199,36 @@ def memory_recall(
     expect: dict[str, Any],
     speeches: list[str],
     memory_contents: list[str],
+    echoes: list[str],
 ) -> Score:
-    """检查"说过的信息"是否真的被记住，以及是否在后续被主动引用。
+    """检查「说过的信息」是否真的被记住，以及是否在后续被主动引用。
 
     两个层次分开判定，因为它们是两个不同的问题：
         memory_contains   —— 记忆库里有这条信息吗（写入 + 巩固没丢）
         recall_in_speech  —— 后续台词里真的把它带出来了吗（检索 + 应用）
+
+    ``echoes`` 与 ``speeches`` **等长**：``echoes[i]`` 是 ``speeches[i]``
+    之前那句玩家原话（那一轮没有玩家发言时是空串）。
+
+    ## 为什么必须传 `echoes`
+
+    只查「needle 在不在台词里」会把**复述**当成**回忆**。实测（2026-09-22）：
+    为了让 NPC 回应玩家刚说的那句话，`acknowledge` 这类模板会回引玩家原话
+    （`阿澈说的「我特别喜欢偏酸的咖啡」，我记下了。`）。这一句里就含 `偏酸`，
+    于是 `recall_in_speech` **不需要检索**就满足了 —— 把检索整个关掉，
+    memory 维度掉分从 −0.013 变成 **0.000**，`retrieval_disabled` 变成存活变异。
+
+    这和「拿玩家名当 needle」是同一个缺陷家族（见 `tests/test_memory_coverage.py`）：
+    needle 必须**只有记忆里才有**。玩家刚说过的词，在场所有人的上下文里都有。
+
+    判据：needle 出现在某句台词里，**且那句台词之前的那句玩家原话里没有它**。
     """
+    if len(echoes) != len(speeches):
+        # 静默兜底是最贵的测量污染物：宁可炸，也不要「少查一项」。
+        raise ValueError(
+            f"echoes 必须与 speeches 等长（{len(echoes)} != {len(speeches)}）"
+        )
+
     stored_needles = expect.get("memory_contains") or []
     recall_needles = expect.get("recall_in_speech") or []
     if not stored_needles and not recall_needles:
@@ -223,6 +246,14 @@ def memory_recall(
     missed = [n for n in recall_needles if n not in spoken]
     if missed:
         return Score(0.5, f"已记住 {stored_needles}，但后续没主动引用 {missed}")
+
+    echoed = [
+        n
+        for n in recall_needles
+        if not any(n in say and n not in echo for say, echo in zip(speeches, echoes))
+    ]
+    if echoed:
+        return Score(0.5, f"已记住 {stored_needles}，但 {echoed} 只出现在复述玩家原话的句子里")
     return Score(1.0, f"记住并主动引用了 {recall_needles}")
 
 
