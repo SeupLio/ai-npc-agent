@@ -1629,6 +1629,50 @@ def cmd_sensitivity(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_resolution(args: argparse.Namespace) -> int:
+    """评测的分辨率：**掉多少，评测才开始动？**
+
+    `sensitivity` 是二值的（注入缺陷 → 抓到没有 = 6/6），只要掉一个点就算抓到，
+    所以它回答不了"这个评测有多灵敏"。这里把剂量做成**连续**的：按比例 k
+    丢掉每个计划里的步骤，测通过率随 k 怎么变。
+
+    曲线离开 1.000 的那个 k 就是**检出阈值**；整条曲线上恒为 1.000 的维度，
+    就是**结构上看不见这次退化**的维度。
+
+    **离线、确定性、0 次模型调用。**
+    """
+    import json
+    from pathlib import Path
+
+    from rich.console import Console
+
+    from .eval.resolution import (
+        render_resolution,
+        render_resolution_html,
+        sweep,
+    )
+
+    console = Console()
+    result = sweep()
+    render_resolution(result, console)
+
+    if getattr(args, "json", ""):
+        target = Path(args.json)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        console.print(f"分辨率报告已写入 {target}")
+
+    if getattr(args, "html", ""):
+        out = Path(args.html)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(render_resolution_html(result), encoding="utf-8")
+        console.print(f"分辨率 HTML 已写入 {out}")
+
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 def cmd_studio(args: argparse.Namespace) -> int:
     """本地自测控制台：一条命令，一个网页，不用模型也能玩。
@@ -1742,6 +1786,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_sens.add_argument("--json", default="", help="把敏感性报告写成 JSON")
     p_sens.add_argument("--html", default="", help="把敏感性报告写成 HTML")
     p_sens.set_defaults(func=cmd_sensitivity)
+
+    p_res = sub.add_parser(
+        "resolution",
+        help="评测的分辨率：把计划砍掉多少，评测才开始掉分（剂量-反应曲线）",
+    )
+    p_res.add_argument("--json", default="", help="把曲线写成 JSON")
+    p_res.add_argument("--html", default="", help="把曲线写成 HTML")
+    p_res.set_defaults(func=cmd_resolution)
 
     p_studio = sub.add_parser(
         "studio",

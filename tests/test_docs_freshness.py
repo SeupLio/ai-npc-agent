@@ -65,7 +65,7 @@ regen_docs = _load_regen()
 
 # 全部离线报告都默认验。`ablation` 曾经要 ~99s（检查点 O(N²)）所以被排除在外，
 # 修好后 ~5s ⇒ 归队。判据不是"它慢不慢"，而是"默认跑批能不能替我们看见它"。
-FAST_OFFLINE = ("worlds", "sensitivity", "ablation")
+FAST_OFFLINE = ("worlds", "sensitivity", "ablation", "resolution")
 
 
 def _docs_html() -> list[str]:

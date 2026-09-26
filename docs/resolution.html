@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<title>评测的分辨率：剂量-反应曲线</title>
+<style>
+body{font-family:-apple-system,'Segoe UI',sans-serif;max-width:1000px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.6}
+h1{font-size:23px;margin-bottom:6px}
+.sub{color:#666;font-size:14px;margin-bottom:22px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border:1px solid #e3e3e3;padding:6px 9px;text-align:right}
+th{background:#fafafa;font-weight:600}
+td:first-child,th:first-child{text-align:left}
+td.num{font-variant-numeric:tabular-nums}
+tr.hit td{background:#fff4f4}
+.warn{background:#fffbe6;border-left:3px solid #e8b400;padding:12px 16px;margin:22px 0;font-size:14px}
+.note{background:#f4f8ff;border-left:3px solid #4a7fd4;padding:12px 16px;margin:22px 0;font-size:14px}
+code{background:#f2f2f2;padding:1px 5px;border-radius:3px}
+</style></head><body>
+<h1>评测的分辨率：把计划砍掉多少，评测才开始掉分</h1>
+<div class="sub">共 235 条用例｜基线 1.0000
+｜<strong>离线、确定性、0 次模型调用</strong>。红色行 = 该剂量下评测开始掉分。</div>
+
+<div class="note"><strong>这份报告回答的是 <code>sensitivity.html</code> 回答不了的问题。</strong>
+那一份是二值的（注入缺陷 → 抓到没有 = 6/6），只要掉一个点就算抓到，
+所以「一个能发现整个模块被拔掉的评测」和「一个能发现计划少走一步的评测」
+在 6/6 这个读数上长得一模一样。这里把剂量做成连续的，量出<strong>报警线画在哪</strong>。</div>
+
+<table><thead><tr><th>丢掉计划步骤比例 k</th><th>通过</th><th>通过率</th><th>Δ</th><th>task</th><th>tools</th><th>memory</th><th>persona</th><th>safety</th><th>turn_taking</th></tr></thead>
+<tbody><tr><td class='num'>0.0</td><td class='num'>235/235</td><td class='num'>1.000</td><td class='num'>+0.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>0.1</td><td class='num'>223/235</td><td class='num'>0.949</td><td class='num'>-0.051</td><td class='num'>0.949</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>0.2</td><td class='num'>209/235</td><td class='num'>0.889</td><td class='num'>-0.111</td><td class='num'>0.889</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>0.3</td><td class='num'>181/235</td><td class='num'>0.770</td><td class='num'>-0.230</td><td class='num'>0.770</td><td class='num'>0.992</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>0.4</td><td class='num'>168/235</td><td class='num'>0.715</td><td class='num'>-0.285</td><td class='num'>0.715</td><td class='num'>0.968</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>0.5</td><td class='num'>166/235</td><td class='num'>0.706</td><td class='num'>-0.294</td><td class='num'>0.711</td><td class='num'>0.980</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>0.6</td><td class='num'>160/235</td><td class='num'>0.681</td><td class='num'>-0.319</td><td class='num'>0.685</td><td class='num'>0.948</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>0.7</td><td class='num'>139/235</td><td class='num'>0.591</td><td class='num'>-0.409</td><td class='num'>0.591</td><td class='num'>0.854</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>0.8</td><td class='num'>139/235</td><td class='num'>0.591</td><td class='num'>-0.409</td><td class='num'>0.591</td><td class='num'>0.858</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>0.9</td><td class='num'>139/235</td><td class='num'>0.591</td><td class='num'>-0.409</td><td class='num'>0.591</td><td class='num'>0.611</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr><tr class='hit'><td class='num'>1.0</td><td class='num'>139/235</td><td class='num'>0.591</td><td class='num'>-0.409</td><td class='num'>0.591</td><td class='num'>0.604</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td><td class='num'>1.000</td></tr></tbody></table>
+
+<div class="warn"><strong>结论。</strong>丢掉 ≥ <strong>10%</strong> 的计划步骤，评测才开始掉分；更小的退化在全部用例上都是满分。<br>
+k=1.0 是这条曲线的一个<strong>免费自洽性检验</strong>：它应当等于
+<code>sensitivity.html</code> 里 <code>planning_disabled</code> 的读数。
+两处对得上，说明「丢光计划」和「不做规划」是同一个口径。</div>
+
+<div class='warn'><strong>整条曲线上恒为 1.000 的维度：<code>memory</code>、<code>persona</code>、<code>safety</code>、<code>turn_taking</code></strong><br>这不是「这些维度不重要」—— 它们各有各的靶子。但它意味着：<strong>这 4 个维度不能拿来当「规划没问题」的证据</strong>，哪怕把规划整个拔掉（k=1.0），它们照样满分。覆盖率不足是「可能没测到」，恒为 1.000 是「<strong>确实</strong>没测到」。</div>
+
+<div class="note"><strong>⚠️ 这条曲线给的是<strong>下界</strong>，不是估计值。</strong>
+剂量是<strong>均匀</strong>丢步，而真实模型的退化更可能集中在<strong>难的那几步</strong>上
+（最后那个改世界状态的步骤）。所以真实退化会被评测<strong>更早</strong>看见 ——
+这里量出来的是最不利情形下的灵敏度。</div>
+</body></html>

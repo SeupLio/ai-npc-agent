@@ -42,6 +42,10 @@ OFFLINE_REPORTS: dict[str, tuple[tuple[str, ...], str]] = {
     # 它比另外两份更该被钉住 —— 它是「基线全绿」这句话的**证据**，
     # 过期了就等于在给一个已经不准的结论背书。
     "sensitivity": (("sensitivity",), "sensitivity.html"),
+    # 分辨率曲线同样是离线可复现的。它和 sensitivity 是一对：
+    # 那份回答"评测会不会报警"，这份回答"报警线画在哪"。
+    # 过期了同样是在给一个不准的结论背书，所以一样要钉住。
+    "resolution": (("resolution",), "resolution.html"),
 }
 
 # 一次跑批的快照：需要模型 + 额度，**故意不自动化**。
@@ -68,6 +72,7 @@ REPORT_TITLES: dict[str, str] = {
     "ablation.html": "记忆策略消融",
     "worlds.html": "跨世界覆盖",
     "sensitivity.html": "评测敏感性（最该先看的一份）",
+    "resolution.html": "评测的分辨率（掉多少才开始动）",
     "batch_model.html": "全模型跑批 · 台词侧",
     "batch_planner.html": "全模型跑批 · 规划侧",
     "comparison.html": "离线启发式 vs 真实模型",
@@ -80,6 +85,7 @@ REPORT_ANSWERS: dict[str, str] = {
     "ablation.html": "记忆系统的净收益（五种检索策略对照）",
     "worlds.html": "「环境无关」的覆盖面证据：同一套 Agent 跑在两个世界上",
     "sensitivity.html": "满分是不是「护栏从不报警」—— 注入缺陷，要求评测掉分",
+    "resolution.html": "掉多少，评测才开始动 —— 剂量-反应曲线（含「恒为 1.000 的维度」）",
     "batch_model.html": "真实模型读数 + 裁判校准 + 留出集（含「已饱和」提示）",
     "batch_planner.html": "把规划也交给模型 —— 掉 11 个点，且报告自标「这批不干净」",
     "comparison.html": "用例集还小的时候跑的，不可与现在的跑批相比",

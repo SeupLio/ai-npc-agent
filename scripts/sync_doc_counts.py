@@ -105,5 +105,56 @@ HANDBOOK_MD.write_text(
     hb_all[: _sec.start("body")] + hb + hb_all[_sec.end("body") :], encoding="utf-8"
 )
 
+# `docs/PROJECT_STORY.md` 是**面试作战手册** —— 它比 README 更该被守住：
+# 读者会照着它去面试，而里面的数字**从来没有任何东西在守**。
+# 实测它印着 `990 个测试`（实际 1025），四处，全部过期。
+# 这是"手抄的数字 + 没有护栏"这个病的**第四次**（前三次：README、
+# `docs/ENGINEERING.md` 的「测试」一节、以及仓库外那份 HTML 手册）。
+STORY_MD = ROOT / "docs" / "PROJECT_STORY.md"
+story = STORY_MD.read_text(encoding="utf-8")
+
+
+def _py_lines(rel: str) -> int:
+    """某个目录下所有 `.py` 的行数（跳过 node_modules）。"""
+    total = 0
+    for f in (ROOT / rel).rglob("*.py"):
+        if "node_modules" in f.parts:
+            continue
+        total += len(f.read_text(encoding="utf-8", errors="ignore").splitlines())
+    return total
+
+
+def _wan(n: int) -> str:
+    """行数写成「约 N.N 万行」—— 它天生是约数，取一位小数。"""
+    return f"{n / 10000:.1f}"
+
+
+#: 规模那句里的两个行数也**推导**，不手抄 —— 手抄的下一轮就会过期。
+_all_lines = sum(_py_lines(d) for d in ("npc_agent", "tests", "scripts"))
+_test_lines = _py_lines("tests")
+story_edits = (
+    (
+        r"约 \*\*\d+(?:\.\d+)? 万行 Python\*\*（其中测试 \*\*\d+(?:\.\d+)? 万行\*\*）",
+        f"约 **{_wan(_all_lines)} 万行 Python**（其中测试 **{_wan(_test_lines)} 万行**）",
+    ),
+    (
+        r"\d+(?:\.\d+)? 万行 Python（\d+(?:\.\d+)? 万行测试）",
+        f"{_wan(_all_lines)} 万行 Python（{_wan(_test_lines)} 万行测试）",
+    ),
+    # 「990 个测试」在手册里有三种写法：正文加粗、目录树、命令行注释。
+    # 一个正则收口（`N 测试、` 那种写法会被规范化成 `N 个测试、`）。
+    (r"\d+\s*个?测试", f"{collected} 个测试"),
+)
+for pattern, new in story_edits:
+    hits = re.findall(pattern, story)
+    if not hits:
+        sys.exit(f"作战手册里找不到 {pattern!r} —— 正则过期了，先修这个脚本")
+    story = re.sub(pattern, new, story)
+    print(f"  [PROJECT_STORY.md] {len(hits)} 处 -> {new}")
+STORY_MD.write_text(story, encoding="utf-8")
+
 README.write_text(text, encoding="utf-8")
-print(f"\n收集 {collected} / 通过 {passed} / 跳过 {skipped} —— README 已同步")
+print(
+    f"\n收集 {collected} / 通过 {passed} / 跳过 {skipped} —— "
+    "README、ENGINEERING.md、PROJECT_STORY.md 已同步"
+)

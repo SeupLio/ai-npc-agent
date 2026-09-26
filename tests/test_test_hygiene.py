@@ -866,3 +866,72 @@ def test_the_guard_ignores_that_shape_in_prose() -> None:
         f"# {real[0]} passed, {real[1]} skipped\n```\n"
     )
     _assert_handbook_matches(text, real)  # 不该红
+
+
+# --------------------------------------------------------------------------- #
+# 面试作战手册（`docs/PROJECT_STORY.md`）里的测试数
+
+#: 手册里"多少个测试"有三种写法：正文 `**990 个测试**`、目录树 `990 个测试`、
+#: 命令行注释 `# 990 个测试`，外加一句 `990 测试、`。一个正则收口。
+#:
+#: ⚠️ 只匹配**数字 + 测试**。散文里的"变异测试""回归测试"前面没有数字，
+#: 天然不会被扫到 —— 这一点由下面的反向测试钉住（扫整份文件必须**不**误报）。
+_STORY_TEST_COUNT = re.compile(r"(\d+)\s*个?测试")
+
+STORY = REPO_ROOT / "docs" / "PROJECT_STORY.md"
+
+
+def _story_test_counts(text: str) -> list[int]:
+    return [int(m) for m in _STORY_TEST_COUNT.findall(text)]
+
+
+def test_the_story_test_count_matches_reality() -> None:
+    """`docs/PROJECT_STORY.md`（**面试作战手册**）里的测试数必须是真的。
+
+    ⭐ 这是"手抄的数字 + 没有护栏 = 迟早变成假话"这个病的**第四次**：
+    README 配了护栏、`docs/ENGINEERING.md` 的「测试」一节配了护栏
+    （见上面两条）、仓库外那份 HTML 手册有同步脚本 —— 唯独这份**最该准**的
+    （读者会照着它去面试）谁都没守，实测停在 **990**，而实际是 **1025**。
+
+    它比另外三份更该被守住：README 过期了读者会自己发现，
+    手册过期了读者**会照着背给面试官听**。
+    """
+    text = STORY.read_text(encoding="utf-8")
+    found = _story_test_counts(text)
+    assert found, (
+        "手册里找不到「N 个测试」—— 版式改过了，先修这条护栏的正则，"
+        "否则它会永远绿（找不到东西可查 = 没查）。"
+    )
+    actual = _collected_test_count()
+    wrong = sorted({n for n in found if n != actual})
+    assert not wrong, (
+        f"面试手册里印着 {wrong}，而实际收集到 {actual} 条。"
+        "改了测试就顺手跑 `python scripts/sync_doc_counts.py`。"
+    )
+
+
+def test_the_story_guard_can_actually_fail() -> None:
+    """反向测试：过期数字必须红，而且**从当前真实值推导**（不手抄）。
+
+    手抄的话，真实值一变，这条反向测试就悄悄变成"测一个不存在的值"。
+    """
+    actual = _collected_test_count()
+    stale = actual - 1
+    text = f"2. **规模**：**{stale} 个测试**、**235 条用例**。\n"
+    found = _story_test_counts(text)
+    assert found == [stale], f"正则没抓到过期数字：{found}"
+    assert [n for n in found if n != actual], "过期数字必须被判成不一致"
+
+
+def test_the_story_guard_ignores_prose() -> None:
+    """散文里的"变异测试""回归测试"**不该**被当成计数 —— 否则护栏会误报。
+
+    误报的代价不是"多响一次"，而是下一个人给它加 skip 关掉它 ——
+    **被关掉的护栏比没有更糟**（这是本项目已经吃过两次的教训）。
+    """
+    prose = (
+        "**做法**：做**变异测试**，但变异对象是被测系统。\n"
+        "回归测试的「牙齿测试」也是同一个思路。\n"
+        "四个页签：对话演示 / 跑评测 / 变异测试 / 报告门户。\n"
+    )
+    assert _story_test_counts(prose) == [], "散文被误当成计数了"
