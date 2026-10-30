@@ -121,7 +121,14 @@ class ToolRegistry:
                 outcome=OUTCOME_DECLINED,
             )
         styled = ctx.persona.apply_style(text)
-        ctx.env.broadcast(ctx.actor_id, styled)
+        # `to` 必须一路传进世界记录：导演靠它判断"下一轮谁欠谁一句话"。
+        # 只留在 `ActionCall.args` 里的话，NPC 之间的点名在世界上是不存在的。
+        ctx.env.broadcast(
+            ctx.actor_id,
+            styled,
+            addressed_to=args.get("to") or None,
+            expects_reply=bool(args.get("expects_reply")),
+        )
         return ActionResult(
             True,
             INTERNAL_SPEAK,

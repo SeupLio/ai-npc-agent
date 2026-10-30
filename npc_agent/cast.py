@@ -29,7 +29,9 @@ from .env.base import Environment
 from .env.mc_client import WorldClient
 from .env.star_isle import DEFAULT_START
 from .llm.base import LLM
+from .modules.conversation import ConversationBoard
 from .modules.persona import Persona
+from .modules.social import GossipNetwork
 from .types import AgentTurn, Utterance
 
 
@@ -147,6 +149,9 @@ class Cast:
         self._next_first: str = self.order[0]
         self.rounds = 0
         self.history: list[list[AgentTurn]] = []
+        # 对话线程（谁欠谁一句话 / 哪些内容点说过了 / 连聊到第几轮）。
+        # 它和"记忆"是两件事：记忆是私有的、会衰减的；这块板子是公共的、只活几轮。
+        self.board = ConversationBoard(chain_limit=self.config.max_peer_exchanges)
         self.reset()
 
     # ------------------------------------------------------------------ #
@@ -197,6 +202,30 @@ class Cast:
         self._next_first = self.order[0]
         self.rounds = 0
         self.history = []
+        self.board = ConversationBoard(chain_limit=self.config.max_peer_exchanges)
+        # 传闻网络：这一局里"谁说过什么"是公共事实，和各自的记忆分开。
+        self.gossip = (
+            GossipNetwork(threshold=self.config.gossip_importance)
+            if self.config.gossip_enabled
+            else None
+        )
+        # 重置会重建对话板，注入要跟着重做 —— 否则 agent 手里还攥着上一局的板子，
+        # "这个话题说过了"会在新一局里继续生效。
+        for agent in self.agents.values():
+            agent.board = self.board
+            agent.gossip = self.gossip
+        # 同伴名单也是运行期的（见 `Persona.peers`）：单人场景没有这一项，
+        # 多人场景每个 NPC 都要知道"场上还有谁"，否则模型会对着空气说话。
+        for pid, agent in self.agents.items():
+            agent.persona.peers = [
+                {
+                    "id": other.id,
+                    "name": other.persona.name,
+                    "role": other.persona.role,
+                }
+                for oid, other in self.agents.items()
+                if oid != pid
+            ]
 
     # ------------------------------------------------------------------ #
     # 发言权调度
@@ -250,25 +279,62 @@ class Cast:
         一个 tick 就是一轮，全部 NPC 共享同一个 tick，
         否则"谁和谁在同一轮说话"这件事没法判定。
 
+        ## 两种轮次
+
+        **玩家轮**（``utterance`` 给了）：玩家说话，NPC 依次决定要不要接。
+
+        **同伴轮**（``utterance`` 是 None，但对话板上欠着一句话）：
+        把上一轮那句**同伴发言**当成这一轮的输入，交给被点名的人。
+        没有这一支，NPC 之间的对话就是断的 —— 实测（duet，8 轮离线）
+        "对另一个 NPC 说的"台词 **0 句**，因为同伴的话从来没有被当成"输入"，
+        它只被记进了记忆（听见 ≠ 要回答）。
+
+        两条边界：
+
+        * 一个 tick 仍然**只有一个人**开口。同伴轮里没被点名的人一律
+          ``allow_speech=False`` —— 否则两个 NPC 会同时接同一句话。
+        * 玩家一开口就清空义务。玩家插话的优先级高于"NPC 还没聊完"，
+          这和人打断两个人说话时的预期一致。
+
         返回按出场顺序排列的 turns（可能有人这一轮什么都没说）。
         """
         tick = self.env.tick
-        order = self.speaking_order(utterance)
+        peer_turn = False
+        obligation = None
+
+        if utterance is not None:
+            # 玩家开口 → 这段 NPC 对聊结束，欠着的话作废。
+            self.board.player_turn()
+        elif self.board.pending is not None:
+            pending = self.board.pending
+            # 上一轮开的债，这一轮才还。同轮开同轮还等于自己跟自己说话。
+            if pending.tick < tick and pending.target_id in self.agents:
+                obligation = self.board.take(pending.target_id)
+                if obligation is not None:
+                    peer_turn = True
+                    utterance = obligation.as_utterance()
+            else:
+                self.board.expire()
+
+        order = self._order_for(utterance, obligation)
         turns: list[AgentTurn] = []
         spoke = False
 
         for index, pid in enumerate(order):
             agent = self.agents[pid]
             before = len(self.env.utterances)
+            # 同伴轮：只有被点名的人有发言权。其余人这一轮只是"在场"。
+            allowed = (not spoke) and (not peer_turn or pid == obligation.target_id)
             turn = agent.step(
                 utterance,
                 # 已经有人开口 → 后面的 NPC 让出话头。两道闸门都要给：
                 # 对话层管"要不要新建发言计划"，工具层管"正在跑的计划里的 speak"。
                 other_npc_spoke_last=spoke,
-                allow_speech=not spoke,
+                allow_speech=allowed,
                 # 一个 tick 只让第一个人记一次冷场。否则"冷场 2 轮后主动开口"
                 # 会被同轮的多个人各加一次，提前触发。
-                count_silence=(index == 0),
+                # 同伴轮不算冷场 —— 有人正在说话。
+                count_silence=(index == 0 and not peer_turn),
             )
             turns.append(turn)
 
@@ -284,17 +350,130 @@ class Cast:
             # Agent.step 内部的监听只处理传进来的那条玩家发言，
             # 不补这一步，"阿柚转头跟小舟说：你来弹一首" 就断在半路 ——
             # 小舟的现场状态和记忆里根本没有这句话，自然接不上。
+            #
+            # ⚠️ 曾经试过"只让同一个地点的人听见"（想给传闻腾出空间），
+            # 结果是**既有契约被破坏**：`multi_turn_taking` 用例明确要求
+            # 小舟记得阿柚说过的话（"没说话的听见了吗"）。
+            # 传闻因此换了内容 —— 它传的不是原话，是**判断**（见 `social.py`）。
             for other_id, other in self.agents.items():
                 if other_id == pid:
                     continue
                 for spoken in new_speeches:
                     other.observe_utterance(spoken)
+            for spoken in new_speeches:
+                self._note_dialogue(spoken, peer_turn=peer_turn)
 
         self._advance_floor(order, tick)
         self.rounds += 1
         self.history.append(turns)
+        self._spread_gossip(tick)
+        # 这一轮没人接那句话 → 作废。留着会让"三轮前的一句问话"
+        # 在玩家插了一句之后突然被回答。
+        if self.board.pending is not None and self.board.pending.tick < tick:
+            self.board.expire()
         self.env.advance_tick()
         return turns
+
+    def _spread_gossip(self, tick: int) -> None:
+        """把这一轮新说出口的事实，投给还没听过的同伴。
+
+        投递发生在**一轮结束时**，而不是说话人开口的瞬间 —— 否则
+        同一轮里后面说话的 NPC 会在同一 tick 就"听说了"一件事，
+        而玩家看到的是两个人几乎同时知道，像是共享了同一个脑子。
+        隔一轮，才像"传话"。
+        """
+        if self.gossip is None:
+            return
+        for pid, agent in self.agents.items():
+            for fact in self.gossip.digest(pid):
+                agent.memory.receive_gossip(
+                    content=f"听{fact.source_name}说，{fact.content}",
+                    tick=tick,
+                    source_id=fact.source_id,
+                    source_name=fact.source_name,
+                    importance=min(0.7, fact.importance),
+                    subject=fact.subject,
+                )
+
+    # ------------------------------------------------------------------ #
+    # 同伴轮的出场顺序
+    # ------------------------------------------------------------------ #
+    def _order_for(
+        self, utterance: Optional[Utterance], obligation: Any = None
+    ) -> list[str]:
+        """这一轮谁先开口。
+
+        同伴轮：被点名的人**必须**排第一（他不是"优先"，他是唯一有发言权的人）。
+        玩家轮：沿用 ``speaking_order``（点名 > 轮转）。
+        """
+        if obligation is not None and obligation.target_id in self.agents:
+            target = obligation.target_id
+            return [target] + [pid for pid in self.order if pid != target]
+        return self.speaking_order(utterance)
+
+    def _note_dialogue(self, spoken: Utterance, *, peer_turn: bool = False) -> None:
+        """把一句 NPC 发言记进对话板，并决定要不要开一条接话义务。
+
+        三种情况会被认为"这句话是说给某个 NPC 的"：
+
+        1. 产出方显式写了收件人（`addressed_to`）—— 最可靠，优先用；
+        2. 文本里点了同伴的名（`mentions`）—— 次可靠；
+        3. **同伴轮里**的一句问句，场上只有两个人 —— 那就是问另一个人的。
+
+        第 3 条**只在同伴轮生效**。这一条是被一次实测逼出来的：
+        阿柚在跑自己的计划时，计划里那句开场白是「第一次来吧？我请你一杯，
+        想喝什么？」—— 一句对**全场**说的问句。按"2 个 NPC + 问句"判，
+        小舟会以为在问自己，于是回一句「……还行。」，她自己的目标永远没开工。
+        玩家看到的是：一个 NPC 在忙，另一个只会应声。
+        """
+        target = None
+        if spoken.addressed_to in self.agents and spoken.addressed_to != spoken.speaker_id:
+            target = spoken.addressed_to
+        elif spoken.addressed_to:
+            # 产出方**显式**指定了收件人（是某个玩家）→ 别抢。
+            # 少了这一支，阿柚问玩家「还想到什么？」，小舟会当成在问自己 ——
+            # 实测 12 轮里出现过一次，玩家看到的是"两个 NPC 在互相接话，
+            # 而那句话明明是问我的"。
+            target = None
+        else:
+            for pid in spoken.mentions:
+                if pid in self.agents and pid != spoken.speaker_id:
+                    target = pid
+                    break
+        if (
+            target is None
+            and peer_turn
+            and spoken.addressed_to is None
+            and len(self.agents) == 2
+        ):
+            # 两个 NPC 在场、说话的是 NPC、而且是问句 → 问的就是另一个人。
+            others = [pid for pid in self.agents if pid != spoken.speaker_id]
+            if others and spoken.is_question and spoken.speaker_id in self.agents:
+                target = others[0]
+
+        self.board.record(
+            tick=spoken.tick,
+            speaker_id=spoken.speaker_id,
+            speaker_name=spoken.speaker_name,
+            text=spoken.text,
+            addressed_to=target,
+        )
+        if target is None:
+            return
+        # **只有"要一个回应"的话才开义务。**
+        # 判据由产出方声明（`Utterance.expects_reply`）或它是问句；
+        # 不按"说给谁"就要求回应 —— 那句「……听见了。」会变成
+        # 「我记下了」→「嗯」→「听见了」的礼貌死循环（实测 10 轮里 4 轮是回声）。
+        if not (spoken.expects_reply or spoken.is_question):
+            return
+        self.board.open(
+            target_id=target,
+            speaker_id=spoken.speaker_id,
+            speaker_name=spoken.speaker_name,
+            text=spoken.text,
+            tick=spoken.tick,
+            reason=f"{spoken.speaker_name}点了{self.name_of(target)}",
+        )
 
     def _advance_floor(self, order: list[str], tick: int) -> None:
         """把下一轮的话头交给"这一轮没轮上的人"。"""

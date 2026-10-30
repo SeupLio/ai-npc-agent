@@ -70,6 +70,22 @@ class Persona:
     # 而这类问题恰恰是最容易被问到的（玩家第一次见到 NPC 就会问）。
     #: 关键词匹配是**精确子串**，不做模糊：模糊匹配会答出胡话，见 `_knowledge_answer`。
     self_facts: list[dict[str, Any]] = field(default_factory=list)
+    #: 「问到同伴」时的答话，结构同 `self_facts`。
+    #:
+    #: 这一项是被一次实测逼出来的：玩家问「你们俩平时都聊些什么？」，
+    #: 离线路径没有任何一条能答的模板，落到 `unknown` ——
+    #: NPC 回「这个我还真说不好」。**被问到自己的伙伴却答不上来**，
+    #: 比答不上店史更伤：店史可以不知道，伙伴天天在一起。
+    #:
+    #: ⚠️ 它**不是**以前那个被删掉的 `relationships` 死字段：
+    #: 那个解析进了一个没人读的属性；这一个有两个真实消费点 ——
+    #: `answer_about_peers()`（离线答话）和 `system_block()`（模型 prompt）。
+    peer_facts: list[dict[str, Any]] = field(default_factory=list)
+    #: 运行期由 `Cast` 填进来的同伴名单 `[{id, name, role}]`。
+    #:
+    #: 不写进 YAML：同伴是谁取决于**这一场**的演员表，不取决于人设卡。
+    #: 同一个人设配到单人场景里，它就没有同伴 —— 写死在卡上必然说谎。
+    peers: list[dict[str, Any]] = field(default_factory=list)
 
     # ------------------------------------------------------------------ #
     @classmethod
@@ -87,6 +103,7 @@ class Persona:
             goals=list(data.get("goals") or []),
             templates=dict(data.get("utterance_templates") or {}),
             self_facts=list(data.get("self_facts") or []),
+            peer_facts=list(data.get("peer_facts") or []),
         )
 
     # ------------------------------------------------------------------ #
@@ -103,6 +120,12 @@ class Persona:
             lines.append(f"每次最多说 {style['sentence_max']} 句话，不要长篇大论。")
         if self.goals:
             lines.append("你在意的事：" + "；".join(self.goals) + "。")
+        if self.peers:
+            # 只在**这一场真的有多个人**时才写进 prompt。
+            # 单人场景的 prompt 一个字都不变 —— 否则历史上那些模型读数
+            # 会因为一句"你有同伴"而全部作废，而它们本来就没同伴。
+            who = "；".join(f"{p.get('name')}（{p.get('role') or '同伴'}）" for p in self.peers)
+            lines.append(f"在场同伴：{who}。你可以直接跟他们说话，也可以接他们的话。")
         lines.append(
             "铁律：不跳出角色，不承认自己是程序或模型，不替玩家做决定，不剧透未解锁的内容。"
         )
@@ -243,3 +266,16 @@ class Persona:
 
     def greet(self) -> str:
         return self.render_template("opening", topic_hint="").strip()
+
+    def answer_about_peers(self, text: str) -> str:
+        """问到同伴（"你们俩…""小舟呢？"）时怎么答。没有匹配返回空串。
+
+        匹配口径和 `answer_about_self` 一致：**精确子串**，不做模糊。
+        """
+        question = text or ""
+        for entry in self.peer_facts:
+            keywords = entry.get("ask") or []
+            reply = str(entry.get("reply") or "").strip()
+            if reply and any(str(k) and str(k) in question for k in keywords):
+                return reply
+        return ""

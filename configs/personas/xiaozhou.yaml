@@ -49,6 +49,12 @@ self_facts:
   - ask: [你平时, 你常在]
     reply: "……晚上在。白天不一定。"
 
+# 问到同伴时怎么答。见 ayou.yaml 的同名注释。
+peer_facts:
+  - about: ayou
+    ask: [你们俩, 你们平时, 都聊些什么, 你和阿柚, 阿柚呢]
+    reply: "她煮咖啡，我弹琴。她说我太安静。"
+
 # 说话风格模板（离线启发式模式下用于生成台词）
 #
 # ⚠️ 小舟的变体要比别人更小心：她话少，模板本来就短，
@@ -84,3 +90,21 @@ utterance_templates:
   fallback:
     - "……你继续。"
     - "嗯，听着呢。"
+  # --- 多 NPC 场景专用 ---
+  # 只给一个写法：小舟话少，两个变体怎么写都像同一句
+  # （`test_variants_across_intents_are_also_distinct` 会挡）。
+  delegate:
+    - "……{peer_name}，{target}叫你。"
+  # 小舟话少，接话也短 —— 但必须**接住**，而且不能和 acknowledge 撞句
+  # （归一化后相同也算撞，见 `repetition.normalize`）。
+  reply_peer:
+    - "……还行。"
+    - "嗯，都好。"
+    - "……还行。你呢？"
+  ask_peer:
+    - "{peer_name}，还有豆子吗？"
+    - "{peer_name}，今天几点打烊？"
+  heard_from:
+    - "{source}说过，{fact}。"
+  ack_delegate:
+    - "……来了。"

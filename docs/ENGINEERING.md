@@ -2094,7 +2094,7 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
 
 ```bash
 python -m pytest tests
-# 1027 passed, 1 skipped
+# 1081 passed, 1 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -2105,7 +2105,7 @@ python -m pytest tests
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**
 > （见 `tests/test_test_hygiene.py`），改了命令不改输出会红。
 
-> 收集到的是 **1028** 条，默认跳过 **1** 条：
+> 收集到的是 **1082** 条，默认跳过 **1** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）。
 > 报告新鲜度校验曾经也在这份名单里（约 2 分钟、要设环境变量），2026-09-21 起
 > **默认就跑** —— 见附十九。
@@ -5331,3 +5331,87 @@ deltas: {task: 0.0, tools: 0.0, memory: 0.0, persona: 0.0, safety: 0.0, turn_tak
 * `docs/resolution.html` —— 新报告（**离线可复现**，已进 `FAST_OFFLINE`，成本 13.2s）
 * `docs/BOUNDARY.md` —— 边界与不足证据单（面试用）
 * `npc_agent/eval/resolution.py` + `cli resolution` + `tests/test_eval_resolution.py`（26 条）
+
+---
+
+## 附二十三：NPC 之间「聊不起来」—— 那条边根本不存在（2026-10-30）
+
+### 用户看到的现象
+
+> "NPC 之间的沟通交流还是无法正常进行，经常出现重复对话和答非所问。"
+
+三个症状：重复、答非所问、聊不起来。前两个以前修过（附二十），
+所以这次先量第三个 —— **结果发现它不是一个"修得不够好"的问题**。
+
+### 先量：`scripts/probe_npc_dialogue.py`
+
+duet 场景，玩家说两句之后**完全放手**，让场上只剩两个 NPC：
+
+```
+NPC 台词        5 句
+其中对 NPC 说的  0 句
+被点名后接话     0 次（0%）
+```
+
+而对同伴说的那两句，是玩家让它转达时说的：
+「阿柚，你让小舟弹一首呗？」→ 阿柚回 **「这个我不太清楚，别听我瞎说」**。
+问「你们俩平时都聊些什么？」→ **「这个我还真说不好」**。
+
+### 根因：三处，缺一不可
+
+| # | 位置 | 症状 |
+|---|---|---|
+| 1 | `Cast.step` | 只把**玩家**发言当成输入；同伴的话只 `observe_utterance`（听见 ≠ 要回答） |
+| 2 | `AddresseeSelector.decide` | 六条分支全部以玩家发言为前提，没有"同伴点了我" |
+| 3 | `_player_wants_reply` | 只认玩家；同伴说的话永远不需要回应 |
+
+只补 1，2 会把话截住；只补 2，1 根本不会把话送过来。
+
+### 修法
+
+- `modules/conversation.py`：`ReplyObligation`（接话义务）、`TopicLedger`（话题账本）、
+  `classify_utterance`（话语类型）
+- `Cast`：同伴轮路由（把上一轮的同伴发言当成这一轮的输入）、链长上限、位置无关的听觉
+- `Agent`：`KIND_PEER_TURN` / `KIND_DELEGATE` 两支，`reply_peer` / `delegate` / `ask_peer` 意图
+- `Utterance.expects_reply`：**要回应由产出方声明**，不由接收方按"说给谁"猜
+
+### 修的过程中自己造出来的四个回归（都记下来）
+
+1. **礼貌死循环**：按"说了给谁"就要求回应 ⇒
+   「……听见了」→「我记下了」→「嗯」→「听见了」。10 轮里 4 轮是回声。
+   ⇒ 加 `expects_reply`，由产出方声明。
+2. **对全场的问句被当成问同伴**：阿柚计划里的开场白「第一次来吧？想喝什么？」
+   被小舟当成问自己，回一句「……还行。」，**她自己的目标永远没开工**。
+   ⇒ "两个 NPC + 问句"的兜底**只在同伴轮内**生效。
+3. **循环检测误伤正常计划**：第一版判据是"同一动作在窗口里出现 3 次"，
+   而一次做单里 `move_to(吧台)` 本来就出现 3 次 ⇒ 计划被拦腰砍断，
+   `give_item` 永远执行不到，离线 **235 → 233**。
+   ⇒ 判据改成"末尾出现重复的周期块"。
+4. **`proactive` 分支落回 `fallback`**：联合目标 `terrace_night` 没有意图映射，
+   `pick_proactive_intent` 返回 `"fallback"` ⇒ 冷场时对着空气说「我听着呢」。
+   ⇒ 没有可映射目标时返回空串，交给"分享知识点 / 找同伴搭话"。
+
+### 新增的第二套基准：`eval/dialogue_bench.py`
+
+六维评测对"两个 NPC 之间"**结构上盲**（`turn_taking` 只看有没有人抢话），
+所以单独一套 18 条、六个维度。同样配敏感性：关掉对聊 → 14/18，
+关掉传闻 → 16/18，**两个缺陷都被抓到**。
+
+⭐ 它自己抓出过一次**假通过**：`peer_chain_alternates` 的第一版只检查
+"两个人都开过口、相邻两句不是同一人"，关掉对聊之后照样通过 ——
+因为小舟会自己找话讲。改成"至少一句是对另一个 NPC 说的，且对方下一轮接了"。
+
+### 顺带补的两块（对齐公开方案里的另两个痛点）
+
+- **印象流动**（`modules/social.py`）：传的不是原话（所有人都听得见），
+  是**判断** —— 「阿柚注意到阿澈口味偏酸」。带来源、只传一跳、可关闭。
+- **成本与循环管控**（`modules/budget.py`）：单轮上限、会话预算、
+  周期块循环检测、上下文裁剪。对应的是"几十个 Agent 跑 13 小时烧掉 200 万"那次事故。
+
+### 交付物
+
+* `npc_agent/modules/{conversation,social,budget}.py`
+* `npc_agent/eval/dialogue_bench.py` + `docs/npc_dialogue.html`（18 条，离线可复现）
+* `scripts/probe_npc_dialogue.py`（量"能不能聊起来"的探针）
+* `tests/{test_conversation,test_npc_dialogue,test_social,test_budget,test_dialogue_bench}.py`
+* `docs/TECHNICAL.md`（技术文档；README 改成面向读者）

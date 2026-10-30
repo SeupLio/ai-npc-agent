@@ -247,6 +247,36 @@ class MemoryManager:
             kind="reflection", content=content, tick=tick, importance=0.85, tags=["reflection"]
         )
 
+    def receive_gossip(
+        self,
+        content: str,
+        tick: int,
+        source_id: str,
+        source_name: str,
+        importance: float = 0.6,
+        subject: str = "",
+    ) -> MemoryRecord:
+        """从同伴那里听来的一件事。
+
+        `tags` 里同时写 `gossip` 和 `source:<名字>`：
+        前者让"要不要用传闻的口气说"有判据，后者让台词能说出"听谁说的"。
+        两者都不写在 `content` 里 —— 按文案猜来源，上游一改措辞就失效
+        （这个项目已经在这条坑里摔过好几次，见 `types.OUTCOME_*`）。
+
+        `entities` 里放**来源**和**这条事关于谁**。后者是必需的：
+        `_recallable` 靠 entities 判"这句话能不能对眼前的人说"，
+        少了它，传闻会被当成"关于说话人自己的事"而被永远挡住。
+        """
+        entities = [source_id] + ([subject] if subject and subject != source_id else [])
+        return self.store.add(
+            kind="semantic",
+            content=content,
+            tick=tick,
+            importance=importance,
+            entities=entities,
+            tags=["gossip", f"source:{source_name}"],
+        )
+
     # ------------------------------------------------------------------ #
     def retrieve(self, query: str, now: int, k: int | None = None) -> list[MemoryRecord]:
         records = self.store.search(query, k=k or self.top_k, now=now)

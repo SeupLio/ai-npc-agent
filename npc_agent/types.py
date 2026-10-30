@@ -31,6 +31,16 @@ class Utterance:
     mentions: list[str] = field(default_factory=list)
     is_question: bool = False
     addressed_to: Optional[str] = None
+    #: 产出方声明"这句话**要一个回应**"。
+    #:
+    #: 为什么不能由接收方猜：一句「……听见了。」是对着阿柚说的，
+    #: 但它**不需要**阿柚再回一句。按"说了给谁"就要求回应，
+    #: 两个 NPC 会陷入"听见了→我记下了→嗯→听见了"的礼貌死循环
+    #: （实测：10 轮里 4 轮是这种回声）。
+    #:
+    #: 判据交给产出方，和 `ActionResult.outcome` 是同一条原则：
+    #: **消费方按文案猜意图，上游一改文案就静默失效。**
+    expects_reply: bool = False
 
     def render(self) -> str:
         return f"{self.speaker_name}: {self.text}"

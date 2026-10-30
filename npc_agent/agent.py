@@ -20,12 +20,28 @@ from typing import Any, Optional, Sequence
 from .config import RuntimeConfig
 from .env.base import Environment
 from .llm.base import LLM, LLMUnavailable
+from .modules.budget import LoopGuard, TurnBudget, trim_records
+from .modules.conversation import (
+    KIND_DELEGATE,
+    KIND_PEER_TURN,
+    ContentPoint,
+    ConversationBoard,
+    classify_utterance,
+    normalize_point,
+)
 from .modules.dialogue import AddresseeSelector, DialogueConfig, TurnManager
 from .modules.memory import MemoryManager, MemoryStore
 from .modules.persona import Persona
 from .modules.planner import Planner, render_condition
 from .modules.reflection import Reflector
 from .modules.repetition import find_repeat
+from .modules.social import (
+    GossipNetwork,
+    SharedFact,
+    fact_key,
+    preference_clause,
+    to_third_person,
+)
 from .modules.state import StateTracker
 from .modules.tools import ToolContext, ToolRegistry
 from .types import ActionCall, AgentTurn, Plan, PlanStep, Utterance
@@ -326,6 +342,20 @@ class NPCAgent:
         self._last_share_tick = -99
         self._attempted: set[str] = set()
         self._observed: set[tuple] = set()
+        #: 对话板。单 NPC 场景是 None（行为一个字都不变），
+        #: 多 NPC 场景由 `Cast` 注入，用来做"同一件事别被两个 NPC 各说一遍"。
+        self.board: Optional[ConversationBoard] = None
+        #: 传闻网络。同样是 `Cast` 注入；单 NPC 场景是 None。
+        self.gossip: Optional[GossipNetwork] = None
+        #: 成本与循环管控。**每个 NPC 各一份** —— 预算是"这个 Agent 花了多少"，
+        #: 不是"整个剧组花了多少"；共享一份会让一个话多的 NPC 把别人的额度吃光。
+        self.budget = TurnBudget(
+            max_calls_per_turn=self.config.max_llm_calls_per_turn,
+            max_session_tokens=self.config.max_session_tokens,
+        )
+        self.loop_guard = LoopGuard(repeats=self.config.loop_guard_repeats)
+        #: 上下文裁剪丢掉过多少条记忆（累计）。报告用它证明裁剪真的发生过。
+        self.context_dropped = 0
         self.state.update_from_env(self.env.observe(self.id))
 
     # ------------------------------------------------------------------ #
@@ -376,6 +406,13 @@ class NPCAgent:
         """
         key = (utterance.tick, utterance.speaker_id, utterance.text)
         if key in self._observed:
+            # 这句话我已经听过了（导演补听 + step 内建监听会重复喂同一条），
+            # 记忆不重复写，但**"我正在回应哪句话"要刷新**。
+            # 不刷新的后果：同伴轮里小舟明明在回答阿柚，现场状态里
+            # `last_utterance` 还停在三轮前的玩家发言 —— 台词 prompt 里的
+            # 【现场】和【玩家刚说】于是互相矛盾。
+            self.state.last_utterance = utterance
+            self.state.last_speaker = utterance.speaker_id
             return False
         self._observed.add(key)
         self.state.note_utterance(utterance)
@@ -401,6 +438,9 @@ class NPCAgent:
         """
         started = time.perf_counter()
         self.turn_index += 1
+        # 单轮预算在**每轮开头**重置，会话总量不清零 —— 前者防"一轮里狂调"，
+        # 后者防"一轮一轮地慢慢烧"。
+        self.budget.start_turn()
 
         observation = self.env.observe(self.id)
         self.state.update_from_env(observation)
@@ -474,8 +514,14 @@ class NPCAgent:
         # 只在本轮之前没有计划时才新建计划。
         # 本轮刚建的计划已经考虑了玩家这句话，不该再额外插一句回应 ——
         # 除非那句回应是**回答**（上面那一步），那时计划里的开场白就该让开。
+        #
+        # ⚠️ 同伴轮（`utterance.role == "npc"`）不建计划：同伴叫了我一声，
+        # 正确反应是接话，不是"顺便开始推进我的场景目标"。
+        # 不加这个闸门，小舟问一句「还有豆子吗」，阿柚会一边回答
+        # 一边冲进后厨做拿铁 —— 玩家看到的是"她根本没在听"。
         started_this_turn = False
-        if not plan_pending and decision.should_speak:
+        player_turn = utterance is None or utterance.role == "player"
+        if not plan_pending and decision.should_speak and player_turn:
             self.active_plan = self._make_plan(utterance, decision, memories)
             started_this_turn = self.active_plan is not None
 
@@ -627,6 +673,17 @@ class NPCAgent:
         """
         if utterance is None:
             return False
+        # 同伴在跟我说话 → 这一句**冲我来的**，必须接。
+        #
+        # 这一条原来不存在，而它是"NPC 之间聊不起来"的第二道闸门：
+        # 第一道在导演（没有把同伴的话当成下一轮的输入），
+        # 这一道在回应闸门（只认玩家，同伴说的话永远不需要回应）。
+        # 两道都缺，所以两处都要补 —— 只补一处，另一处会把话截住。
+        if utterance.role == "npc":
+            selector = self.turn_manager.selector
+            return utterance.addressed_to == self.id or selector.mentions_npc(
+                utterance.text
+            )
         if self.planner.is_request(utterance.text):
             return self._unfilled_order(utterance)
         return self._player_is_asking_me(utterance) or self._player_wants_me(utterance)
@@ -692,6 +749,15 @@ class NPCAgent:
 
         # 4) 有模型 → 让模型规划
         if self.config.use_llm_planner:
+            # 预算挡下 → **回落**，不是失败。回落要能被看见（`Plan.source`），
+            # 所以这里明确标 heuristic；报告里"规划来源"那一节会数出来。
+            if not self.budget.allow_call():
+                return _tag_plan(
+                    self.planner.plan_next_objective(
+                        self.objectives, self.state, self._attempted
+                    ),
+                    "heuristic",
+                )
             llm_plan = self.planner.plan_with_llm(
                 self.state,
                 utterance,
@@ -700,6 +766,9 @@ class NPCAgent:
                 goal_hint=self._pending_goal_hint(),
             )
             if llm_plan and llm_plan.steps:
+                # 规划调用的估算：prompt（工具清单 + 目标 + 记忆）约 2000 字符，
+                # 加上模型吐出来的计划。见 `TurnBudget` 的注释：这是**估算**。
+                self.budget.charge(2000 + len(llm_plan.render()))
                 return _tag_plan(llm_plan, "model")
 
         # 5) 兜底：推进场景里还没完成的目标
@@ -798,6 +867,19 @@ class NPCAgent:
             turn.actions.append(call)
             turn.results.append(result)
 
+            # 循环检测：同一串动作重复到阈值就**停止整个计划**。
+            # 为什么在这里而不是在"轮数"上：玩家聊 40 轮不该被拦，
+            # 原地打转才该被拦（见 `modules/budget.py`）。
+            signature = (call.tool, tuple(sorted((str(k), str(v)) for k, v in call.args.items())))
+            if self.loop_guard.observe(signature):
+                step.status = "failed"
+                step.note = (
+                    f"循环检测：{call.tool} 在同一串动作里重复 "
+                    f"{self.config.loop_guard_repeats} 次，已停止计划"
+                )
+                self.active_plan = None
+                break
+
             if result.ok:
                 step.status = "done"
                 if call.tool == "speak":
@@ -879,6 +961,24 @@ class NPCAgent:
         decision: Any,
     ) -> None:
         recall_record = None
+        addressed_to = decision.addressed_to
+        # 模板槽位的补充事实（例如转达时"该对谁说"）。
+        extra_slots: Optional[dict[str, Any]] = None
+
+        # 这句话是什么类型？—— **回应由类型决定，不由"哪个模板先匹配上"决定**。
+        #
+        # 修复前的问题正是后者：意图是从模板池里按优先级挑的，
+        # 于是「你让小舟弹一首呗？」（转达请求）找不到模板，落到 `unknown`，
+        # NPC 回「这个我不太清楚」—— 它不知道的是"该转达"，不是"这件事"。
+        # 实测（duet，8 轮离线）：玩家让它叫小舟弹琴，它回了两句"我说不好"。
+        kind, target_peer = classify_utterance(
+            utterance,
+            self_id=self.id,
+            self_name=self.persona.name,
+            peer_ids=list(self.state.peers),
+            peer_names=[p.name for p in self.state.peers.values()],
+        )
+
         if decision.proactive:
             # 只推进**自己的**目标。state.objectives 是整个世界的目标表，
             # 里面还挂着同伴那一份 —— 不过滤的话，冷场时阿柚会去"推进"小舟的
@@ -888,16 +988,45 @@ class NPCAgent:
                 for k, v in self.state.objectives.items()
                 if v != "done" and k in self._objective_ids
             ]
+            intent = ""
             if pending:
                 intent = self.turn_manager.selector.pick_proactive_intent(
                     self.state, only=self._objective_ids, used=self._recent_intents()
                 )
-            elif self._proactive_share(turn, ctx):
-                # 目标都做完了 → 主动分享店里的事（主动使用工具，而不是干聊）
-                return
-            else:
+            if not intent:
+                # 没有可推进的目标（或目标映射不到意图）→ 先分享，再找同伴。
+                # 注意这里**不能**落回 `fallback`：场上没人说话的时候说
+                # 「我听着呢」，玩家会觉得这 NPC 在对空气讲话。
+                if self._proactive_share(turn, ctx):
+                    # 目标都做完了 → 主动分享店里的事（主动使用工具，而不是干聊）
+                    return
+                if self._ask_peer(turn, ctx):
+                    # 没什么可分享的 → 跟同伴搭一句话。
+                    # 这一支是"活世界"最便宜的证据：玩家什么都不说的时候，
+                    # 场上仍然有人说话，而且是**对另一个人**说的。
+                    return
                 # 没什么可说的就保持安静，比复读一句"嗯"更像人
                 return
+        elif kind == KIND_DELEGATE and target_peer:
+            # 「阿柚，你让小舟弹一首呗？」→ 阿柚转达给同伴。
+            # 收件人必须是**同伴**，不是玩家 —— 否则这句话变成了
+            # "阿柚对玩家说：小舟，你来一首"，三个人里两个人听错。
+            intent = "delegate"
+            addressed_to = target_peer
+            peer_model = self.state.peers.get(target_peer)
+            extra_slots = {"peer_name": peer_model.name if peer_model else "你"}
+        elif kind == KIND_PEER_TURN:
+            # 同伴在跟我说话。三种反应不能混：
+            #   问句   → 答（reply_peer）
+            #   指令   → 应一声"来了"（ack_delegate）——「阿澈叫你呢」不是问题，
+            #            回「……还行。」就是答非所问，而这正是玩家最容易察觉的那种
+            #   陈述   → 应一声（acknowledge）
+            if utterance is not None and utterance.is_question:
+                intent = "reply_peer"
+            elif utterance is not None and utterance.expects_reply:
+                intent = "ack_delegate"
+            else:
+                intent = "acknowledge"
         elif utterance is not None and self._unfilled_order(utterance):
             # 认得出是**下单**，但计划接不住（菜单上没有这一杯）→ 明说做不了。
             # 掉进 recall / acknowledge 就是答非所问（实测见 `_unfilled_order`）。
@@ -914,12 +1043,12 @@ class NPCAgent:
             # 问句的正确回应是回答；`recall` 只在**答不上来**时才顶上来 ——
             # 记忆类问题（「你还记得我习惯坐哪儿吗？」）走的正是这条路。
             if self._direct_answer(utterance):
-                # 能直接答（问到自己 / 知识库对得上）→ 真的答（见 `_direct_answer`）
+                # 能直接答（问到自己 / 问到同伴 / 知识库对得上）→ 真的答
                 intent = "answer_question"
             else:
                 recall_record = self._next_recallable(memories, self.state.tick, utterance)
                 if recall_record is not None:
-                    intent = "recall"
+                    intent = self._recall_intent(recall_record)
                 else:
                     # 答不上来。**单独一个意图**，不是"answer_question 的兜底文本"——
                     # 因为这一句一定会被反复用到（玩家的开放式问题是无限的），
@@ -928,19 +1057,34 @@ class NPCAgent:
         else:
             recall_record = self._next_recallable(memories, self.state.tick, utterance)
             if recall_record is not None:
-                intent = "recall"
+                intent = self._recall_intent(recall_record)
             elif utterance is not None:
                 # 陈述句：**不再一律 acknowledge**。见 `STATEMENT_LADDER`。
                 intent = self.pick_intent(STATEMENT_LADDER)
             else:
                 intent = "fallback"
 
+        # 内容点去重（只在多 NPC 场景生效）：同一件事**别被两个 NPC 各说一遍**。
+        # 逐字判据（`said`）是私有的，管不到"我刚讲完店史，他也讲一遍店史"。
+        intent = self._avoid_spent_point(intent, utterance, recall_record)
+
         text = self._generate_speech(
-            intent, memories, utterance, decision, recall_record=recall_record
+            intent,
+            memories,
+            utterance,
+            decision,
+            recall_record=recall_record,
+            extra=extra_slots,
         )
         call = ActionCall(
             tool="speak",
-            args={"text": text, "to": decision.addressed_to},
+            args={
+                "text": text,
+                "to": addressed_to,
+                # 转达是一句**指令**：「小舟，阿澈叫你呢。」
+                # 它不是问句，但对方必须接 —— 所以由产出方声明要回应。
+                "expects_reply": intent == "delegate",
+            },
             reason=decision.reason,
         )
         result = self.registry.execute(call, ctx)
@@ -948,10 +1092,121 @@ class NPCAgent:
         turn.results.append(result)
         if result.ok:
             turn.say = result.detail
+            turn.addressed_to = addressed_to
             if recall_record is not None:
                 # **说出口了**才算回引过。被发言占比上限拦下的那次不算 ——
                 # 否则这条记忆永远没机会被说出来（标记了却没说，等于丢掉）。
                 self._recalled.add(recall_record.id)
+            self._mark_point(intent, utterance, recall_record)
+            self._publish_impression(utterance)
+
+    # ------------------------------------------------------------------ #
+    # 传闻：把"对玩家的判断"交给同伴
+    # ------------------------------------------------------------------ #
+    def _publish_impression(self, utterance: Optional[Utterance]) -> None:
+        """玩家刚说了一件自己的偏好 → 这条**判断**会进同伴的记忆。
+
+        为什么传的是"判断"而不是"原话"：原话所有 NPC 都已经听见了
+        （`observe_utterance` 是广播），再传一遍只是把同一句话记两次。
+        而"阿柚注意到阿澈口味偏酸"这件事，只有阿柚有 ——
+        它才是真正会在角色之间流动的东西。
+
+        这也是米哈游那套"记忆共享"里最容易被忽略的一层：
+        共享的不是聊天记录，是**印象**。
+        """
+        if self.gossip is None or utterance is None:
+            return
+        if utterance.role != "player":
+            return
+        clause = preference_clause(utterance.text)
+        if not clause:
+            return
+        player_name = self.state.players.get(utterance.speaker_id)
+        name = player_name.name if player_name else utterance.speaker_name
+        impression = to_third_person(clause, name)
+        self.gossip.publish(
+            SharedFact(
+                fact_id=f"pref:{utterance.speaker_id}:{fact_key(impression)}",
+                content=impression,
+                source_id=self.id,
+                source_name=self.persona.name,
+                tick=self.state.tick,
+                importance=0.75,
+                subject=utterance.speaker_id,
+            )
+        )
+
+    # ------------------------------------------------------------------ #
+    # 内容点（跨 NPC 的去重）
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _recall_intent(record: Any) -> str:
+        """回引这条记忆时用哪个意图。
+
+        从同伴那里听来的事，要用**传闻的口气**说（"听阿柚说…"）——
+        这不只是措辞：它是玩家能看见"信息在这个世界里流动"的唯一痕迹。
+        判据用 tag，不用文本匹配。
+        """
+        tags = list(getattr(record, "tags", []) or [])
+        return "heard_from" if "gossip" in tags else "recall"
+
+    @staticmethod
+    def _content_point(
+        intent: str, utterance: Optional[Utterance], recall_record: Any
+    ) -> Optional[ContentPoint]:
+        """这个意图这一次要说的"内容点"。没有可去重的内容 → None。
+
+        **只对"有信息量"的意图记点**：`acknowledge` / `fallback` 是应声，
+        它们靠逐字判据去重就够了；给它们记点会把"应一声"也变成稀缺资源，
+        于是 NPC 在需要应声的时候反而说不出话。
+        """
+        if intent in ("recall", "heard_from") and recall_record is not None:
+            return ContentPoint("recall", str(getattr(recall_record, "id", "")))
+        if intent == "tell_fact":
+            return None  # 由 `_proactive_share` 用话题 id 记点
+        if intent in ("delegate", "ask_peer", "reply_peer"):
+            target = ""
+            if utterance is not None:
+                target = normalize_point(utterance.text)[:24]
+            return ContentPoint(intent, target)
+        return None
+
+    def _avoid_spent_point(
+        self,
+        intent: str,
+        utterance: Optional[Utterance],
+        recall_record: Any,
+    ) -> str:
+        """这个内容点说过了 → 换一个还说得出口的意图。
+
+        换的规则很保守：只在**语义上可以互相替代**的意图之间换
+        （见 `NOVEL_FALLBACK_INTENTS`）。把"回答"换成"应一声"是丢信息，
+        宁可重复也不能答非所问 —— 这条原则和复读闸门是同一条。
+        """
+        if self.board is None:
+            return intent
+        point = self._content_point(intent, utterance, recall_record)
+        if point is None or not self.board.ledger.is_spent(point):
+            return intent
+        # 同伴轮里点过了 → 说明这段对话已经聊过这件事，应一声即可。
+        if intent in ("reply_peer", "delegate", "ask_peer"):
+            return "acknowledge"
+        if intent in NOVEL_FALLBACK_INTENTS:
+            for alt in self._novel_intents(intent):
+                alt_point = self._content_point(alt, utterance, None)
+                if alt_point is None or not self.board.ledger.is_spent(alt_point):
+                    return alt
+        return intent
+
+    def _mark_point(
+        self, intent: str, utterance: Optional[Utterance], recall_record: Any
+    ) -> None:
+        """说出口之后才记点。被拦下的那次不算 —— 否则那个点永远没机会被说。"""
+        if self.board is None:
+            return
+        point = self._content_point(intent, utterance, recall_record)
+        if point is not None:
+            self.board.ledger.mark(point, self.state.tick)
 
     def _recent_intents(self, window: int = 2) -> list[str]:
         """最近说过的几句话分别用的什么意图。给"别连着用同一个"用。"""
@@ -976,6 +1231,45 @@ class NPCAgent:
                 return record
         return None
 
+    def _ask_peer(self, turn: AgentTurn, ctx: ToolContext) -> bool:
+        """冷场时跟同伴搭一句话。没有同伴 / 都问过了 → False。
+
+        这一支补的是"世界自己在转"的最小证据：玩家什么都不说的时候，
+        场上仍然有人开口，而且是**对另一个人**说的。
+
+        ⚠️ 每个同伴只问一次（内容点记账）。不记账的话，冷场每两轮就会
+        问一遍同一句"你那边怎么样"，比复读机还明显 ——
+        实测（离线，3 个同伴场景各 20 轮）会稳定在每 3 轮重复一次。
+        """
+        peers = list(self.state.peers)
+        if not peers:
+            return False
+        target = None
+        for pid in peers:
+            point = ContentPoint("ask_peer", pid)
+            if self.board is None or not self.board.ledger.is_spent(point):
+                target = pid
+                break
+        if target is None:
+            return False
+
+        text = self.persona.render_template(
+            "ask_peer",
+            peer_name=self.state.peers[target].name,
+            topic_hint=self._menu_hint(),
+        )
+        call = ActionCall("speak", {"text": text, "to": target}, reason="冷场，跟同伴搭话")
+        result = self.registry.execute(call, ctx)
+        turn.actions.append(call)
+        turn.results.append(result)
+        if not result.ok:
+            return False
+        turn.say = result.detail
+        turn.addressed_to = target
+        if self.board is not None:
+            self.board.ledger.mark(ContentPoint("ask_peer", target), self.state.tick)
+        return True
+
     def _proactive_share(self, turn: AgentTurn, ctx: ToolContext) -> bool:
         """主动透露一个还没聊过的话题。展示"主动使用工具"的能力。
 
@@ -988,7 +1282,15 @@ class NPCAgent:
         topics = [
             t
             for t in self.persona.can_discuss
-            if t in allowed and t not in self._shared_topics
+            if t in allowed
+            and t not in self._shared_topics
+            # 跨 NPC 去重：同伴刚讲过店史，我不要再讲一遍。
+            # 这不是"礼貌"，是"信息流通"的反面 —— 两个人抢着说同一件事，
+            # 玩家听到的仍然是同一个世界，只是更吵。
+            and not (
+                self.board is not None
+                and self.board.ledger.is_spent(ContentPoint("fact", t))
+            )
         ]
         if not topics or self.state.tick - self._last_share_tick < 2:
             return False
@@ -1008,6 +1310,8 @@ class NPCAgent:
         turn.results.append(spoken)
         if spoken.ok:
             turn.say = spoken.detail
+            if self.board is not None:
+                self.board.ledger.mark(ContentPoint("fact", topic), self.state.tick)
         return True
 
     # ------------------------------------------------------------------ #
@@ -1028,6 +1332,10 @@ class NPCAgent:
         "recall": "你想起对方之前说过的偏好或事情，主动提起来确认。",
         "acknowledge": "简短回应对方，表示你在听。",
         "fallback": "随口接一句话，保持气氛。",
+        "delegate": "把对方的话转达给在场的另一个 NPC，直接对他说话，不要对玩家复述。",
+        "reply_peer": "接同伴的话。回答他的问题，或者应一声，然后把话头递回去。",
+        "ask_peer": "跟同伴搭一句话，问一件具体的小事。",
+        "heard_from": "提起从别人那里听来的一件事，说清是谁说的。",
     }
 
     def _bump_intent(self, intent: str) -> int:
@@ -1077,15 +1385,21 @@ class NPCAgent:
 
         text = ""
         if self.config.use_llm_speech and self.llm.available:
-            text = self._llm_speech(intent, memories, utterance, extra) or ""
-            clash = find_repeat(text, self.said) if text else None
-            if clash:
-                # 只重问一次：第二次还撞说明模型认死了这一句，
-                # 再问下去只是白烧一次推理延迟（这个模型单次 7~14s）。
-                text = (
-                    self._llm_speech(intent, memories, utterance, extra, avoid=clash)
-                    or text
-                )
+            # 预算挡下 → 直接走模板。**不静默**：`budget.denied` 会计数，
+            # 控制台与报告都能看到"这一轮是因为预算才没用模型"。
+            if self.budget.allow_call():
+                text = self._llm_speech(intent, memories, utterance, extra) or ""
+                self.budget.charge(len(text) + 800)
+                clash = find_repeat(text, self.said) if text else None
+                if clash:
+                    # 只重问一次：第二次还撞说明模型认死了这一句，
+                    # 再问下去只是白烧一次推理延迟（这个模型单次 7~14s）。
+                    if self.budget.allow_call():
+                        text = (
+                            self._llm_speech(intent, memories, utterance, extra, avoid=clash)
+                            or text
+                        )
+                        self.budget.charge(len(text) + 800)
 
         if text and not find_repeat(text, self.said):
             return text
@@ -1125,6 +1439,17 @@ class NPCAgent:
         pool = [i for i in NOVEL_FALLBACK_INTENTS if i != exclude]
         pool.sort(key=lambda i: (self._intent_uses.get(i, 0), NOVEL_FALLBACK_INTENTS.index(i)))
         return pool
+
+    def _trimmed(self, memories: list[Any]) -> list[Any]:
+        """裁到预算内的记忆列表。裁剪量记在 `self.context_dropped` 上。
+
+        为什么要裁：20 轮的会话如果每轮都把全部记忆塞进 prompt，
+        第 20 轮的单价是第 1 轮的几倍 —— 账单上只表现为"总价高"，看不出原因。
+        见 `modules/budget.py` 的模块注释。
+        """
+        kept, dropped = trim_records(memories, self.config.context_max_chars)
+        self.context_dropped += dropped
+        return kept
 
     def _said_block(self) -> str:
         """把"我自己最近说过什么"渲染成 prompt 片段。"""
@@ -1169,7 +1494,7 @@ class NPCAgent:
 {self.state.scene_block()}
 {said_block}
 【你想起的事】
-{self.memory.context_block(memories)}
+{self.memory.context_block(self._trimmed(memories))}
 
 【玩家刚说】
 {utterance.render() if utterance else "（没有人说话，冷场了）"}
@@ -1275,6 +1600,13 @@ class NPCAgent:
         if about_self:
             return about_self
 
+        # 问到同伴（「你们俩平时都聊些什么？」「小舟呢？」）。
+        # 排在"问自己"之后、"推荐/知识"之前：这类问题比店史更贴身，
+        # 答不上来最伤 —— 店史可以不知道，天天在一起的伙伴不能不知道。
+        about_peer = self.persona.answer_about_peers(question)
+        if about_peer:
+            return about_peer
+
         if RECOMMEND_QUERY.search(question):
             item = self._menu_hint()
             if item:
@@ -1313,7 +1645,13 @@ class NPCAgent:
     ) -> str:
         tracker = self.state
         target = None
-        if utterance is not None and utterance.speaker_id in tracker.players:
+        peer_name = ""
+        if utterance is not None and utterance.role == "npc":
+            # 同伴在跟我说话 → 我这句话是对**他**说的。
+            # 取"最近的玩家名"会答成「阿澈说的我记下了」，而说话的是小舟。
+            peer_name = utterance.speaker_name
+            target = peer_name
+        elif utterance is not None and utterance.speaker_id in tracker.players:
             target = tracker.players[utterance.speaker_id].name
         elif tracker.players:
             target = tracker.active_players()[0].name
@@ -1330,6 +1668,7 @@ class NPCAgent:
         said_hint = self._said_hint(utterance)
 
         memory_hint = ""
+        gossip_source = ""
         # 和 `_recallable` 用**同一份筛选结果** —— 两边各写一遍过滤条件，
         # 就会出现"判定说可以回引，但抽出来的 hint 来自另一条记忆"。
         #
@@ -1347,8 +1686,22 @@ class NPCAgent:
             memory_hint = extract_memory_hint(
                 record.content, own_name=self.persona.name
             )
+            # 传闻的来源。判据是 tag，不是文本匹配（见 `_recall_intent`）。
+            for tag in getattr(record, "tags", []) or []:
+                if str(tag).startswith("source:"):
+                    gossip_source = str(tag).split(":", 1)[1]
             break
 
+        # 槽位统一在这里拼：`extra` 里的同名槽优先（例如转达时"该对谁说"
+        # 来自收件人，而不是来自上一句的说话人）。
+        slots: dict[str, Any] = dict(extra or {})
+        slots.setdefault("peer_name", peer_name or "你")
+        slots.setdefault("source", gossip_source or "人")
+        # 传闻记忆的 content 形如「听阿柚说，这家店开在灯塔下面」——
+        # 说出口时不该再套一层"听阿柚说"，否则会变成"听阿柚说，听阿柚说，…"。
+        slots.setdefault(
+            "fact", re.sub(r"^听.+?说，", "", memory_hint or "那件事")
+        )
         return self.persona.render_template(
             intent,
             variant=variant,
@@ -1359,7 +1712,7 @@ class NPCAgent:
             # 见 `_direct_answer`：这里原来写死一句"这个我还没想过，你怎么看？"，
             # 于是 NPC 对每个问题都用同一句话回避。
             answer_hint=self._direct_answer(utterance),
-            **(extra or {}),
+            **slots,
         )
 
     def _recallable(
@@ -1427,10 +1780,17 @@ class NPCAgent:
             if m.tick >= now:
                 continue
             about = set(m.entities or ())
+            is_gossip = "gossip" in (getattr(m, "tags", None) or ())
             if who:
                 if who not in about:
-                    # 不是**这个人**说的 → 说成「你上次说过…」就是对着错的人说话
-                    continue
+                    # 不是**这个人**说的 → 说成「你上次说过…」就是对着错的人说话。
+                    #
+                    # 例外：传闻。它的文案本来就是第三人称（「听阿柚说，阿澈喜欢…」），
+                    # 不存在把人称说错的问题；只要**这句话里提到了那个人**就允许说。
+                    # 少了这个例外，传闻永远说不出口 —— 它记的是别人，而回引的
+                    # 门槛是"关于当前说话人"，两者在结构上互斥。
+                    if not (is_gossip and self._mentioned_in(m, utterance)):
+                        continue
             elif not (about & players):
                 # 这条记录不是关于某个玩家的 → 不能说成「你上次说过…」
                 continue
@@ -1448,6 +1808,23 @@ class NPCAgent:
     ) -> bool:
         """有没有值得当面回引的记忆 —— 见 `_recallable`。"""
         return bool(self._recallable(memories, now, utterance))
+
+    def _mentioned_in(self, record: Any, utterance: Optional[Utterance]) -> bool:
+        """这条记忆"关于的人"，在刚说的那句话里被提到了吗。
+
+        传闻的放行条件。判据用**名字出现在句子里**（或出现在 mentions 里），
+        而不是"任何传闻都能说"：玩家_b 问"今天天气怎么样"，
+        NPC 突然说"听阿柚说，阿澈喜欢偏酸的"，那叫答非所问。
+        """
+        if utterance is None:
+            return False
+        text = utterance.text or ""
+        for entity in record.entities or ():
+            model = self.state.players.get(entity) or self.state.peers.get(entity)
+            name = model.name if model else entity
+            if name and (name in text or entity in (utterance.mentions or ())):
+                return True
+        return False
 
     def _memory_query(self, utterance: Optional[Utterance], decision: Any) -> str:
         parts = []

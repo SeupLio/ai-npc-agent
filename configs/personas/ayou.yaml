@@ -64,6 +64,16 @@ self_facts:
   - ask: [你会做什么, 你拿手, 你擅长]
     reply: "手冲还算拿得出手，别的就一般了。"
 
+# 问到同伴时怎么答。见 `Persona.peer_facts` 的注释：
+# 这不是以前被删掉的那个 `relationships` 死字段，它有两个真实消费点。
+peer_facts:
+  - about: xiaozhou
+    ask: [你们俩, 你们平时, 都聊些什么, 你们关系, 你和小舟]
+    reply: "她弹琴，我煮咖啡。她嫌我话多，我嫌她太安静。"
+  - about: xiaozhou
+    ask: [小舟呢, 小舟在, 小舟唱]
+    reply: "露台上那个就是她。话少，弹得好。"
+
 # 说话风格模板（离线启发式模式下用于生成台词）
 #
 # 高频意图（probe / acknowledge / fallback / recall）写成**多选一**：
@@ -104,3 +114,24 @@ utterance_templates:
   fallback:
     - "嗯——我听着呢，你接着说。"
     - "你说，我这儿不着急。"
+  # --- 多 NPC 场景专用 ---
+  # `delegate`：玩家让我叫同伴做事，我**转达给同伴**（不是对玩家复述）。
+  # 实测动机：玩家说「阿柚，你让小舟弹一首呗？」，修复前阿柚回
+  # 「这个我不太清楚，别听我瞎说」—— 它不知道的是"该转达"，不是"这件事"。
+  delegate:
+    - "{peer_name}，{target}叫你呢。"
+    - "{peer_name}，这声是冲你来的。{target}等着呢。"
+  # `reply_peer`：接同伴的话。离线模板答不了内容，但**必须接住并递回去** ——
+  # 「答得不够好」和「根本没在听」是两件不同的事，后者玩家一眼就能看出来。
+  reply_peer:
+    - "嗯，还行。{peer_name}那边呢？"
+    - "嗯，{peer_name}。我这边没问题。"
+  ask_peer:
+    - "{peer_name}，你那边还顺利吗？"
+    - "{peer_name}，要不要先歇一会儿？"
+  heard_from:
+    - "听{source}说，{fact}。"
+  # 同伴**转达**一句话给我（不是问我问题）→ 应一声"来了"，别答成"还行"。
+  ack_delegate:
+    - "来了。{target}稍等。"
+    - "嗯，听见了。"

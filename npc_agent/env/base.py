@@ -127,8 +127,21 @@ class Environment(ABC):
         """判定单个条件。保留这个方法名，因为已有环境与测试都在用它。"""
         return condition_met(condition, self.condition_context())
 
-    def broadcast(self, actor_id: str, text: str) -> None:
-        """把一次发言广播进世界，让其他 Agent / 玩家能观察到。"""
+    def broadcast(
+        self,
+        actor_id: str,
+        text: str,
+        addressed_to: str | None = None,
+        expects_reply: bool = False,
+    ) -> None:
+        """把一次发言广播进世界，让其他 Agent / 玩家能观察到。
+
+        `addressed_to` 是**这句话说给谁听**。它必须进世界记录，而不是只留在
+        产出方手里：导演要靠它决定"下一轮该谁接话"，而导演读的是世界里的
+        发言记录（`utterances`），不是某个 Agent 的内部字段。
+        少传这一项，NPC 之间的点名就断在产出方手里 —— 实测表现是
+        「阿柚：小舟，你来一首？」之后，小舟完全不知道有人在叫她。
+        """
 
     # ------------------------------------------------------------------ #
     # 发言记录 —— 多 Agent 协作依赖的公共契约

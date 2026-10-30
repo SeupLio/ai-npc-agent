@@ -66,10 +66,13 @@ DEMO_SCRIPTS: dict[str, list[Optional[tuple[str, str]]]] = {
         None,
     ],
     # 双 NPC：前两轮分别由两位客人起话头，让两个 NPC 都有机会开工；
-    # 后面留空轮给阿柚把饮品做完 —— 她的计划比小舟长，需要更多轮。
+    # 第三轮是**玩家让阿柚转达给小舟** —— 这一段专门用来演示 NPC 之间
+    # 怎么对话（阿柚 → 小舟 → 阿柚），后面留空轮把饮品做完。
     "duet": [
         ("player_a", "今天这里挺热闹的。"),
         ("player_b", "露台那边好像有风。"),
+        ("player_a", "阿柚，你让小舟弹一首呗？"),
+        None,
         None,
         None,
         None,

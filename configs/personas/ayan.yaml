@@ -91,3 +91,16 @@ utterance_templates:
   fallback:
     - "行，你说。"
     - "手上有活，你慢慢说。"
+  # 见 ayou.yaml：这三个意图只在"场上有多个人"时才会被用到。
+  delegate:
+    - "{peer_name}，{target}叫你。"
+  reply_peer:
+    - "行，都好。{peer_name}那边呢？"
+    - "嗯，手上有活，你说。"
+  ask_peer:
+    - "{peer_name}，灯点上了吗？"
+    - "{peer_name}，那边还差什么？"
+  heard_from:
+    - "听{source}讲的，{fact}。"
+  ack_delegate:
+    - "行，来了。"

@@ -566,14 +566,31 @@ class MinecraftEnv(Environment):
     # ------------------------------------------------------------------ #
     # 其他 Environment 接口
     # ------------------------------------------------------------------ #
-    def broadcast(self, actor_id: str, text: str) -> None:
+    def broadcast(
+        self,
+        actor_id: str,
+        text: str,
+        addressed_to: str | None = None,
+        expects_reply: bool = False,
+    ) -> None:
         """发言 = 在世界里发一条聊天。
 
         这样"谁说过什么"只有**一个**事实来源（世界后端），
         不需要在适配器里再维护一份平行日志 —— 两份日志迟早会不一致，
         而不一致的表现是"导演以为没人开口，于是两个 NPC 抢话"。
+
+        `addressed_to` 一并送进后端（桥不认识这个字段时会忽略它）。
+        读回来时按"后端有没有回传"取，不回传就是 None ——
+        **不在这里猜**："小舟"两个字出现在句子里，和"这句话是说给小舟的"
+        是两件事，猜错会让 NPC 互相抢着接话。
         """
-        self._call("chat", actor=actor_id, text=text)
+        self._call(
+            "chat",
+            actor=actor_id,
+            text=text,
+            addressed_to=addressed_to,
+            expects_reply=expects_reply,
+        )
         self._invalidate_utterances()
 
     @property
@@ -600,6 +617,8 @@ class MinecraftEnv(Environment):
                 tick=int(entry.get("tick") or 0),
                 role="npc" if kinds.get(entry.get("speaker_id")) == "npc" else "player",
                 is_question=looks_like_question(entry.get("text") or ""),
+                addressed_to=entry.get("addressed_to") or None,
+                expects_reply=bool(entry.get("expects_reply")),
             )
             for entry in (state.get("utterances") or [])
         ]

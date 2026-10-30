@@ -373,7 +373,13 @@ class StarIsleEnv(Environment):
         actor = self.actors.get(actor_id)
         return actor.name if actor else actor_id
 
-    def broadcast(self, actor_id: str, text: str) -> None:
+    def broadcast(
+        self,
+        actor_id: str,
+        text: str,
+        addressed_to: str | None = None,
+        expects_reply: bool = False,
+    ) -> None:
         actor = self.actors[actor_id]
         self._utterances.append(
             Utterance(
@@ -384,6 +390,8 @@ class StarIsleEnv(Environment):
                 role="npc" if actor.kind == "npc" else "player",
                 mentions=self._mentions(text, actor.id),
                 is_question=looks_like_question(text),
+                addressed_to=addressed_to,
+                expects_reply=expects_reply,
             )
         )
 

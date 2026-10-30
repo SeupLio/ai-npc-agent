@@ -97,7 +97,32 @@ class AddresseeSelector:
         """核心决策。返回 should_speak / addressed_to / 理由 / 紧急度。"""
         cfg = self.config
 
-        # 0) 多 NPC 场景：另一个 NPC 刚说完，让出去
+        # 0) 同伴在跟我说话 —— 必须接，而且**优先于计划**。
+        #
+        # 这一支原来不存在，于是"NPC 之间对话"在决策层就是断的：
+        # 同伴点了我，我既不觉得该说话（没有"被点名"这一支认 NPC 发言），
+        # 也不会让出计划（计划永远优先）。实测（duet，8 轮离线）：
+        # 对同伴说的台词 **0 句**，被点名后接话 **0 次**。
+        #
+        # 为什么排在"有未完成的计划"前面：玩家能听见两个 NPC 说话，
+        # 小舟叫了阿柚一声、阿柚继续闷头做咖啡，比"背教程"更像坏掉。
+        if (
+            utterance is not None
+            and utterance.role == "npc"
+            and utterance.speaker_id != self.persona.id
+            and (
+                utterance.addressed_to == self.persona.id
+                or self.mentions_npc(utterance.text)
+            )
+        ):
+            return DialogueDecision(
+                True,
+                utterance.speaker_id,
+                f"{utterance.speaker_name}在跟我说话",
+                urgency=0.92,
+            )
+
+        # 1) 多 NPC 场景：另一个 NPC 刚说完，让出去
         if other_npc_spoke_last and not (utterance and self.mentions_npc(utterance.text)):
             return DialogueDecision(False, None, "另一个 NPC 刚发言，不打断", 0.0)
 
@@ -218,7 +243,12 @@ class AddresseeSelector:
             if intent and intent not in options:
                 options.append(intent)
         if not options:
-            return "fallback"
+            # 没有可映射的目标 —— 返回**空串**，让调用方去试别的（分享知识点 /
+            # 跟同伴搭话）。这里原来返回 `"fallback"`，于是"未完成的目标里
+            # 只有联合目标"的场景（duet 的 `terrace_night` 没有映射）
+            # 每一轮冷场都会说一句"嗯——我听着呢"，而场上根本没人说话。
+            # 实测：8 轮冷场里 5 轮是这句话，比复读更像坏了。
+            return ""
 
         recent = list(used or [])
         for intent in options:

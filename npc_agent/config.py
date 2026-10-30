@@ -115,6 +115,30 @@ class RuntimeConfig:
     # 之前 dialogue.py 和 tools.py 各自硬编码了一份 0.62，改一处漏一处，
     # 现在收拢成一个配置项。
     npc_share_ceiling: float = 0.62
+    # NPC 之间连续对聊的轮数上限。
+    #
+    # 为什么要有上限：这不是"怕模型话多"，是**产品判断**。
+    # 玩家站在旁边看两个 NPC 聊十轮，不会觉得世界很活，只会觉得自己被晾着。
+    # 3 轮够形成"你一句我一句"的来回，不够形成一段没有玩家的小剧场。
+    # 0 表示关掉 NPC 对聊（退回到"NPC 只对玩家说话"的旧行为，用于对照实验）。
+    max_peer_exchanges: int = 3
+
+    # --- 共享记忆（传闻） ---
+    # 一个 NPC 说出来、值得被别人知道的事，会进同伴的记忆，带来源标注。
+    # 对应的是"你在咖啡店跟店主聊过的事，过几天被街市的人提起"。
+    gossip_enabled: bool = True
+    #: 只有重要度 ≥ 这个阈值的事实才会传播。
+    #: 太低会把"嗯""好的"也传成传闻，太高则只剩玩家偏好会流动。
+    gossip_importance: float = 0.7
+
+    # --- 成本与循环管控 ---
+    # 这些数字不是"以防万一"，是踩过的坑：
+    # 几十个 Agent 跑 13 小时、烧掉价值 200 万元的 token，原因是
+    # **没有 token 上限、没有循环检测、没有上下文裁剪**。三件事这里各有一项。
+    max_llm_calls_per_turn: int = 2     # 单轮最多几次模型调用（台词 1 + 规划 1）
+    max_session_tokens: int = 200_000   # 一场会话的估算 token 上限
+    loop_guard_repeats: int = 3         # 同一串动作重复几次判定为死循环
+    context_max_chars: int = 2000       # 注入 prompt 的记忆块字符上限
 
     verbose: bool = False
 

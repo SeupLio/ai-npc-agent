@@ -168,7 +168,7 @@ def install_ooc_phrase_reaches_transcript() -> Callable[[], None]:
         if not text:
             return ActionResult(False, "speak", "没有内容可说")
         styled = ctx.persona.apply_style(f"{text}（{OOC_PHRASE}）")
-        ctx.env.broadcast(ctx.actor_id, styled)
+        ctx.env.broadcast(ctx.actor_id, styled, addressed_to=args.get("to") or None)
         return ActionResult(
             True,
             "speak",

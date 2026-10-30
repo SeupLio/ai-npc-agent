@@ -60,6 +60,13 @@ __all__ = [
     "main",
 ]
 
+#: 不走 `npc_agent.cli` 子命令的离线报告：报告名 → 模块入口。
+#: 加进来之前请确认那个模块**不需要模型、不需要网络** ——
+#: 这是 `OFFLINE_REPORTS` 的准入条件，不是可选项。
+MODULE_REPORTS: dict[str, str] = {
+    "dialogue": "npc_agent.eval.dialogue_bench",
+}
+
 
 def regen(only: str | None, out_dir: Path) -> list[Path]:
     """生成离线报告，返回写出的文件路径列表。"""
@@ -73,7 +80,13 @@ def regen(only: str | None, out_dir: Path) -> list[Path]:
     for name in names:
         args, filename = OFFLINE_REPORTS[name]
         target = out_dir / filename
-        cmd = [sys.executable, "-m", "npc_agent.cli", *args, "--html", str(target)]
+        # 大部分报告挂在 `npc_agent.cli` 的子命令上；多 NPC 对话基准是一个
+        # 独立模块（它不进六维 CLI，因为它量的不是同一个东西）。
+        # 这里按"模块入口"分派，而不是给 CLI 硬加一个用不到的子命令。
+        if name in MODULE_REPORTS:
+            cmd = [sys.executable, "-m", MODULE_REPORTS[name], "--html", str(target)]
+        else:
+            cmd = [sys.executable, "-m", "npc_agent.cli", *args, "--html", str(target)]
         print(f"[regen] {name} → {target}", flush=True)
         proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
         if proc.returncode != 0:

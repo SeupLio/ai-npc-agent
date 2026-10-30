@@ -32,6 +32,9 @@ _CASE_COUNT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(\d+)\s*条自建用例"),          # 跑批报告：副标题
     re.compile(r"共\s*(\d+)\s*条用例"),          # 跨世界报告：副标题
     re.compile(r"通过\s*<strong>(\d+)/\d+</strong>"),  # 对照/消融：头条的分母
+    # 多 NPC 对话基准：头条写的是"共 <strong>18</strong> 条用例"。
+    # 加这一条而不是改报告版式 —— 版式已经有三套了，再多一套只是多一种历史原因。
+    re.compile(r"共\s*<strong>(\d+)</strong>\s*条用例"),
 )
 
 # 离线可复现的报告：命令 → 输出文件名
@@ -46,6 +49,10 @@ OFFLINE_REPORTS: dict[str, tuple[tuple[str, ...], str]] = {
     # 那份回答"评测会不会报警"，这份回答"报警线画在哪"。
     # 过期了同样是在给一个不准的结论背书，所以一样要钉住。
     "resolution": (("resolution",), "resolution.html"),
+    # 多 NPC 对话基准同样是离线可复现的（18 条、0 次模型调用）。
+    # 它必须被钉住，理由和 sensitivity 一样：它是「NPC 之间能聊起来」
+    # 这句话的证据，过期了就是在给一个已经不准的结论背书。
+    "dialogue": (("dialogue",), "npc_dialogue.html"),
 }
 
 # 一次跑批的快照：需要模型 + 额度，**故意不自动化**。
@@ -79,6 +86,7 @@ REPORT_TITLES: dict[str, str] = {
     "multi_npc.html": "多 NPC 接上模型的对话样本",
     "repetition.html": "复读：只看单句的评测看不见的缺陷",
     "planner_batch.html": "规划修复 · 配对前后对比",
+    "npc_dialogue.html": "多 NPC 对话基准（NPC 之间能不能聊起来）",
 }
 
 REPORT_ANSWERS: dict[str, str] = {
@@ -93,6 +101,8 @@ REPORT_ANSWERS: dict[str, str] = {
     "repetition.html": "同一段对话里 NPC 有多少话是之前说过的（修复前 61% → 修复后 0%）",
     "planner_batch.html": "规划 prompt 补上完成条件之后，同一个配对子集上的前后对比"
     "（含预先写下的失败特征、分层口径、以及**没修好的另一个根因**）",
+    "npc_dialogue.html": "同伴接话 / 转达 / 有依据的回答 / 不复读 / 印象流动 / 发言权"
+    "六个维度，外加「注入缺陷必须掉分」的敏感性检验",
 }
 
 # 报告里嵌了**时长**（`0.18s` / `14s` / `1184s`），它天然每次都不一样。

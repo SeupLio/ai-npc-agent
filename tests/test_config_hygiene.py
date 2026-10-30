@@ -164,13 +164,18 @@ def test_the_real_config_classes_have_no_unread_fields() -> None:
             f"{class_name} 有没人读的字段"
         )
         counts[class_name] = len(fields)
-    assert counts == {"Persona": 11, "DialogueConfig": 2, "RuntimeConfig": 22}, (
+    assert counts == {"Persona": 13, "DialogueConfig": 2, "RuntimeConfig": 29}, (
         f"配置类的字段数变了：{counts}。\n"
         "  加字段是好事，但要顺手改这个数 —— 改的时候请确认新字段**真的有人读**\n"
         "  （删掉 `min_urgency_to_speak` / `locked_topics` / `relationships` 时\n"
         "   正是因为没人读）。\n"
         "  2026-09-20：`RuntimeConfig` 21 → 22，加的是 `llm_parse_retries`；\n"
-        "  它在 `cli` / `harness` / `runner` / `studio` 四处被读、且进了恢复指纹。"
+        "  它在 `cli` / `harness` / `runner` / `studio` 四处被读、且进了恢复指纹。\n"
+        "  2026-10-30：`RuntimeConfig` 22 → 29，加的是多 NPC 对话与成本管控的 7 项\n"
+        "  （max_peer_exchanges / gossip_* ×2 / 成本与裁剪 ×4），消费方分别在\n"
+        "  `cast.py`、`social.py`、`budget.py`、`agent.py`；\n"
+        "  `Persona` 11 → 13，加的是 `peer_facts`（`answer_about_peers` 读）与\n"
+        "  `peers`（`system_block` 读）—— 都不是以前那个没人读的 `relationships`。"
     )
 
 

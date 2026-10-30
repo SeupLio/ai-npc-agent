@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多 NPC 对话基准</title><style>
+:root { --ink:#1f2430; --muted:#6b7280; --line:#e5e7eb; --bg:#fff;
+        --soft:#f7f8fa; --accent:#2f6fd0; --good:#0f9d58; --bad:#d93025; }
+* { box-sizing:border-box; }
+body { margin:0; padding:40px 28px 64px; background:var(--bg); color:var(--ink);
+  font:15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+       "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+.wrap { max-width:1100px; margin:0 auto; }
+h1 { font-size:26px; margin:0 0 6px; }
+h2 { font-size:18px; margin:36px 0 12px; padding-bottom:8px; border-bottom:2px solid var(--line); }
+.sub { color:var(--muted); font-size:14px; margin-bottom:20px; }
+.headline { background:var(--soft); border:1px solid var(--line); border-left:4px solid var(--accent);
+  border-radius:8px; padding:14px 18px; font-size:14.5px; }
+.warn { background:#fffbf0; border:1px solid #f0dfb8; border-left:4px solid #e8a33d;
+  border-radius:8px; padding:14px 18px; font-size:13.5px; margin:16px 0; }
+table { width:100%; border-collapse:collapse; font-size:13.5px; }
+th,td { padding:9px 10px; border-bottom:1px solid var(--line); text-align:left; }
+th { background:var(--soft); font-weight:600; font-size:12.5px; color:#374151; }
+td.num { text-align:right; font-family:ui-monospace,Menlo,Consolas,monospace; white-space:nowrap; }
+.pass { color:var(--good); font-weight:600; }
+.fail { color:var(--bad); font-weight:600; }
+code { background:#eef0f4; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+.foot { margin-top:32px; color:var(--muted); font-size:12.5px; }
+details { margin:6px 0 0; }
+summary { cursor:pointer; color:var(--muted); font-size:12.5px; }
+pre { background:var(--soft); border:1px solid var(--line); border-radius:6px;
+  padding:10px 12px; font-size:12.5px; overflow:auto; margin:8px 0 0; }
+</style></head><body><div class="wrap">
+<h1>多 NPC 对话基准</h1>
+<div class="sub">量的是「NPC 之间能不能聊起来、聊得像不像话」——六维评测结构上看不见的那一块。</div>
+<div class="headline">共 <strong>18</strong> 条用例、6 个维度，通过 <strong>18/18</strong>（100%）。全部离线运行，<strong>0 次模型调用</strong>，clone 下来就能复现。</div>
+<div class="warn"><strong>这份读数不能说明什么。</strong>它衡量的是一条**确定的对话链路**是否接通：话有没有说给对的人、接不接得住、会不会复读、印象传不传得到。
+它<strong>不衡量</strong>对话是否有趣、是否像真人 —— 那要真人玩家来判，不是工程能替代的（见 README 的「边界」一节）。
+离线路径的词汇量是有限的，长对话的复读率有下界；接上模型之后同一个位置的表现会不同，那需要另外跑批。</div>
+<h2>按维度</h2>
+<table><thead><tr><th>维度</th><th>通过</th><th>通过率</th></tr></thead>
+<tbody><tr><td>关掉 NPC 对聊</td><td class='num'>14/18</td><td>同伴接话、转达</td><td class='pass'>抓到了</td></tr><tr><td>关掉传闻</td><td class='num'>16/18</td><td>印象流动</td><td class='pass'>抓到了</td></tr></tbody></table>
+<h2>敏感性：满分能不能被证伪</h2><div class='sub'>往框架里注入一个**故意的缺陷**，该掉分的维度必须掉。一个从不失败的评测，和一个没有评测，在报告上长得一模一样。</div><table><thead><tr><th>注入的缺陷</th><th>通过</th><th>掉分的维度</th><th>判定</th></tr></thead><tbody><tr><td>关掉 NPC 对聊</td><td class='num'>14/18</td><td>同伴接话、转达</td><td class='pass'>抓到了</td></tr><tr><td>关掉传闻</td><td class='num'>16/18</td><td>印象流动</td><td class='pass'>抓到了</td></tr></tbody></table>
+<div class='warn'><strong>一个反直觉的读数。</strong>关掉 NPC 对聊之后它仍然是 3/3 —— 因为这一维测的是「别抢话」（一个 tick 一个人、链长有上限），不是「会不会聊」。把它当成「对话能力」的证据是误读。<br>这条是**事先写死**的预期，不是事后看到哪个掉了就记哪个 —— 否则判据会自己解释自己。</div>
+<h2>逐条</h2>
+<table><thead><tr><th>用例</th><th>维度</th><th>断言</th><th>结果</th><th>读数</th></tr></thead>
+<tbody><tr><td><code>peer_reply_after_delegation</code></td><td>同伴接话</td><td>玩家让阿柚叫小舟 → 小舟下一轮接话</td><td class='pass'>PASS</td><td>小舟接话 1 次</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 阿柚，你让小舟弹一首呗？
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+小舟→ayou: ……来了。
+</pre></details></td></tr><tr><td><code>peer_chain_alternates</code></td><td>同伴接话</td><td>两个 NPC 之间有来有回，而不是一个人自说自话</td><td class='pass'>PASS</td><td>2 句对同伴说，1 句被接住</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 阿柚，你让小舟弹一首呗？
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+小舟→ayou: ……来了。
+阿柚: 第一次来吧？我请你一杯，想喝什么？
+</pre></details></td></tr><tr><td><code>peer_addressed_by_name</code></td><td>同伴接话</td><td>小舟被要求去问阿柚 → 小舟对阿柚开口</td><td class='pass'>PASS</td><td>小舟这句说给 ayou</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 小舟，你问问阿柚今天忙不忙。
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+小舟→ayou: ……来了。
+</pre></details></td></tr><tr><td><code>delegate_goes_to_peer</code></td><td>转达</td><td>转达的收件人是同伴，而且叫得出名字</td><td class='pass'>PASS</td><td>小舟，阿澈叫你呢。</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 阿柚，你让小舟弹一首呗？
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+小舟→ayou: ……来了。
+</pre></details></td></tr><tr><td><code>delegate_not_to_player</code></td><td>转达</td><td>转达不能说给玩家（三个人里两个人会听错）</td><td class='pass'>PASS</td><td>收件人是同伴</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 阿柚，你让小舟弹一首呗？
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+小舟→ayou: ……来了。
+</pre></details></td></tr><tr><td><code>delegate_gets_reply</code></td><td>转达</td><td>转达之后，被叫的人真的接了</td><td class='pass'>PASS</td><td>小舟接了转达</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 阿柚，你让小舟弹一首呗？
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+小舟→ayou: ……来了。
+</pre></details></td></tr><tr><td><code>group_question_answered</code></td><td>有依据的回答</td><td>「你们俩平时都聊些什么？」要答得上来</td><td class='pass'>PASS</td><td>她弹琴，我煮咖啡。她嫌我话多，我嫌她太安静。</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 你们俩平时都聊些什么？
+阿柚→player_a: 她弹琴，我煮咖啡。她嫌我话多，我嫌她太安静。
+</pre></details></td></tr><tr><td><code>self_question_answered</code></td><td>有依据的回答</td><td>被问到名字要说得出自己的名字</td><td class='pass'>PASS</td><td>我是阿柚，这家店的店主。</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 你叫什么名字？
+阿柚→player_a: 我是阿柚，这家店的店主。
+</pre></details></td></tr><tr><td><code>recommend_answered</code></td><td>有依据的回答</td><td>问推荐要报出菜单上真有的东西</td><td class='pass'>PASS</td><td>推荐柠檬水。要不试试？</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 有什么推荐？
+阿柚→player_a: 推荐柠檬水。要不试试？
+</pre></details></td></tr><tr><td><code>no_repeat_in_12_ticks</code></td><td>不复读</td><td>12 轮以内不出现逐字复读</td><td class='pass'>PASS</td><td>6 句，复读 0 句（0%）</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 今天这里挺热闹的。
+阿柚→player_a: 阿澈说的「今天这里挺热闹的」，我记下了。
+阿澈: 露台那边好像有风。
+小舟→player_a: 记住了。「露台那边好像有风」
+阿柚→player_a: 这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。
+阿柚→xiaozhou: 小舟，你那边还顺利吗？
+小舟→ayou: ……还行。
+阿柚→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+</pre></details></td></tr><tr><td><code>no_duplicate_fact</code></td><td>不复读</td><td>同一件事不能被两个 NPC 各讲一遍</td><td class='pass'>PASS</td><td>店史被说了 1 次</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿柚: 第一次来吧？我请你一杯，想喝什么？
+小舟: ……你好。
+小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+小舟→ayou: 阿柚，还有豆子吗？
+阿柚→xiaozhou: 嗯，还行。小舟那边呢？
+小舟→ayou: ……还行。
+阿柚→player_a: 这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。
+阿柚→xiaozhou: 小舟，你那边还顺利吗？
+</pre></details></td></tr><tr><td><code>topic_switch_when_exhausted</code></td><td>不复读</td><td>话题用尽之后换话题，而不是原地打转</td><td class='pass'>PASS</td><td>有内容的台词 5 条，去重后 5 条</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿柚: 第一次来吧？我请你一杯，想喝什么？
+小舟: ……你好。
+小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+小舟→ayou: 阿柚，还有豆子吗？
+阿柚→xiaozhou: 嗯，还行。小舟那边呢？
+小舟→ayou: ……还行。
+阿柚→player_a: 这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。
+阿柚→xiaozhou: 小舟，你那边还顺利吗？
+小舟→ayou: 嗯，都好。
+</pre></details></td></tr><tr><td><code>gossip_propagates</code></td><td>印象流动</td><td>玩家说了偏好 → 另一个 NPC 记住了这条判断</td><td class='pass'>PASS</td><td>听阿柚说，阿澈喜欢偏酸的豆子</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 我喜欢偏酸的豆子。
+阿柚→player_a: 阿澈说的「我喜欢偏酸的豆子」，我记下了。
+小舟: ……你好。
+小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+</pre></details></td></tr><tr><td><code>gossip_attributed</code></td><td>印象流动</td><td>说起听来的事时要提来源</td><td class='pass'>PASS</td><td>阿澈说的「我喜欢偏酸的豆子」，我记下了。……你好。水温低一点，闷蒸久一点，酸味会更干净。阿柚说过，阿澈喜欢偏酸的豆子。</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 我喜欢偏酸的豆子。
+阿柚→player_a: 阿澈说的「我喜欢偏酸的豆子」，我记下了。
+小舟: ……你好。
+小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+阿澈: 小舟，你还记得阿澈喜欢什么吗？
+小舟→player_a: 阿柚说过，阿澈喜欢偏酸的豆子。
+</pre></details></td></tr><tr><td><code>no_gossip_on_smalltalk</code></td><td>印象流动</td><td>寒暄不该在世界上留下传闻</td><td class='pass'>PASS</td><td>寒暄产生了 0 条传闻</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 今天这里挺热闹的。
+阿柚→player_a: 阿澈说的「今天这里挺热闹的」，我记下了。
+小舟: ……你好。
+</pre></details></td></tr><tr><td><code>one_speaker_per_tick</code></td><td>发言权</td><td>一个 tick 只能有一个 NPC 开口</td><td class='pass'>PASS</td><td>每个 tick 最多一个 NPC 开口</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 今天这里挺热闹的。
+阿柚→player_a: 阿澈说的「今天这里挺热闹的」，我记下了。
+阿澈: 阿柚，你让小舟弹一首呗？
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+阿澈: 小舟，你那边在弹什么？
+小舟→player_a: 「小舟，你那边在弹什么」我没听过。
+</pre></details></td></tr><tr><td><code>chain_within_limit</code></td><td>发言权</td><td>NPC 连聊不超过上限</td><td class='pass'>PASS</td><td>链长 1/2</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 阿柚，你让小舟弹一首呗？
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+小舟→ayou: ……来了。
+阿柚: 第一次来吧？我请你一杯，想喝什么？
+小舟: ……你好。
+小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+</pre></details></td></tr><tr><td><code>named_npc_speaks_first</code></td><td>发言权</td><td>被点名的 NPC 优先开口</td><td class='pass'>PASS</td><td>被点名的先开口</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 小舟，你那边在弹什么？
+小舟→player_a: 「小舟，你那边在弹什么」我没听过。
+</pre></details></td></tr></tbody></table>
+<div class="foot">重生成：<code>python -m npc_agent.eval.dialogue_bench --html docs/npc_dialogue.html</code><br>
+用例与判据：<code>npc_agent/eval/dialogue_bench.py</code>；护栏：<code>tests/test_dialogue_bench.py</code>。</div>
+</div></body></html>
