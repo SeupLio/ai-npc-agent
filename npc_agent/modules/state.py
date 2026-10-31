@@ -102,6 +102,10 @@ class StateTracker:
         for pid, value in affinity.items():
             if pid in self.players:
                 self.players[pid].affinity = value
+            elif pid in self.peers:
+                # 同伴之间也有好感（见 `Cast` 的传闻投递与转达）。
+                # 少了这一支，`_ask_peer` 的"按关系挑人"永远读到 50。
+                self.peers[pid].affinity = value
 
         # 离开视野的玩家**保留**画像：NPC 应该记得来过的人，只是标记为不同位置
         for pid, model in self.players.items():

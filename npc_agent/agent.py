@@ -1444,6 +1444,13 @@ class NPCAgent:
         peers = list(self.state.peers)
         if not peers:
             return False
+        # 按"关系"挑人，而不是按字典顺序。
+        #
+        # 字典顺序意味着阿柚永远先找小舟、小舟永远先找阿柚 ——
+        # 三个人的场景里第三个人永远没人搭话，而玩家看不出那是顺序问题，
+        # 只会觉得"那个人被孤立了"。
+        # 排序键：好感高的优先；同好感按 id 稳定排序（结果必须可复现）。
+        peers.sort(key=lambda pid: (-self.state.peers[pid].affinity, pid))
         target = None
         for pid in peers:
             point = ContentPoint("ask_peer", pid)

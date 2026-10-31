@@ -276,9 +276,17 @@ class StarIsleEnv(Environment):
             "objectives": self.objectives_status(),
             "activities": dict(self.activities),
             "affinity": {
+                # 不只是玩家：**同伴之间也有好感**。
+                # `_ask_peer` 要按关系挑人（三个人在场时，总是问同一个人
+                # 会让第三个人像被孤立），所以这里把所有角色都算进来。
+                # 读的人自己按 kind 分流（见 `StateTracker.update_from_env`）。
+                #
+                # ⚠️ 循环变量**不能**叫 `actor` —— 它会遮住外层的"正在观察的
+                # 那个角色"，于是 `actor.affinity_to(pid)` 变成"每个人对自己的好感"，
+                # 全是 50，而且不报错。
                 pid: actor.affinity_to(pid)
-                for pid, a in self.actors.items()
-                if a.kind == "player"
+                for pid in self.actors
+                if pid != actor_id
             },
         }
 

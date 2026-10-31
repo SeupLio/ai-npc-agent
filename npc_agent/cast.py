@@ -423,6 +423,8 @@ class Cast:
                     importance=min(0.7, fact.importance),
                     subject=fact.subject,
                 )
+                # 听到同伴的分享，关系近一点（单向：听的人对说的人）。
+                self._bump_affinity(pid, fact.source_id, 1)
 
     # ------------------------------------------------------------------ #
     # 同伴轮的出场顺序
@@ -503,6 +505,19 @@ class Cast:
             tick=spoken.tick,
             reason=f"{spoken.speaker_name}点了{self.name_of(target)}",
         )
+        # 说上话，两个人的关系就近一点 —— 双向，但分量不同：
+        # 被点名的人得到的是"被惦记"，点名的人得到的是"我主动了"。
+        self._bump_affinity(spoken.speaker_id, target, 2)
+        self._bump_affinity(target, spoken.speaker_id, 1)
+
+    def _bump_affinity(self, actor_id: str, other_id: str, delta: int) -> None:
+        """调整角色之间的好感。**只对场上真实存在的角色生效** ——
+        配置里写错一个 id，静默失败比崩掉更难查，所以这里不报错但也不乱写。
+        """
+        actor = getattr(self.env, "actors", {}).get(actor_id)
+        if actor is None or other_id not in self.env.actors:
+            return
+        actor.bump_affinity(other_id, delta)
 
     def _advance_floor(self, order: list[str], tick: int) -> None:
         """把下一轮的话头交给"这一轮没轮上的人"。"""
