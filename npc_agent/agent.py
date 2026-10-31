@@ -88,6 +88,12 @@ CHRONICLE_HINTS = ("上次", "之前", "那次", "那次事", "刚才那", "吵"
 #: 8 条 ≈ 最近三四轮（每轮最多两句话），正好覆盖"玩家能听出来的重复"。
 SAID_WINDOW = 8
 
+#: 跨 NPC 回引冷却（tick）。见 `_avoid_spent_point`。
+#:
+#: 为什么是 4 而不是 10：太短挡不住"两个人轮流复读"，太长会让"记得你"
+#: 这件事在整段对话里只发生一次。4 轮 ≈ 玩家能听出重复的距离。
+RECALL_COOLDOWN = 4
+
 #: prompt 里最多列几条自己的近话。列太多会把注意力从玩家身上拉走。
 SAID_IN_PROMPT = 4
 
@@ -1319,6 +1325,19 @@ class NPCAgent:
         """
         if self.board is None:
             return intent
+        # 跨 NPC 回引冷却：同一个人的事，刚被别人回引过就先别提。
+        #
+        # 实测（读档后的第二次进店）：阿柚刚说完"你之前提过你口味偏酸"，
+        # 下一轮小舟又说"你上次说过你口味偏酸" —— 两个人的记忆里各有一条
+        # （一条是亲耳听的，一条是听同伴说的），按记录 id 去重根本拦不住。
+        # 玩家的感受是"这两个人在轮流复读"。
+        #
+        # 口径是**关于同一个人**，不是"关于同一句话"：语义级去重要判两句话
+        # 是不是一件事，那需要另一套模型；冷却只需要一个时间窗。
+        if intent in ("recall", "heard_from") and utterance is not None:
+            guest = ContentPoint("recall_guest", utterance.speaker_id)
+            if self.board.ledger.is_recent(guest, self.state.tick, RECALL_COOLDOWN):
+                return "acknowledge"
         point = self._content_point(intent, utterance, recall_record)
         if point is None or not self.board.ledger.is_spent(point):
             return intent
@@ -1341,6 +1360,11 @@ class NPCAgent:
         point = self._content_point(intent, utterance, recall_record)
         if point is not None:
             self.board.ledger.mark(point, self.state.tick)
+        # 回引冷却的计时从"真的说出口"开始 —— 被拦下的那次不算。
+        if intent in ("recall", "heard_from") and utterance is not None:
+            self.board.ledger.mark(
+                ContentPoint("recall_guest", utterance.speaker_id), self.state.tick
+            )
 
     def _recent_intents(self, window: int = 2) -> list[str]:
         """最近说过的几句话分别用的什么意图。给"别连着用同一个"用。"""

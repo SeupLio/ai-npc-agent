@@ -95,6 +95,18 @@ class TopicLedger:
     def is_spent(self, point: ContentPoint) -> bool:
         return point in self._used
 
+    def is_recent(self, point: ContentPoint, now: int, window: int) -> bool:
+        """这个点是不是**最近**才说过（时间窗内）。
+
+        和 `is_spent` 的区别是"多久算说过"：
+        `is_spent` 是一局一次（讲过的店史不再讲），
+        `is_recent` 是冷却 —— 同一个人的事，别让两个 NPC 连着回引。
+        两者都要：只用 `is_spent` 的话，阿柚回引过之后小舟就永远不能
+        再提这个人；只用 `is_recent` 的话，隔十轮又能讲一遍店史。
+        """
+        tick = self._used.get(point)
+        return tick is not None and (now - tick) < window
+
     def spent_in(self, topic: str) -> set[str]:
         return set(self._by_topic.get(topic, ()))
 
