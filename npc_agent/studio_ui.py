@@ -160,8 +160,12 @@ footer{color:var(--dim);font-size:12px;padding:0 24px 32px}
         <div id="world"><div class="empty">—</div></div>
       </div>
       <div class="card">
-        <h3>记忆库<span class="hint">写进去的东西</span></h3>
+        <h3>记忆库<span class="hint">写进去的东西 · 关系 · 欠着的回答</span></h3>
         <div id="mems"><div class="empty">—</div></div>
+      </div>
+      <div class="card">
+        <h3>编年史<span class="hint">这个世界发生过什么 · 同伴好感</span></h3>
+        <div id="chronicle"><div class="empty">—</div></div>
       </div>
       <div class="card">
         <h3>发言统计<span class="hint">多 NPC 最该盯的数</span></h3>
@@ -458,14 +462,36 @@ function paint(d){
       (llmOn ? "" : "（模型未开启或不可用，不算回落）") + "</dd>" +
     "</dl>";
 
-  $("#mems").innerHTML = Object.entries(d.memories || {}).map(([name, m]) =>
-    "<div style='margin-bottom:8px'><b>" + esc(name) + "</b> " +
-    "<span class='pill'>episodic " + m.episodic + "</span>" +
-    "<span class='pill'>semantic " + m.semantic + "</span>" +
-    "<span class='pill'>reflection " + m.reflection + "</span>" +
-    "<span class='pill'>巩固 " + m.consolidated + "</span>" +
-    (m.recent || []).map((r) => "<div class='mem'>· " + esc(r) + "</div>").join("") + "</div>"
-  ).join("") || "<div class='empty'>—</div>";
+  $("#mems").innerHTML = Object.entries(d.memories || {}).map(([name, m]) => {
+    // 关系 / 称号 / 欠着的回答 —— 和记忆放同一块，因为它们是同一种东西：
+    // "这个 NPC 记得关于你的什么"。分开摆会让页面越滚越长，而没人看。
+    const bonds = Object.entries(m.bonds || {}).map(([who, b]) =>
+      "<span class='pill'>" + esc(who) + " · " + esc(b.stage) + " " + b.score +
+      (b.titles && b.titles.length ? " · " + esc(b.titles[b.titles.length - 1]) : "") +
+      "</span>").join("");
+    const debts = (m.debts || []).length
+      ? "<div class='mem'>欠着的回答：" + m.debts.map(esc).join(" / ") + "</div>" : "";
+    return "<div style='margin-bottom:8px'><b>" + esc(name) + "</b> " +
+      "<span class='pill'>episodic " + m.episodic + "</span>" +
+      "<span class='pill'>semantic " + m.semantic + "</span>" +
+      "<span class='pill'>reflection " + m.reflection + "</span>" +
+      "<span class='pill'>巩固 " + m.consolidated + "</span>" +
+      (bonds ? "<div class='mem'>" + bonds + "</div>" : "") +
+      debts +
+      (m.recent || []).map((r) => "<div class='mem'>· " + esc(r) + "</div>").join("") + "</div>";
+  }).join("") || "<div class='empty'>—</div>";
+
+  // 编年史与同伴好感：世界的状态，不属于任何一个 NPC。
+  const chron = (d.chronicle || []);
+  const peers = Object.entries(d.peer_affinity || {}).map(([name, row]) =>
+    "<dt>" + esc(name) + "</dt><dd>" +
+    Object.entries(row).map(([who, v]) => esc(who) + " " + v).join("　") + "</dd>").join("");
+  if ($("#chronicle")) {
+    $("#chronicle").innerHTML =
+      (chron.length ? chron.map((e) => "<div class='mem'>· " + esc(e) + "</div>").join("")
+                    : "<div class='empty'>还没发生过什么</div>") +
+      (peers ? "<dl class='kv'>" + peers + "</dl>" : "");
+  }
 
   const sp = d.speech || {};
   $("#speech").innerHTML = "<dl class='kv'>" + Object.entries(sp).map(([name, n]) =>

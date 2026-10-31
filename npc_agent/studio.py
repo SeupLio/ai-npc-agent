@@ -226,13 +226,48 @@ def _memory_payload(cast: Cast, per_agent: int = 6) -> dict[str, Any]:
     for agent in cast.agents.values():
         stats = agent.memory.store.stats()
         records = list(getattr(agent.memory.store, "records", []))[-per_agent:]
+        # 关系、称号、欠着的回答：这些能力**必须在页面上看得见**。
+        # 只在引擎里成立的机制，调参的人不知道它有没有在动 ——
+        # 这个项目里"好感一直在算、没人读"就是这么躺了两轮的。
+        bonds = {
+            (agent.state.players.get(pid).name if agent.state.players.get(pid) else pid): {
+                "stage": bond.stage,
+                "score": bond.score,
+                "titles": list(bond.titles),
+            }
+            for pid, bond in agent.relationships.bonds.items()
+        }
         out[agent.persona.name] = {
             "episodic": stats.episodic,
             "semantic": stats.semantic,
             "reflection": stats.reflection,
             "consolidated": stats.consolidated,
             "recent": [f"[{r.kind}] {r.content}" for r in reversed(records)],
+            "bonds": bonds,
+            "debts": [d.text for d in agent.attention.debts],
         }
+    return out
+
+
+def _chronicle_payload(cast: Cast, limit: int = 5) -> list[str]:
+    """世界发生过的事。和"记忆"分开列：记忆是**某个人**记得的，
+    编年史是**这个世界**发生过的 —— 后者不该因为某个 NPC 失忆就消失。"""
+    return [f"t{e.tick} {e.text}" for e in list(getattr(cast, "events", []))[-limit:]]
+
+
+def _peer_affinity_payload(cast: Cast) -> dict[str, dict[str, int]]:
+    """NPC 之间互相的好感。页面上要能看见"谁跟谁更近"，
+    否则 `_ask_peer` 的排序规则是黑盒。"""
+    out: dict[str, dict[str, int]] = {}
+    for pid, agent in cast.agents.items():
+        row: dict[str, int] = {}
+        for other in cast.agents:
+            if other == pid:
+                continue
+            actor = getattr(cast.env, "actors", {}).get(pid)
+            if actor is not None and hasattr(actor, "affinity_to"):
+                row[cast.name_of(other)] = actor.affinity_to(other)
+        out[agent.persona.name] = row
     return out
 
 
@@ -322,6 +357,8 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
             "objectives": dict(snapshot.get("objectives") or {}),
         },
         "memories": _memory_payload(cast),
+        "chronicle": _chronicle_payload(cast),
+        "peer_affinity": _peer_affinity_payload(cast),
         "speech": {
             cast.name_of(pid): count
             for pid, count in (env.speech_counts() or {}).items()
