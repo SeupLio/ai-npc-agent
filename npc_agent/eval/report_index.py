@@ -89,7 +89,7 @@ REPORT_TITLES: dict[str, str] = {
     "repetition.html": "复读：只看单句的评测看不见的缺陷",
     "planner_batch.html": "规划修复 · 配对前后对比",
     "npc_dialogue.html": "多 NPC 对话基准（NPC 之间能不能聊起来）",
-    "living_world.html": "世界能力基准（设定 / 关系 / 动机 / 注意力）",
+    "living_world.html": "世界能力基准（设定 / 关系 / 动机 / 注意力 / 延续 / 三人同场）",
 }
 
 REPORT_ANSWERS: dict[str, str] = {
@@ -107,7 +107,8 @@ REPORT_ANSWERS: dict[str, str] = {
     "npc_dialogue.html": "同伴接话 / 转达 / 有依据的回答 / 不复读 / 印象流动 / 发言权"
     "六个维度，外加「注入缺陷必须掉分」的敏感性检验",
     "living_world.html": "世界像不像活的：设定说不错、回头客认得出、动机冲突有结果、"
-    "欠着的回答会补 —— 四个维度各 3 条，外加四个「掐掉能力必须掉分」的注入",
+    "欠着的回答会补，而且第三个人在场时这四条仍然成立 —— 六个维度共 17 条，"
+    "外加六个「掐掉能力必须掉分」的注入",
 }
 
 # 报告里嵌了**时长**（`0.18s` / `14s` / `1184s`），它天然每次都不一样。

@@ -73,12 +73,72 @@ def test_a_conflict_is_resolved_only_once():
     assert len(board.events) == 1
 
 
+def test_motives_without_a_resource_never_clash():
+    """没写资源的动机不参与裁定 —— 它不知道该跟谁抢。
+
+    按资源分组后，空字符串会成为一个"资源"，两个人各写一条空资源的
+    动机就会凭空产生事件。这条钉住那个边界。
+    """
+    board = MotiveBoard(
+        [
+            Motive("a", "ayou", "随便想想", "", intensity=90),
+            Motive("b", "xiaozhou", "也是随便想想", "", intensity=40),
+        ],
+        min_tick=0,
+    )
+    assert board.poll(1) == []
+
+
 def test_nothing_happens_before_the_min_tick():
     """开场就宣布"谁让步"，玩家还没坐稳，两个人已经吵完一架。"""
     board = MotiveBoard([Motive("a", "x", "p", "r", 40), Motive("b", "y", "q", "r", 70)], min_tick=3)
     assert board.poll(0) == []
     assert board.poll(2) == []
     assert len(board.poll(3)) == 1
+
+
+def test_three_owners_on_one_resource_get_one_event_not_three():
+    """三个人抢同一件事：裁定一次，赢家一个，另外两个人都在 `losers` 里。
+
+    按冲突对枚举会产出 3 条事件、2 句让步 —— 玩家看到的是
+    "这家店为同一件事吵了三次"。
+    """
+    board = MotiveBoard(
+        [
+            Motive("a", "ayou", "早点收摊", "营业时间", intensity=40),
+            Motive("b", "xiaozhou", "再唱一首", "营业时间", intensity=70),
+            Motive("c", "luo", "把琴调完", "营业时间", intensity=55),
+        ],
+        min_tick=0,
+    )
+    events = board.poll(1, {"ayou": "阿柚", "xiaozhou": "小舟", "luo": "洛"})
+    assert len(events) == 1
+    event = events[0]
+    assert event.winner == "xiaozhou"
+    # 代表是让步方里最强的那个（洛 55 > 阿柚 40）。
+    assert event.loser == "luo"
+    assert event.losers == ["luo", "ayou"]
+    assert "洛、阿柚让步" in event.text
+
+
+def test_two_motives_from_the_same_owner_count_as_one_vote():
+    """配置里给同一个人写了两条同一资源的动机，不能变成"他跟自己抢"。"""
+    board = MotiveBoard(
+        [
+            Motive("a1", "ayou", "早点收摊", "营业时间", intensity=40),
+            Motive("a2", "ayou", "把灯关了", "营业时间", intensity=90),
+            Motive("b", "xiaozhou", "再唱一首", "营业时间", intensity=70),
+        ],
+        min_tick=0,
+    )
+    events = board.poll(1, {"ayou": "阿柚", "xiaozhou": "小舟"})
+    assert len(events) == 1
+    # 同一个人的两条动机只投**最强**的那一票（90），所以阿柚赢、小舟让步。
+    # 如果不攒成一人一票，阿柚会同时出现在赢家和让步方里 —— 自己跟自己抢。
+    assert events[0].winner == "ayou"
+    assert events[0].losers == ["xiaozhou"], "同一个人被记成了两票"
+    assert "阿柚要「把灯关了」" in events[0].text
+    assert "早点收摊" not in events[0].text
 
 
 # --------------------------------------------------------------------------- #

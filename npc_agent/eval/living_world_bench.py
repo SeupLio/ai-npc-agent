@@ -4,11 +4,11 @@
 
     六维回归（235 条）      框架逻辑有没有坏（任务 / 工具 / 记忆 / 人设 / 安全 / 发言权）
     对话基准（18 条）        两个 NPC 之间能不能聊起来
-    世界能力基准（12 条）    世界本身有没有"设定、关系、动机、注意力"
+    世界能力基准（17 条）    世界本身有没有"设定、关系、动机、注意力"，以及三个人同场时还成不成立
 
 第三套补的是"活世界"里最像产品、也最难自动验证的那部分：
 NPC 会不会说错设定、记不记得你是回头客、有没有自己的动机、
-欠你的回答会不会补。
+欠你的回答会不会补 —— 以及**第三个人在场时，前四条是不是还成立**。
 
 ## 判据仍然只断言可观测的东西
 
@@ -46,6 +46,7 @@ DIMENSIONS = {
     "motives": "动机事件",
     "attention": "注意力",
     "persistence": "记忆延续",
+    "ensemble": "多 NPC 同场",
 }
 
 
@@ -292,6 +293,67 @@ def _check_chronicle_survives(cast: Cast) -> tuple[bool, str]:
     return (ok, f"读档后回答：{says or '（没人说话）'}")
 
 
+# -- ensemble ---------------------------------------------------------------- #
+_TRIO_SCRIPT = [
+    "阿柚，能给我来杯拿铁吗？",
+    "小舟，露台今天能唱歌吗？",
+    "洛，你也在这儿？",
+    "我口味偏酸，酸一点的都喜欢。",
+    "阿柚，你让小舟弹一首呗？",
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+]
+
+
+def _check_all_three_speak(cast: Cast) -> tuple[bool, str]:
+    """三个人各说一句。
+
+    这条是"多 NPC 是不是真的多"的**行为证据**：调度只排前两个时，
+    第三个 NPC 仍然会出现在状态、记忆、关系账本里，但玩家**从没见过他开口** ——
+    所有模块指标都正常，只有这一条会红。
+    """
+    spoke = {
+        u.speaker_id for u in cast.env.utterances if u.speaker_id in cast.agents
+    }
+    missing = [pid for pid in cast.npc_ids if pid not in spoke]
+    if missing:
+        return False, f"全程没开口：{missing}"
+    return True, f"{len(spoke)} 个人都开口了"
+
+
+def _check_trio_clash_once(cast: Cast) -> tuple[bool, str]:
+    """三个人抢同一件事 → **一条**事件，两个让步方，代表把让步说出口一次。
+
+    两个已知错误写法在这里会现形：
+
+    * 按冲突对裁定：三个人产生三条事件，世界像复读机；
+    * 让每个人都说一句让步：同一件事被宣布两次，玩家看到的是"谁都在让"，
+      反而看不出谁赢了。
+    """
+    if len(cast.events) != 1:
+        return False, f"同一件事裁定了 {len(cast.events)} 次"
+    event = cast.events[0]
+    if event.winner != "xiaozhou" or set(event.losers) != {"ayou", "luo"}:
+        return False, f"裁定结果不对：{event.winner} 赢，{event.losers} 让步"
+    winner_name = cast.agents[event.winner].persona.name
+    said = [
+        u.text
+        for u in cast.env.utterances
+        if u.speaker_id == event.loser and winner_name in u.text
+    ]
+    if len(said) != 1:
+        return False, f"代表让步方（{event.loser}）说了 {len(said)} 次让步"
+    return (
+        True,
+        f"{len(event.losers)} 人让步（{'、'.join(event.losers)}），"
+        f"{event.loser} 代表说出口 1 次",
+    )
+
+
 # --------------------------------------------------------------------------- #
 def cases() -> list[WorldCase]:
     return [
@@ -396,6 +458,22 @@ def cases() -> list[WorldCase]:
             "世界事件跨会话保留，而且能被说出来",
             _check_chronicle_survives,
         ),
+        WorldCase(
+            "trio_everyone_speaks",
+            "ensemble",
+            "三个人同场时，第三个人真的会开口（不是背景板）",
+            _check_all_three_speak,
+            script=_TRIO_SCRIPT,
+            scenario="trio",
+        ),
+        WorldCase(
+            "trio_clash_resolved_once",
+            "ensemble",
+            "三个人抢同一件事 → 一条事件、两个让步方、只由代表说一次",
+            _check_trio_clash_once,
+            script=_TRIO_SCRIPT,
+            scenario="trio",
+        ),
     ]
 
 
@@ -436,6 +514,17 @@ def _apply_disable(cast: Cast, module: str) -> Callable[[], None]:
         original = P.restore_agent
         P.restore_agent = lambda agent, data: None  # type: ignore[assignment]
         return lambda: setattr(P, "restore_agent", original)
+    elif module == "ensemble":
+        # 只排前两个：两个人时看不出任何异常，第三个人全程沉默。
+        # 这正是真实世界里容易犯的"按前 N-1 个写死"的调度错误。
+        # 必须**连点名都不理**（不能只是截断 `_order_for` 的结果）：
+        # 玩家点「洛」时洛会被排到第一，截断后仍然在名单里 —— 那就测不出来了。
+        only_two = list(cast.agents)[:2]
+        original = cast._order_for
+        cast._order_for = (  # type: ignore[method-assign]
+            lambda utterance, obligation=None: list(only_two)
+        )
+        return lambda: setattr(cast, "_order_for", original)
     return lambda: None
 
 
@@ -510,6 +599,7 @@ DEFECTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "掐掉动机裁定": ("motives", ("motives",)),
     "掐掉注意力记账": ("attention", ("attention",)),
     "读档时什么都不恢复": ("persistence", ("persistence",)),
+    "掐掉第三人调度": ("ensemble", ("ensemble",)),
 }
 
 

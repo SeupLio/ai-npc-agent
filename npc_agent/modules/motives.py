@@ -25,14 +25,14 @@
 
 ## 事件只发生一次
 
-`resolved` 记已经裁定过的冲突对。不记的话，每一轮都会重新裁定一次，
+`resolved` 记已经裁定过的**资源**。不记的话，每一轮都会重新裁定一次，
 NPC 会反复说"行，那就依你" —— 那是复读，不是涌现。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from dataclasses import dataclass, field
+from typing import Any, Iterable
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,8 @@ class WorldEvent:
     text: str
     winner: str
     loser: str
+    #: 所有让步方。三人以上时不止一个 —— `loser` 只是**代表**（让步方里最强的）。
+    losers: list[str] = field(default_factory=list)
     loser_line: str = ""
     #: 争的是什么（"营业时间"）。台词要说"上次为营业时间…"，
     #: 从 `text` 里抠字符串不如直接带一个字段。
@@ -92,8 +94,9 @@ class MotiveBoard:
         self.motives: list[Motive] = list(motives)
         #: 前几轮不裁定：开场就宣布"谁让步"会让世界显得很急。
         self.min_tick = min_tick
-        #: 已经裁定过的冲突对（用 owner 排序后的元组当键）。
-        self.resolved: set[tuple[str, str, str]] = set()
+        #: 已经裁定过的**资源**。一个资源裁定一次，不按冲突对枚举 ——
+        #: 三个人抢同一件事不该产生三条事件（见 `poll`）。
+        self.resolved: set[str] = set()
         self.events: list[WorldEvent] = []
 
     # ------------------------------------------------------------------ #
@@ -134,46 +137,69 @@ class MotiveBoard:
         return (a, b) if a.intensity > b.intensity else (b, a)
 
     def poll(self, tick: int, names: dict[str, str] | None = None) -> list[WorldEvent]:
-        """这一轮该发生的事件。同一对冲突只裁定一次。
+        """这一轮该发生的事件。**每个资源只裁定一次**。
 
         `names` 是 owner id → 显示名。事件文本会被印进控制台和报告，
         里面出现 `xiaozhou要…` 这种内部 id，读的人得先去查配置才知道是谁。
+
+        ## ⚠️ 为什么按资源分组，而不是按"冲突对"
+
+        第一版是两层循环枚举所有 (a, b) 对。两人场景看不出问题，
+        三人场景立刻炸：三个人抢同一个"营业时间"，会产出
+        **3 条事件、2 句让步台词**（实测 trio 场景 t3 一口气三条）。
+        玩家看到的是"这个店为同一件事吵了三次"。
+
+        正确的语义是"一件事裁定一次，赢家一个，其余人都让步"，
+        所以这里按资源分组，只发一条事件，`losers` 记全部让步方，
+        `loser` 记**让步方里最强的那个**（由他代表说那句台词）。
         """
         if tick < self.min_tick:
             return []
         shown = names or {}
         fresh: list[WorldEvent] = []
-        for a, b in self.conflicts():
-            key = tuple(sorted((a.owner, b.owner))) + (a.resource,)
-            if key in self.resolved:
+        grouped: dict[str, list[Motive]] = {}
+        for motive in self.motives:
+            grouped.setdefault(motive.resource, []).append(motive)
+
+        for resource, group in grouped.items():
+            # 没有资源的动机不参与裁定：它不知道该跟谁抢。
+            if not resource or resource in self.resolved:
                 continue
-            self.resolved.add(key)
-            winner, loser = self.resolve(a, b)
+            # 一个 owner 在同一资源上只算一票（取它最强的那个动机）。
+            # 配置里手滑写两条，下面的事件会变成「阿柚要A，阿柚要B，阿柚让步」——
+            # 不报错，但那是一句没人看得懂的话。
+            best: dict[str, Motive] = {}
+            for motive in group:
+                current = best.get(motive.owner)
+                if current is None or motive.intensity > current.intensity:
+                    best[motive.owner] = motive
+            if len(best) < 2:
+                continue
+            self.resolved.add(resource)
+            # 强度高的赢；同强度按 id 稳定排序 —— 结果必须可复现，
+            # 否则同一段对话重放会得到不同的故事，评测就没法比。
+            ordered = sorted(best.values(), key=lambda m: (-m.intensity, m.id))
+            winner, loser = ordered[0], ordered[1]
+            losers = [m.owner for m in ordered[1:]]
             w_name = shown.get(winner.owner, winner.owner)
             l_name = shown.get(loser.owner, loser.owner)
             event = WorldEvent(
-                id=f"clash:{key[0]}:{key[1]}:{a.resource}",
+                id=f"clash:{resource}",
                 tick=tick,
                 kind="动机冲突",
                 text=(
                     f"{w_name}要「{winner.want}」，{l_name}要「{loser.want}」，"
-                    f"{l_name}让步"
+                    f"{'、'.join(shown.get(o, o) for o in losers)}让步"
                 ),
                 winner=winner.owner,
                 loser=loser.owner,
+                losers=losers,
                 loser_line=loser.yield_line,
-                resource=a.resource,
+                resource=resource,
             )
             self.events.append(event)
             fresh.append(event)
         return fresh
-
-    def pending_for(self, actor_id: str) -> Optional[WorldEvent]:
-        """这个人有没有"还没说出口"的让步。"""
-        for event in reversed(self.events):
-            if event.loser == actor_id and not event.spoken and event.loser_line:
-                return event
-        return None
 
     def render(self) -> str:
         if not self.motives:

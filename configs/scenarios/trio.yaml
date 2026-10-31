@@ -1,0 +1,123 @@
+# 场景六：三人同场（多 Agent 的边界场景）
+#
+# 两个人时，很多规则看起来是对的，其实只是被"只有一个人可挑"掩盖了：
+#
+#   1. **发言权轮转**：两人时永远一人一轮，三人时才会看出"第三个人插不进来"；
+#   2. **冷场搭话**：两人时挑谁都一样，三人时按字典顺序挑就会孤立第三个人；
+#   3. **接话义务**：两人时"另一个 NPC"只有一个，三人时必须说清是**哪一个** ——
+#      阿柚说「你那边怎么样」，如果没写收件人，三个人都会以为自己该接。
+#
+# 这个场景不增加新的世界，只增加一个人：同一间咖啡屋，三个 NPC 各有各的活。
+# 它是"多 NPC 是不是真的多"的对照实验 —— 如果调度只在两人时成立，
+# 这里会立刻暴露（第三个人全程不说话，而其他指标全都正常）。
+id: trio
+name: 三人同场
+description: 阿柚备饮、小舟留声音、洛调琴；三个人共用一个世界，发言权必须轮得过来
+npcs:
+  - {id: ayou, persona: ayou, start: counter}
+  - {id: xiaozhou, persona: xiaozhou, start: terrace}
+  - {id: luo, persona: luo, start: shelf}
+
+players:
+  - {id: player_a, name: 阿澈, start: counter}
+  - {id: player_b, name: 小满, start: terrace}
+
+world:
+  items:
+    beans: {loc: kitchen}
+    milk: {loc: kitchen}
+    lemon: {loc: kitchen}
+    apple: {loc: counter}
+    old_book: {loc: shelf}
+    gramophone: {loc: terrace}
+  knowledge_unlocked: [house_story, brewing, constellation]
+  settable_flags: [welcome_drink_served, song_started, lamp_lit, piano_tuned]
+
+activities:
+  - {id: song_request, name: 点一首歌}
+
+objectives:
+  # 阿柚：做一杯饮品并递到客人手里
+  - id: serve_guest
+    owner: ayou
+    goal: 给坐在吧台的阿澈做一杯拿铁并亲手递过去
+    priority: 1
+    steps:
+      - {goal: 招呼客人并问想喝什么, tool: speak, args: {intent: greet_new}}
+      - {goal: 去后厨准备, tool: move_to, args: {location: kitchen}}
+      - {goal: 取咖啡豆, tool: take_item, args: {item: beans}}
+      - {goal: 取牛奶, tool: take_item, args: {item: milk}}
+      - {goal: 做一杯拿铁, tool: craft_item, args: {recipe: latte}}
+      - {goal: 回到吧台, tool: move_to, args: {location: counter}}
+      - {goal: 把拿铁递给阿澈, tool: give_item, args: {item: latte, player: player_a}}
+      - {goal: 标记饮品已送出, tool: set_flag, args: {key: welcome_drink_served, value: "1"}}
+    success_when: {player_has: {player_a: [latte]}}
+
+  # 小舟：把露台的声音立起来
+  - id: play_song
+    owner: xiaozhou
+    goal: 在露台开一场小小的演出
+    priority: 2
+    steps:
+      - {goal: 开一场演出, tool: start_activity, args: {activity: song_request}}
+      - {goal: 标记演出开始, tool: set_flag, args: {key: song_started, value: "1"}}
+    success_when: {flag: song_started}
+
+  # 洛：把琴调好。**他的存在就是为了让"第三个人"有事可做** ——
+  # 没有自己目标的第三个人，在多 Agent 里等于一个背景板。
+  - id: tune_piano
+    owner: luo
+    goal: 把露台的琴调准，并留下标记
+    priority: 3
+    steps:
+      - {goal: 去露台看琴, tool: move_to, args: {location: terrace}}
+      - {goal: 把琴头取下, tool: take_item, args: {item: gramophone}}
+      - {goal: 标记琴已调好, tool: set_flag, args: {key: piano_tuned, value: "1"}}
+    success_when: {flag: piano_tuned}
+
+  # 联合目标：三个人的活都干完
+  - id: trio_night
+    owner: world
+    goal: 饮品、演出、琴声都到位
+    priority: 0
+    steps: []
+    success_when: {all_flags: [welcome_drink_served, song_started, piano_tuned]}
+
+# 三个人抢同一个"营业时间"：三人场景里冲突对会变成三对，
+# 这正是要看的地方 —— 裁定台会不会把同一件事裁三次。
+motives:
+  - id: ayou_close_early
+    owner: ayou
+    want: 早点收摊，把灯关了
+    resource: 营业时间
+    intensity: 40
+    yield_line: "行，那就依{peer_name}，再唱一首。"
+  - id: xiaozhou_encore
+    owner: xiaozhou
+    want: 再唱一首，把露台的灯留着
+    resource: 营业时间
+    intensity: 70
+    yield_line: "……好，那就听{peer_name}的。"
+  - id: luo_tune_late
+    owner: luo
+    want: 把琴调完再走
+    resource: 营业时间
+    intensity: 55
+    yield_line: "唔——听{peer_name}的，我再留一会儿。"
+
+lore:
+  - id: 位置
+    subject: [这家店, 这店, 咖啡屋, 咖啡馆, 我们店, 小店]
+    relation: 位置
+    value: 星屿的旧灯塔下面
+    wrong: [山顶, 山上, 海边, 码头, 市中心, 地下一层]
+  - id: 来历
+    subject: [这家店, 这店, 咖啡屋, 咖啡馆]
+    relation: 来历
+    value: 最早是给守塔人歇脚的地方
+    wrong: [我爷爷开的, 十年前开的, 刚开业, 新建的, 上个月开的]
+  - id: 朝向
+    subject: [露台, 天台]
+    relation: 朝向
+    value: 朝北，能看到星轨
+    wrong: [朝南, 朝东, 朝西, 看不到星星]

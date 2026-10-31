@@ -31,14 +31,14 @@ pre { background:var(--soft); border:1px solid var(--line); border-radius:6px;
 </style></head><body><div class="wrap">
 <h1>世界能力基准</h1>
 <div class="sub">量"这个世界像不像活的"：设定会不会说错、记不记得你是回头客、有没有自己的动机、欠你的回答会不会补。</div>
-<div class="headline">共 <strong>15</strong> 条用例、5 个维度，通过 <strong>15/15</strong>（100%）。全部离线运行，<strong>0 次模型调用</strong>。</div>
+<div class="headline">共 <strong>17</strong> 条用例、6 个维度，通过 <strong>17/17</strong>（100%）。全部离线运行，<strong>0 次模型调用</strong>。</div>
 <div class="warn"><strong>这份读数不能说明什么。</strong>它只断言**可观测的行为**：动作被拒绝、事件被产生、台词说出口。
 它不衡量"世界好不好玩"——那要真人玩家来判。另外动机强度是**配置里的产品判断**，不是 AI 自己算出来的欲望；
 这一条在报告里必须说清楚，否则会被读成"NPC 有自主意识"。</div>
 <h2>按维度</h2>
 <table><thead><tr><th>维度</th><th>通过</th><th>通过率</th></tr></thead>
-<tbody><tr><td>世界观一致性</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr><tr><td>关系与称号</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr><tr><td>动机事件</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr><tr><td>注意力</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr><tr><td>记忆延续</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr></tbody></table>
-<h2>敏感性：满分能不能被证伪</h2><div class='sub'>把某个能力**掐掉**，对应的维度必须掉分。一个从不失败的评测，和一个没有评测，在报告上长得一模一样。</div><table><thead><tr><th>掐掉的能力</th><th>通过</th><th>掉分的维度</th><th>判定</th></tr></thead><tbody><tr><td>掐掉设定书</td><td class='num'>13/15</td><td>世界观一致性</td><td class='pass'>抓到了</td></tr><tr><td>掐掉关系账本</td><td class='num'>13/15</td><td>关系与称号</td><td class='pass'>抓到了</td></tr><tr><td>掐掉动机裁定</td><td class='num'>12/15</td><td>动机事件</td><td class='pass'>抓到了</td></tr><tr><td>掐掉注意力记账</td><td class='num'>14/15</td><td>注意力</td><td class='pass'>抓到了</td></tr><tr><td>读档时什么都不恢复</td><td class='num'>13/15</td><td>记忆延续</td><td class='pass'>抓到了</td></tr></tbody></table>
+<tbody><tr><td>世界观一致性</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr><tr><td>关系与称号</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr><tr><td>动机事件</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr><tr><td>注意力</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr><tr><td>记忆延续</td><td class='num pass'>3/3</td><td class='num'>100%</td></tr><tr><td>多 NPC 同场</td><td class='num pass'>2/2</td><td class='num'>100%</td></tr></tbody></table>
+<h2>敏感性：满分能不能被证伪</h2><div class='sub'>把某个能力**掐掉**，对应的维度必须掉分。一个从不失败的评测，和一个没有评测，在报告上长得一模一样。</div><table><thead><tr><th>掐掉的能力</th><th>通过</th><th>掉分的维度</th><th>判定</th></tr></thead><tbody><tr><td>掐掉设定书</td><td class='num'>15/17</td><td>世界观一致性</td><td class='pass'>抓到了</td></tr><tr><td>掐掉关系账本</td><td class='num'>15/17</td><td>关系与称号</td><td class='pass'>抓到了</td></tr><tr><td>掐掉动机裁定</td><td class='num'>13/17</td><td>动机事件、多 NPC 同场</td><td class='pass'>抓到了</td></tr><tr><td>掐掉注意力记账</td><td class='num'>16/17</td><td>注意力</td><td class='pass'>抓到了</td></tr><tr><td>读档时什么都不恢复</td><td class='num'>15/17</td><td>记忆延续</td><td class='pass'>抓到了</td></tr><tr><td>掐掉第三人调度</td><td class='num'>15/17</td><td>多 NPC 同场</td><td class='pass'>抓到了</td></tr></tbody></table>
 <h2>逐条</h2>
 <table><thead><tr><th>用例</th><th>维度</th><th>断言</th><th>结果</th><th>读数</th></tr></thead>
 <tbody><tr><td><code>lore_blocks_contradiction</code></td><td>世界观一致性</td><td>说「店在山顶」被拦下，而且进不了世界</td><td class='pass'>PASS</td><td>台词与世界观冲突: 与设定冲突：这家店的位置不是「山顶」（原句：我们这家店开在山顶上，风大）</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>lore_allows_correct_fact</code></td><td>世界观一致性</td><td>正确设定照常放行（护栏不能把正常台词一起拦掉）</td><td class='pass'>PASS</td><td>正确设定被放行</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿柚: 这家店开在星屿的旧灯塔下面。
@@ -71,7 +71,35 @@ pre { background:var(--soft); border:1px solid var(--line); border-radius:6px;
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步
 </pre></details></td></tr><tr><td><code>answered_question_no_debt</code></td><td>注意力</td><td>答过的问题不留账</td><td class='pass'>PASS</td><td>还欠着 0 个回答</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 你叫什么名字？
 阿柚→player_a: 我是阿柚，这家店的店主。
-</pre></details></td></tr><tr><td><code>attention_ranking</code></td><td>注意力</td><td>两个人同时在场，问过问题的先被理</td><td class='pass'>PASS</td><td>排序 ['a', 'b']</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>relationship_survives_reload</code></td><td>记忆延续</td><td>好感与称号跨会话保留</td><td class='pass'>PASS</td><td>存档 面熟 → 读档 面熟</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>memory_survives_reload</code></td><td>记忆延续</td><td>读档后还记得玩家说过什么（tick 接不上的话这条会红）</td><td class='pass'>PASS</td><td>读档后回答：{'ayou': '对了，你之前提过你喜欢偏酸的豆子，是这个没错吧？'}</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>chronicle_survives_reload</code></td><td>记忆延续</td><td>世界事件跨会话保留，而且能被说出来</td><td class='pass'>PASS</td><td>读档后回答：{'ayou': '上次为营业时间，我让了一步。'}</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr></tbody></table>
+</pre></details></td></tr><tr><td><code>attention_ranking</code></td><td>注意力</td><td>两个人同时在场，问过问题的先被理</td><td class='pass'>PASS</td><td>排序 ['a', 'b']</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>relationship_survives_reload</code></td><td>记忆延续</td><td>好感与称号跨会话保留</td><td class='pass'>PASS</td><td>存档 面熟 → 读档 面熟</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>memory_survives_reload</code></td><td>记忆延续</td><td>读档后还记得玩家说过什么（tick 接不上的话这条会红）</td><td class='pass'>PASS</td><td>读档后回答：{'ayou': '对了，你之前提过你喜欢偏酸的豆子，是这个没错吧？'}</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>chronicle_survives_reload</code></td><td>记忆延续</td><td>世界事件跨会话保留，而且能被说出来</td><td class='pass'>PASS</td><td>读档后回答：{'ayou': '上次为营业时间，我让了一步。'}</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>trio_everyone_speaks</code></td><td>多 NPC 同场</td><td>三个人同场时，第三个人真的会开口（不是背景板）</td><td class='pass'>PASS</td><td>3 个人都开口了</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 阿柚，能给我来杯拿铁吗？
+阿柚: 好，稍等，我这就去弄。
+阿澈: 小舟，露台今天能唱歌吗？
+小舟→player_a: 露台朝北，天晴的时候能看到很清楚的星轨。
+阿澈: 洛，你也在这儿？
+洛→player_a: 「洛，你也在这儿」这个我说不准。
+阿澈: 我口味偏酸，酸一点的都喜欢。
+阿柚→player_a: 阿澈说的「我口味偏酸，酸一点的都喜欢」，我记下了。
+阿澈: 阿柚，你让小舟弹一首呗？
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+小舟→ayou: ……来了。
+洛: 唔——听小舟的，我再留一会儿。
+阿柚→player_a: 嗯——我听着呢，你接着说。
+[t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，洛要「把琴调完再走」，洛、阿柚让步
+</pre></details></td></tr><tr><td><code>trio_clash_resolved_once</code></td><td>多 NPC 同场</td><td>三个人抢同一件事 → 一条事件、两个让步方、只由代表说一次</td><td class='pass'>PASS</td><td>2 人让步（luo、ayou），luo 代表说出口 1 次</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 阿柚，能给我来杯拿铁吗？
+阿柚: 好，稍等，我这就去弄。
+阿澈: 小舟，露台今天能唱歌吗？
+小舟→player_a: 露台朝北，天晴的时候能看到很清楚的星轨。
+阿澈: 洛，你也在这儿？
+洛→player_a: 「洛，你也在这儿」这个我说不准。
+阿澈: 我口味偏酸，酸一点的都喜欢。
+阿柚→player_a: 阿澈说的「我口味偏酸，酸一点的都喜欢」，我记下了。
+阿澈: 阿柚，你让小舟弹一首呗？
+阿柚→xiaozhou: 小舟，阿澈叫你呢。
+小舟→ayou: ……来了。
+洛: 唔——听小舟的，我再留一会儿。
+阿柚→player_a: 嗯——我听着呢，你接着说。
+[t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，洛要「把琴调完再走」，洛、阿柚让步
+</pre></details></td></tr></tbody></table>
 <div class="foot">重生成：<code>python -m npc_agent.eval.living_world_bench --html docs/living_world.html</code><br>
 用例与判据：<code>npc_agent/eval/living_world_bench.py</code>；护栏：<code>tests/test_living_world_bench.py</code>。</div>
 </div></body></html>
