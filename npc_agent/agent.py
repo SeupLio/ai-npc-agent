@@ -630,7 +630,11 @@ class NPCAgent:
             self._respond(turn, ctx, memories, utterance, decision)
 
         if turn.say:
+            # 开口即结束冷场 —— 包括**自己主动开口**。从前只由
+            # `observe_utterance`（听别人说）清零，主动说过话的人计数仍挂在高位，
+            # 下一轮可能立刻再"冷场主动开口"一次。
             self.state.npc_utterances += 1
+            self.state.silence_ticks = 0
         self._track_attention(utterance, turn)
 
         # --- Reflection ---
@@ -1538,6 +1542,9 @@ class NPCAgent:
             return False
         turn.say = result.detail
         turn.addressed_to = target
+        # 记进"最近说过什么" —— 否则挂着的目标下一轮又会把开场白捡回来，
+        # 而中间那句搭话在去重逻辑里不存在。
+        self._bump_intent("ask_peer")
         if self.board is not None:
             self.board.ledger.mark(ContentPoint("ask_peer", target), self.state.tick)
         return True
@@ -1582,6 +1589,9 @@ class NPCAgent:
         turn.results.append(spoken)
         if spoken.ok:
             turn.say = spoken.detail
+            # 同 `_ask_peer`：这次开口也要占据去重窗口的一格，
+            # 不然它等于没发生过，目标台词还是会隔一轮原样回来。
+            self._bump_intent("proactive_share")
             if self.board is not None:
                 self.board.ledger.mark(ContentPoint("fact", topic), self.state.tick)
         return True

@@ -166,8 +166,20 @@ def _check_delegate_not_to_player(cast: Cast) -> tuple[bool, str]:
 
 
 def _check_delegate_gets_reply(cast: Cast) -> tuple[bool, str]:
+    """被转达的人要**对转达者**接话，不是"之后开过口"。
+
+    ⚠️ 判据原来只查 `xiaozhou 在 tick>=1 说过话`。关掉 NPC 对聊之后，
+    小舟会在冷场时自说自话（`……你好。`，addressed_to=None）——
+    整条用例照样通过，于是「关掉 NPC 对聊」这个缺陷只打掉了 `peer_turn`，
+    `delegation` 维度看起来毫发无伤。那测的是"后来有人说话"，
+    不是"转达被接住了"。
+    """
     reply = [
-        u for u in _npc_lines(cast) if u.speaker_id == "xiaozhou" and u.tick >= 1
+        u
+        for u in _npc_lines(cast)
+        if u.speaker_id == "xiaozhou"
+        and u.tick >= 1
+        and u.addressed_to == "ayou"
     ]
     return (bool(reply), "小舟接了转达" if reply else "转达之后没人接")
 

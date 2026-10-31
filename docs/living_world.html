@@ -42,44 +42,49 @@ pre { background:var(--soft); border:1px solid var(--line); border-radius:6px;
 <h2>逐条</h2>
 <table><thead><tr><th>用例</th><th>维度</th><th>断言</th><th>结果</th><th>读数</th></tr></thead>
 <tbody><tr><td><code>lore_blocks_contradiction</code></td><td>世界观一致性</td><td>说「店在山顶」被拦下，而且进不了世界</td><td class='pass'>PASS</td><td>台词与世界观冲突: 与设定冲突：这家店的位置不是「山顶」（原句：我们这家店开在山顶上，风大）</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>lore_allows_correct_fact</code></td><td>世界观一致性</td><td>正确设定照常放行（护栏不能把正常台词一起拦掉）</td><td class='pass'>PASS</td><td>正确设定被放行</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿柚: 这家店开在星屿的旧灯塔下面。
-</pre></details></td></tr><tr><td><code>lore_reaches_prompt</code></td><td>世界观一致性</td><td>设定书进提示词 —— 护栏事后拦，设定书事前减</td><td class='pass'>PASS</td><td>设定进了提示词</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>returning_guest_greeted</code></td><td>关系与称号</td><td>回头客不再被问「第一次来吧」</td><td class='pass'>PASS</td><td>又见面了，阿澈。老位置给你留着。</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿柚: 又见面了，阿澈。老位置给你留着。
+</pre></details></td></tr><tr><td><code>lore_reaches_prompt</code></td><td>世界观一致性</td><td>设定书进提示词 —— 护栏事后拦，设定书事前减</td><td class='pass'>PASS</td><td>设定进了提示词</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>returning_guest_greeted</code></td><td>关系与称号</td><td>回头客不再被问「第一次来吧」</td><td class='pass'>PASS</td><td>又见面了，阿澈。老位置给你留着。</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>小舟: ……你好。
+阿柚: 又见面了，阿澈。老位置给你留着。
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步
 </pre></details></td></tr><tr><td><code>title_announced</code></td><td>关系与称号</td><td>称号解锁后当面说出来</td><td class='pass'>PASS</td><td>从今天起，阿澈是这家店的熟面孔。</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 今天路过，进来坐坐。
 阿柚→player_a: 从今天起，阿澈是这家店的熟面孔。
+小舟: ……你好。
 </pre></details></td></tr><tr><td><code>stranger_has_no_title</code></td><td>关系与称号</td><td>第一次见面的人不该有称号</td><td class='pass'>PASS</td><td>生客没有称号</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 今天路过。
 阿柚→player_a: 阿澈说的「今天路过」，我记下了。
 小舟: ……你好。
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步
-</pre></details></td></tr><tr><td><code>motive_clash_happens</code></td><td>动机事件</td><td>两条动机争同一个资源 → 产生一次世界事件</td><td class='pass'>PASS</td><td>[t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿柚: 第一次来吧？我请你一杯，想喝什么？
-小舟: ……你好。
+</pre></details></td></tr><tr><td><code>motive_clash_happens</code></td><td>动机事件</td><td>两条动机争同一个资源 → 产生一次世界事件</td><td class='pass'>PASS</td><td>[t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>小舟: ……你好。
+阿柚: 第一次来吧？我请你一杯，想喝什么？
+小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步
-</pre></details></td></tr><tr><td><code>loser_yields_out_loud</code></td><td>动机事件</td><td>让步要说出口，玩家才看得见</td><td class='pass'>PASS</td><td>让步说出口了</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿柚: 第一次来吧？我请你一杯，想喝什么？
-小舟: ……你好。
+</pre></details></td></tr><tr><td><code>loser_yields_out_loud</code></td><td>动机事件</td><td>让步要说出口，玩家才看得见</td><td class='pass'>PASS</td><td>让步说出口了</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>小舟: ……你好。
+阿柚: 第一次来吧？我请你一杯，想喝什么？
+小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
 阿柚: 行，那就依小舟，再唱一首。
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步
-</pre></details></td></tr><tr><td><code>yield_only_once</code></td><td>动机事件</td><td>同一个让步只说一次（说两次就是复读）</td><td class='pass'>PASS</td><td>让步说了 1 次</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿柚: 第一次来吧？我请你一杯，想喝什么？
-小舟: ……你好。
+</pre></details></td></tr><tr><td><code>yield_only_once</code></td><td>动机事件</td><td>同一个让步只说一次（说两次就是复读）</td><td class='pass'>PASS</td><td>让步说了 1 次</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>小舟: ……你好。
+阿柚: 第一次来吧？我请你一杯，想喝什么？
+小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
 阿柚: 行，那就依小舟，再唱一首。
 阿柚→player_a: 这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。
-阿柚→xiaozhou: 小舟，你那边还顺利吗？
-小舟→ayou: ……还行。
-阿柚→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+小舟→player_a: 露台朝北，天晴的时候能看到很清楚的星轨。
+小舟→ayou: 阿柚，还有豆子吗？
+阿柚→xiaozhou: 嗯，还行。小舟那边呢？
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步
 </pre></details></td></tr><tr><td><code>unanswered_question_paid_back</code></td><td>注意力</td><td>没答上的问题，冷场时补答</td><td class='pass'>PASS</td><td>补答 1 次</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 这家店开了多久了？
+小舟: ……你好。
 阿柚→player_a: 这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。
-阿柚→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步
 </pre></details></td></tr><tr><td><code>answered_question_no_debt</code></td><td>注意力</td><td>答过的问题不留账</td><td class='pass'>PASS</td><td>还欠着 0 个回答</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 你叫什么名字？
 阿柚→player_a: 我是阿柚，这家店的店主。
 </pre></details></td></tr><tr><td><code>attention_ranking</code></td><td>注意力</td><td>两个人同时在场，问过问题的先被理</td><td class='pass'>PASS</td><td>排序 ['a', 'b']</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>relationship_survives_reload</code></td><td>记忆延续</td><td>好感与称号跨会话保留</td><td class='pass'>PASS</td><td>存档 面熟 → 读档 面熟</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>memory_survives_reload</code></td><td>记忆延续</td><td>读档后还记得玩家说过什么（tick 接不上的话这条会红）</td><td class='pass'>PASS</td><td>读档后回答：{'ayou': '对了，你之前提过你喜欢偏酸的豆子，是这个没错吧？'}</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>chronicle_survives_reload</code></td><td>记忆延续</td><td>世界事件跨会话保留，而且能被说出来</td><td class='pass'>PASS</td><td>读档后回答：{'ayou': '上次为营业时间，我让了一步。'}</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre></pre></details></td></tr><tr><td><code>gossip_degrades_and_inverts</code></td><td>记忆代谢</td><td>转述丢细节、带来源，而且确信度高于保真度</td><td class='pass'>PASS</td><td>听阿柚说，阿澈喜欢偏酸的豆子（1 跳，保真 57%，确信 95%）</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 我喜欢偏酸的豆子，越酸越好
 阿柚→player_a: 阿澈说的「我喜欢偏酸的豆子，越酸越好」，我记下了。
 小舟: ……你好。
-阿柚: 行，那就依小舟，再唱一首。
+小舟→player_b: 水温低一点，闷蒸久一点，酸味会更干净。
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步
 </pre></details></td></tr><tr><td><code>forgotten_detail_stays_vague</code></td><td>记忆代谢</td><td>细节忘掉之后，被追问只能说「记不清」，不能背出原文</td><td class='pass'>PASS</td><td>归档 2 条；回答：……记不清了。只记得你提过这件事。</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 我喜欢那个靠窗的位置
 阿柚→player_a: 阿澈说的「我喜欢那个靠窗的位置」，我记下了。
 小舟: ……你好。
-阿柚: 行，那就依小舟，再唱一首。
+小舟→player_b: 水温低一点，闷蒸久一点，酸味会更干净。
 阿澈: 小舟，你还记得我喜欢什么吗？
 小舟→player_a: ……记不清了。只记得你提过这件事。
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，阿柚要「早点收摊，把灯关了」，阿柚让步
@@ -104,6 +109,7 @@ pre { background:var(--soft); border:1px solid var(--line); border-radius:6px;
 小舟→ayou: ……来了。
 洛: 唔——听小舟的，我再留一会儿。
 阿柚→player_a: 嗯——我听着呢，你接着说。
+小舟→player_a: ……你继续。
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，洛要「把琴调完再走」，洛、阿柚让步
 </pre></details></td></tr><tr><td><code>trio_clash_resolved_once</code></td><td>多 NPC 同场</td><td>三个人抢同一件事 → 一条事件、两个让步方、只由代表说一次</td><td class='pass'>PASS</td><td>2 人让步（luo、ayou），luo 代表说出口 1 次</td></tr><tr><td colspan='5'><details><summary>对话记录 / 世界事件</summary><pre>阿澈: 阿柚，能给我来杯拿铁吗？
 阿柚: 好，稍等，我这就去弄。
@@ -118,6 +124,7 @@ pre { background:var(--soft); border:1px solid var(--line); border-radius:6px;
 小舟→ayou: ……来了。
 洛: 唔——听小舟的，我再留一会儿。
 阿柚→player_a: 嗯——我听着呢，你接着说。
+小舟→player_a: ……你继续。
 [t3] 动机冲突：小舟要「再唱一首，把露台的灯留着」，洛要「把琴调完再走」，洛、阿柚让步
 </pre></details></td></tr></tbody></table>
 <div class="foot">重生成：<code>python -m npc_agent.eval.living_world_bench --html docs/living_world.html</code><br>

@@ -253,6 +253,12 @@ class Cast:
 
         其余按 ``_next_first`` 起头轮转。这个游标不是简单的 round-robin：
         它指向**上一轮没轮上的人**，所以话多的 NPC 不会把安静的 NPC 饿死。
+
+        **冷场轮再按"说过几句话"排一次。** 轮转只记得上一轮谁没开口，
+        而冷场主动开口要攒够 N 轮 —— 中间只要有人说过一句，计数就清零。
+        实测（duet 的 `duet_named` 用例）：阿柚在第 1 轮回应玩家，
+        第 3 轮又轮到它冷场开口，小舟从头到尾没说过一个字。
+        活世界不该是"谁先开口谁一直开口"。
         """
         ids = self.order
         if len(ids) <= 1:
@@ -268,7 +274,13 @@ class Cast:
             return [first] + [pid for pid in ids if pid != first]
 
         start = ids.index(self._next_first) if self._next_first in ids else 0
-        return [ids[(start + i) % len(ids)] for i in range(len(ids))]
+        rotation = [ids[(start + i) % len(ids)] for i in range(len(ids))]
+        if utterance is None:
+            rank = {pid: index for index, pid in enumerate(rotation)}
+            rotation.sort(
+                key=lambda pid: (self.agents[pid].state.npc_utterances, rank[pid])
+            )
+        return rotation
 
     def _speakers_this_tick(self, tick: int) -> set[str]:
         """这一轮里真的开过口的 NPC。
@@ -346,10 +358,13 @@ class Cast:
                 # 对话层管"要不要新建发言计划"，工具层管"正在跑的计划里的 speak"。
                 other_npc_spoke_last=spoke,
                 allow_speech=allowed,
-                # 一个 tick 只让第一个人记一次冷场。否则"冷场 2 轮后主动开口"
-                # 会被同轮的多个人各加一次，提前触发。
+                # 冷场是**世界**的属性：这一轮没人开口，每个人都该记一轮。
+                # 曾经写成 `index == 0`（"同一轮只加一次"），但发言顺序是轮转的
+                # ⇒ 每个 NPC 每 N 轮才加一次，阈值 2 在 duet 要 3 轮、trio 要 4 轮
+                # 才触发，而界面上写着"冷场 2 轮"。已经有人开口就不再记
+                # （这一轮不是冷场）；开口的人稍后由自己清零（见 agent.step）。
                 # 同伴轮不算冷场 —— 有人正在说话。
-                count_silence=(index == 0 and not peer_turn),
+                count_silence=(not peer_turn and not spoke),
             )
             turns.append(turn)
 

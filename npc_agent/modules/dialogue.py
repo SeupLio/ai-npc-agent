@@ -233,8 +233,13 @@ class AddresseeSelector:
         ``used`` 是**最近说过的话分别用的意图**。目标没做完时，
         每个冷场轮都会重算一次同一个意图，于是同一句开场白被反复捡起来 ——
         实测（duet，10 轮）「你上次说过第一次来吧。」出现了 4 次。
-        有多个未完成目标时，优先挑一个**最近没说过的**；
-        只有一个目标时不硬换（换掉就不是"推进目标"了，而是跑题）。
+        有多个未完成目标时，优先挑一个**最近没说过的**。
+
+        如果**所有**候选都刚说过（例如只挂着一个目标），返回空串，
+        让调用方去分享知识点 / 找同伴。以前这里返回 `options[0]`，
+        理由是「只有一个目标时不硬换」，但实际效果是同一句台词逐字复读：
+        icebreaker 连续 8 轮冷场里「要不先互相报个名字」出现了 5 次。
+        跑题一轮，比把同一句话说五遍更像人。
         """
         pending = [
             k
@@ -267,7 +272,7 @@ class AddresseeSelector:
         for intent in options:
             if intent not in recent:
                 return intent
-        return options[0]
+        return ""
 
 
 class TurnManager:

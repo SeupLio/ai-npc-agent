@@ -308,6 +308,59 @@ def test_step_less_objective_is_not_treated_as_a_plan(duet):
 
 
 # --------------------------------------------------------------------------- #
+# 冷场：阈值数的是「世界的轮数」，不是「每个 NPC 轮到的次数」
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("scenario_id", ["duet", "trio"])
+def test_proactive_threshold_holds_for_the_whole_cast(scenario_id):
+    """连续 N 轮没人说话，到第 N 轮必须有人开口 —— 不管这轮谁先行动。
+
+    发言顺序是轮转的。从前 `Cast.step` 只让每轮**第一个** NPC 记冷场，
+    于是同一个 NPC 要等 N 圈才攒够 N 轮：duet 第 3 轮、trio 第 4 轮才开口，
+    而配置、命令行和自测控制台都写着「冷场 2 轮」。
+
+    这一条用 `Cast` 本身跑，不经过控制台 —— 控制台的提示只是把这个数
+    念出来，错的是被念的那个数。
+    """
+    cfg = RuntimeConfig()
+    cast = build_cast(load_scenario(scenario_id), build_llm("null"), cfg)
+    threshold = cfg.idle_ticks_before_proactive
+
+    said = [[t.say for t in cast.step(None) if t.say] for _ in range(threshold)]
+    assert not any(said[: threshold - 1]), (
+        f"{scenario_id}: 冷场还不到 {threshold} 轮就有人开口，阈值没被守住"
+    )
+    assert said[threshold - 1], (
+        f"{scenario_id}: 冷场到第 {threshold} 轮仍没人开口 —— "
+        "轮转把冷场计数摊薄了，界面上的提示会变成假话"
+    )
+
+
+def test_idle_proactive_lines_do_not_repeat_verbatim():
+    """没人说话时，NPC 不能把同一句开场白隔一轮捡回来。
+
+    实测（修复前，icebreaker 连续 8 轮空转）「要不先互相报个名字？」
+    出现在 5 个轮次里。原因是目标只挂着一个时，`pick_proactive_intent`
+    在"最近都用过"之后仍然返回同一个意图，而该意图只有一个模板。
+
+    这里用**正文自带的复读判据**数，不逐字比 —— 换了标点再说一遍也是复读。
+    """
+    from npc_agent.modules.repetition import find_repeats
+
+    cast = build_cast(load_scenario("icebreaker"), build_llm("null"), RuntimeConfig())
+    lines = []
+    for _ in range(10):
+        for turn in cast.step(None):
+            if turn.say:
+                lines.append((turn.actor_id, turn.say))
+
+    report = find_repeats(lines)
+    assert report.repeats == [], (
+        "冷场时同一句台词被反复捡起来："
+        + "；".join(f"第{i + 1}句撞第{j + 1}句（{sim:.2f}）{text}" for i, j, text, _prev, sim in report.repeats)
+    )
+
+
+# --------------------------------------------------------------------------- #
 # 评测维度：发言调度
 # --------------------------------------------------------------------------- #
 def test_turn_taking_flags_a_collision():
