@@ -35,6 +35,10 @@ def _cast():
     return build_cast(load_scenario("duet"), NullLLM(), RuntimeConfig())
 
 
+def _trio():
+    return build_cast(load_scenario("trio"), NullLLM(), RuntimeConfig())
+
+
 def _play(cast, ticks: int = 6) -> None:
     for _ in range(ticks):
         cast.step(None)
@@ -125,6 +129,57 @@ def test_the_relationship_survives(tmp_path: Path):
     assert fresh.agents["ayou"].relationships.title_for("player_a") == title
 
 
+def test_the_relationship_score_does_not_reset_after_the_first_step(tmp_path: Path):
+    """只存关系账本不够：账本每轮**从环境观察同步**，环境好感没存就会被打回 50。
+
+    这条是行为断言：读档后走一步，分数和称号必须同时成立。
+    以前只断言 stage 相等 —— 而 stage 只升不降，所以"分数回到 50"
+    在这个断言下是隐形的。实测：`bond 64 → 读档 64 → 走一步 50`。
+    """
+    cast = _cast()
+    cast.env.actors["ayou"].bump_affinity("player_a", 14)
+    _play(cast, 2)
+    saved = cast.agents["ayou"].relationships.bonds["player_a"].score
+    assert saved == 64, f"用例前提不成立：好感是 {saved}，不是 64"
+    save(cast, tmp_path / "s.json")
+
+    fresh = _cast()
+    load(fresh, tmp_path / "s.json")
+    fresh.step(None)
+    assert fresh.env.actors["ayou"].affinity_to("player_a") == saved
+    assert fresh.agents["ayou"].relationships.bonds["player_a"].score == saved
+
+
+def test_peer_affinity_survives(tmp_path: Path):
+    """NPC ↔ NPC 的好感不进关系账本，只在环境里 —— 它也要跨会话保留。"""
+    cast = _cast()
+    cast.env.actors["ayou"].bump_affinity("xiaozhou", 9)
+    save(cast, tmp_path / "s.json")
+
+    fresh = _cast()
+    load(fresh, tmp_path / "s.json")
+    fresh.step(None)
+    assert fresh.env.actors["ayou"].affinity_to("xiaozhou") == 59
+    assert fresh.agents["ayou"].state.peers["xiaozhou"].affinity == 59
+
+
+def test_an_old_save_without_affinity_rebuilds_the_player_score_from_bonds(tmp_path: Path):
+    """加字段不能把旧档变成"称号还在、分数掉了"的自相矛盾状态。"""
+    cast = _cast()
+    cast.env.actors["ayou"].bump_affinity("player_a", 8)
+    _play(cast, 2)
+    saved = cast.agents["ayou"].relationships.bonds["player_a"].score
+    path = save(cast, tmp_path / "s.json")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("affinity")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    fresh = _cast()
+    load(fresh, path)
+    fresh.step(None)
+    assert fresh.agents["ayou"].relationships.bonds["player_a"].score == saved
+
+
 def test_the_chronicle_survives_and_can_be_told(tmp_path: Path):
     cast = _cast()
     _play(cast, 6)
@@ -154,6 +209,22 @@ def test_a_pending_yield_is_not_replayed_after_loading(tmp_path: Path):
     _play(fresh, 3)
     lines = [u.text for u in fresh.env.utterances if "依小舟" in u.text]
     assert lines == [], f"读档之后重播了让步：{lines}"
+
+
+def test_a_three_way_clash_keeps_all_losers_in_the_chronicle(tmp_path: Path):
+    """三人抢同一资源的让步方不止一个 —— 存档不能只留下代表。"""
+    cast = _trio()
+    _play(cast, 8)
+    assert cast.events, "用例前提不成立：没有产生事件"
+    event = cast.events[0]
+    assert len(event.losers) == 2, f"三人冲突只记了 {event.losers}"
+    save(cast, tmp_path / "s.json")
+
+    fresh = _trio()
+    load(fresh, tmp_path / "s.json")
+    assert fresh.events[0].losers == event.losers
+    _play(fresh, 2)
+    assert len(fresh.events) == 1, "读档后同一个资源被二次裁定"
 
 
 # --------------------------------------------------------------------------- #

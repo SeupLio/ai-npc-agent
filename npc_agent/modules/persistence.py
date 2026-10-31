@@ -21,7 +21,8 @@ NPC 静默失忆，而且不报任何错。
 
 ## 存什么、不存什么
 
-存：每个 NPC 的记忆、关系档案、欠着的回答；世界层面的事件编年史；时钟。
+存：每个 NPC 的记忆、关系档案、欠着的回答；环境里角色之间的好感指向
+    （玩家好感 + 同伴好感）；世界层面的事件编年史；时钟。
 
 不存：这一局的具体转写、传闻网络（它是"这一局里谁说过什么"的公共事实，
       跨局保留会让新一局的 NPC 一开口就提上一局的事）、发言权状态。
@@ -29,6 +30,16 @@ NPC 静默失忆，而且不报任何错。
 判断标准是**"玩家下次回来，这件事还成立吗"**：
 好感成立，称号成立，"我欠你一个回答"也成立（他还没得到回答）；
 但"刚才小舟说了句什么"不成立。
+
+## 好感为什么要连环境那份一起存
+
+关系账本（`RelationshipBook`）不自己维护分数，它每轮从**环境观察**里同步
+（见 `relationship.py` 的"两边各存一份就会漂移"）。所以只存账本不存环境，
+读档后第一次同步就会把 64 分打回初始的 50 分 —— 称号还在，分数没了，
+而且不报错。这条实测过：`bond 64 → 读档 64 → 走一步 50`。
+
+同伴好感同理：它不进 `relationships`，只存在环境的 `Actor.affinity` 里。
+不存的话，三人的"谁跟谁更近"每重启一次就归零。
 """
 
 from __future__ import annotations
@@ -40,8 +51,13 @@ from typing import Any
 
 from ..types import MemoryRecord
 
-#: 存档格式版本。改结构就要 +1，并且**读旧档要明确报错**，
-#: 不能"尽量兼容" —— 半读进来的存档比读不进来更危险。
+#: 存档格式版本。**破坏性**结构变更（删字段 / 改字段语义）就要 +1，
+#: 并且读旧档明确报错 —— 半读进来的存档比读不进来更危险。
+#:
+#: 只**新增**可选字段（且读旧档有安全回退）不用 +1：旧档能完整读进来，
+#: 缺的那部分按"当时没记过"处理，不会读出一个自相矛盾的状态。
+#: 2026-10-31 新增 `affinity` / `events[].losers` 就是这种：旧档没有好感指向，
+#: 就用关系账本里的分数把玩家好感补回来（见 `_restore_affinity`）。
 SCHEMA_VERSION = 1
 
 
@@ -137,6 +153,13 @@ def snapshot(cast: Any) -> dict[str, Any]:
         "tick": int(getattr(cast.env, "tick", 0)),
         "rounds": int(getattr(cast, "rounds", 0)),
         "agents": {pid: snapshot_agent(agent) for pid, agent in cast.agents.items()},
+        # 环境里的好感指向：玩家好感 + 同伴好感。
+        # 只存非默认值（`Actor.affinity` 只记被改过的），文件更小，语义一样。
+        "affinity": {
+            pid: dict(actor.affinity)
+            for pid, actor in getattr(cast.env, "actors", {}).items()
+            if actor.affinity
+        },
         # 编年史：这一局发生过什么。跨局保留是**有意的** ——
         # "上次我们为营业时间争过一次"是玩家能感知到的连续性。
         "events": [
@@ -147,6 +170,8 @@ def snapshot(cast: Any) -> dict[str, Any]:
                 "text": e.text,
                 "winner": e.winner,
                 "loser": e.loser,
+                # 三人以上的冲突有多个让步方；`loser` 只是代表。
+                "losers": list(getattr(e, "losers", [])),
                 "resource": getattr(e, "resource", ""),
             }
             for e in getattr(cast, "events", [])
@@ -188,11 +213,44 @@ def load(cast: Any, path: str | Path) -> dict[str, Any]:
             continue
         restore_agent(agent, data)
 
+    # 环境好感要在关系账本恢复之后接上：旧档没有 `affinity` 时，
+    # 回退逻辑正是读账本里的分数。
+    _restore_affinity(cast, payload.get("affinity"))
+
     # 时钟接上：新一局从存档的下一格开始。
     cast.env.tick = int(payload.get("tick") or 0)
     cast.rounds = int(payload.get("rounds") or 0)
     _restore_events(cast, payload.get("events") or [])
     return payload
+
+
+def _restore_affinity(cast: Any, raw: Any) -> None:
+    """把存档里的好感指向灌回环境。
+
+    `raw is None`（旧档没有这一节）时退回关系账本：账本里的分数是
+    上一局结束时环境给它的值，把它写回环境，读档后的第一次同步才不会
+    把分数打回 50。同伴好感旧档没记过，只能从 50 开始 —— 这是可接受的，
+    因为它此前根本没进过存档。
+    """
+    actors = getattr(cast.env, "actors", {})
+    if raw is None:
+        for pid, agent in getattr(cast, "agents", {}).items():
+            actor = actors.get(pid)
+            if actor is None:
+                continue
+            for player_id, bond in agent.relationships.bonds.items():
+                if player_id in actors:
+                    actor.affinity[player_id] = max(0, min(100, int(bond.score)))
+        return
+
+    for pid, others in (raw or {}).items():
+        actor = actors.get(pid)
+        if actor is None or not isinstance(others, dict):
+            continue
+        for other_id, score in others.items():
+            # 场景换了、对方不在了：跳过，不把陌生 id 塞进环境。
+            if other_id in actors:
+                actor.affinity[other_id] = max(0, min(100, int(score)))
 
 
 def _restore_events(cast: Any, raw_events: list[dict[str, Any]]) -> None:
@@ -210,6 +268,12 @@ def _restore_events(cast: Any, raw_events: list[dict[str, Any]]) -> None:
             text=str(e.get("text") or ""),
             winner=str(e.get("winner") or ""),
             loser=str(e.get("loser") or ""),
+            # 旧档没有 `losers`：用代表让步方补一个，别留下
+            # 「事件说有人让步，losers 却是空的」这种自相矛盾。
+            losers=(
+                [str(x) for x in (e.get("losers") or [])]
+                or ([str(e["loser"])] if e.get("loser") else [])
+            ),
             resource=str(e.get("resource") or ""),
             # 上一局已经播报过的让步不再重播 —— 那是复读。
             spoken=True,
@@ -217,15 +281,16 @@ def _restore_events(cast: Any, raw_events: list[dict[str, Any]]) -> None:
         for e in raw_events
     ]
 
-    # ⚠️ 还要把"这对冲突已经裁定过"告诉裁定台。
+    # ⚠️ 还要把"这件事已经裁定过"告诉裁定台。
     # 只恢复事件、不恢复 `resolved`，下一轮 `poll` 会认为冲突还没解决，
     # 于是**再裁定一次**，让步方把同一句话说第二遍（实测：读档后
     # 「行，那就依小舟，再唱一首。」又说了一次）。
+    # 键是**资源**，不是冲突对 —— 见 `MotiveBoard.poll` 的注释。
     board = getattr(cast, "motives", None)
     if board is not None:
         for event in cast.events:
-            key = tuple(sorted((event.winner, event.loser))) + (event.resource,)
-            board.resolved.add(key)
+            if event.resource:
+                board.resolved.add(event.resource)
 
 
 __all__ = [
