@@ -74,6 +74,13 @@ RECOMMEND_QUERY = re.compile(r"(有什么推荐|推荐一下|推荐什么|有什
 #: 记忆里出现这些词，说明是值得当面回引的偏好类信息
 RECALL_HINTS = ("喜欢", "讨厌", "习惯", "常来", "第一次", "答应", "约定")
 
+#: 玩家问"上次那件事"时会用的词。见 `_chronicle_match`。
+#:
+#: 为什么单列一组而不是复用 `RECALL_HINTS`：那一组问的是"关于我这个人"，
+#: 这一组问的是"这个世界发生过什么"。混在一起，玩家问"我上次说过什么"
+#: 会被答成"上次为营业时间吵过一架"。
+CHRONICLE_HINTS = ("上次", "之前", "那次", "那次事", "刚才那", "吵", "争", "让步")
+
 #: 记多少条自己说过的话。查重与 prompt 都读它。
 #:
 #: 为什么不留全部：`said` 越长，"和很久以前那句撞了"就越容易误判 ——
@@ -361,6 +368,8 @@ class NPCAgent:
         self.gossip: Optional[GossipNetwork] = None
         #: 导演刚裁定完、该由我宣布的让步事件（`modules/motives.py`）。
         self.pending_motive: Any = None
+        #: 世界编年史（`Cast.events` 的引用）。导演注入；空列表表示还没发生过事。
+        self.chronicle: list[Any] = []
         #: 成本与循环管控。**每个 NPC 各一份** —— 预算是"这个 Agent 花了多少"，
         #: 不是"整个剧组花了多少"；共享一份会让一个话多的 NPC 把别人的额度吃光。
         self.budget = TurnBudget(
@@ -1162,6 +1171,14 @@ class NPCAgent:
             if self._direct_answer(utterance):
                 # 能直接答（问到自己 / 问到同伴 / 知识库对得上）→ 真的答
                 intent = "answer_question"
+            elif (event := self._chronicle_match(utterance.text)) is not None:
+                # 玩家在问"上次那件事"。编年史里真有这件事，就说这件事 ——
+                # 这比"我记不清了"强得多，而且它是**跨会话**的：
+                # 存档里存着事件，第二天回来问还能答上。
+                intent = (
+                    "recall_event_win" if event.winner == self.id else "recall_event_lose"
+                )
+                extra_slots = {"resource": event.resource or event.kind}
             else:
                 recall_record = self._next_recallable(memories, self.state.tick, utterance)
                 if recall_record is not None:
@@ -1366,6 +1383,31 @@ class NPCAgent:
             role="player",
             is_question=True,
         )
+
+    def _chronicle_block(self, limit: int = 3) -> str:
+        """拼进 prompt 的编年史：这个店里发生过什么。
+
+        只给最近几条：编年史是"共同经历"，不是流水账。给多了模型会
+        在不相干的回答里引用它（"你问天气？对了上次我们吵过一架"）。
+        """
+        if not self.chronicle:
+            return ""
+        lines = [f"  - t{e.tick}：{e.text}" for e in self.chronicle[-limit:]]
+        return "【这里发生过的事】（被问到再提，别主动翻旧账）\n" + "\n".join(lines)
+
+    def _chronicle_match(self, text: str) -> Any:
+        """这句话是不是在问"上次那件事"。是就返回那件事，否则 None。
+
+        判据是**提问词 + 事件存在**两件事同时成立：
+        只有提问词（"上次那个豆子"）不该扯到动机冲突上；
+        只有事件、没有提问（"今天挺热闹"）更不该主动提旧账 ——
+        那会变成 NPC 逢人就说"上次我们吵过一架"。
+        """
+        if not self.chronicle:
+            return None
+        if not any(word in (text or "") for word in CHRONICLE_HINTS):
+            return None
+        return self.chronicle[-1]
 
     def _track_attention(
         self, utterance: Optional[Utterance], turn: AgentTurn
@@ -1651,6 +1693,8 @@ class NPCAgent:
 {self.lore.canon_block() or "（这个场景没有额外设定）"}
 
 {self.relationships.bond_block()}
+
+{self._chronicle_block()}
 
 【现场】
 {self.state.scene_block()}

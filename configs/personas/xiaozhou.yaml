@@ -115,3 +115,7 @@ utterance_templates:
     - "记住这个：{title}。{target}。"
   yield_to_peer:
     - "……好，听{peer_name}的。"
+  recall_event_win:
+    - "……上次{resource}，我赢了。"
+  recall_event_lose:
+    - "……上次{resource}，我让了。"

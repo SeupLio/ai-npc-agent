@@ -71,6 +71,9 @@ DEMO_SCRIPTS: dict[str, list[Optional[tuple[str, str]]]] = {
     "duet": [
         ("player_a", "今天这里挺热闹的。"),
         ("player_b", "露台那边好像有风。"),
+        # 一句偏好：它会走完"记住 → 传给同伴 → 存档 → 下次被提起"整条链。
+        # 少了它，`--save/--load` 在 demo 里看不出效果（没有可回引的东西）。
+        ("player_a", "我口味偏酸，酸一点的都喜欢。"),
         ("player_a", "阿柚，你让小舟弹一首呗？"),
         None,
         None,
@@ -150,6 +153,24 @@ def cmd_demo(args: argparse.Namespace) -> int:
     if args.ticks:
         script = script[: args.ticks]
 
+    # 读档：把上一次的存档灌进来，NPC 会记得你是谁。
+    # 失败不静默 —— 一个"以为读了其实没读"的存档，会让 demo 看起来像失忆 bug。
+    if getattr(args, "load", ""):
+        from .modules.persistence import PersistenceError, load as load_save
+
+        try:
+            saved = load_save(cast, args.load)
+        except PersistenceError as exc:
+            console.print(f"[red]读档失败：{exc}[/red]")
+            return 2
+        console.print(
+            f"[green]已读档[/green] {args.load}"
+            f"（tick {saved.get('tick', 0)}，{len(saved.get('agents') or {})} 个 NPC 的记忆）"
+        )
+        # 读档之后先问一句"你还记得我吗" —— 不这样的话，存档的效果
+        # 在 demo 里是**看不见的**：第一句照旧是"接着话头往下聊"。
+        script = [("player_a", "我又来了，你还记得我吗？")] + script
+
     for index, line in enumerate(script):
         console.print(f"\n[dim]── 第 {index + 1} 轮 ──[/dim]")
         utterance = None
@@ -175,6 +196,12 @@ def cmd_demo(args: argparse.Namespace) -> int:
                 console.print(f"  [yellow]{name}[/yellow]：{turn.say}")
 
     snapshot = env.snapshot()
+    # 存档：让"下一次来"能接上这一次。
+    if getattr(args, "save", ""):
+        from .modules.persistence import save as save_game
+
+        path = save_game(cast, args.save)
+        console.print(f"\n[green]已存档[/green] → {path}")
     table = Table(title="结束时世界状态", show_header=True, header_style="bold")
     table.add_column("项目")
     table.add_column("值")
@@ -229,6 +256,19 @@ def cmd_chat(args: argparse.Namespace) -> int:
     players = [p["id"] for p in scenario.get("players", [])]
     current = players[0] if players else "player_a"
 
+    # 交互式对话也能读档 —— "上次聊到一半"是最该被接上的场景。
+    if getattr(args, "load", ""):
+        from .modules.persistence import PersistenceError, load as load_save
+
+        try:
+            saved = load_save(cast, args.load)
+        except PersistenceError as exc:
+            console.print(f"[red]读档失败：{exc}[/red]")
+            return 2
+        console.print(
+            f"[green]已读档[/green] {args.load}（tick {saved.get('tick', 0)}）"
+        )
+
     console.print(
         Panel(
             f"正在和 {_roster(scenario, cast)} 对话（场景：{scenario.get('name')}）。\n"
@@ -273,6 +313,13 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 console.print(f"[yellow]{name}[/yellow]：{turn.say}")
             elif cast.is_multi_npc and turn.acted:
                 console.print(f"[dim]{name} 没有说话，但在忙自己的事[/dim]")
+
+    # 退出时存档：不存的话，"聊到一半走开"就真的丢了。
+    if getattr(args, "save", ""):
+        from .modules.persistence import save as save_game
+
+        path = save_game(cast, args.save)
+        console.print(f"[green]已存档[/green] → {path}")
     return 0
 
 
@@ -1724,10 +1771,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_demo = sub.add_parser("demo", help="跑一段可复现的演示对话")
     p_demo.add_argument("--scenario", default="icebreaker", choices=list_scenarios())
     p_demo.add_argument("--ticks", type=int, default=0, help="只跑前 N 轮")
+    p_demo.add_argument(
+        "--save", default="", help="跑完把记忆/关系/编年史存到指定文件（JSON）"
+    )
+    p_demo.add_argument(
+        "--load", default="", help="先读档再跑 —— NPC 会记得上一次见过你"
+    )
     p_demo.set_defaults(func=cmd_demo)
 
     p_chat = sub.add_parser("chat", help="交互式对话")
     p_chat.add_argument("--scenario", default="tutorial", choices=list_scenarios())
+    p_chat.add_argument("--save", default="", help="退出时存档")
+    p_chat.add_argument("--load", default="", help="开始前读档")
     p_chat.set_defaults(func=cmd_chat)
 
     p_eval = sub.add_parser("eval", help="运行评测")

@@ -2094,7 +2094,7 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
 
 ```bash
 python -m pytest tests
-# 1139 passed, 1 skipped
+# 1150 passed, 1 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -2105,7 +2105,7 @@ python -m pytest tests
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**
 > （见 `tests/test_test_hygiene.py`），改了命令不改输出会红。
 
-> 收集到的是 **1140** 条，默认跳过 **1** 条：
+> 收集到的是 **1151** 条，默认跳过 **1** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）。
 > 报告新鲜度校验曾经也在这份名单里（约 2 分钟、要设环境变量），2026-09-21 起
 > **默认就跑** —— 见附十九。
@@ -5468,3 +5468,56 @@ NPC 台词        5 句
 * `npc_agent/eval/living_world_bench.py` + `docs/living_world.html`（12 条）
 * `tests/{test_lore,test_relationship,test_motives,test_attention,test_living_world_bench}.py`
 * 场景 YAML：`lore:` 与 `motives:` 两段（四个文字世界场景共用同一份设定）
+
+---
+
+## 附二十五：跨会话记忆 —— 一个"不报错"的失忆（2026-10-31）
+
+### 起点
+
+前面所有记忆能力都隐含一个前提：同一个进程里连续玩。关掉窗口再进来，
+好感清零、称号清零。对一个养成玩法，这是致命的。
+
+### 存什么，不存什么
+
+判据是"玩家下次回来，这件事还成立吗"：
+
+| 存 | 不存 |
+|---|---|
+| 每个 NPC 的记忆 | 这一局的转写 |
+| 关系档案、称号 | 传闻网络（"这一局谁说过什么"） |
+| 欠着的回答 | 发言权状态 |
+| 世界编年史、时钟 | |
+
+### 三个坑，前两个都不报错
+
+1. **tick 没接上 ⇒ 静默失忆**。检索里有 `record.tick < now` 的硬条件，
+   tick 从 0 重来，所有记忆都被判成"未来的事"而过滤掉。
+   NPC 一句话都不记得，控制台没有任何异常。
+2. **编年史是引用 ⇒ 读档后说不出来**。`Cast.reset` 把 `self.events` 交给
+   每个 NPC；读档时若重新赋值 `cast.events`，NPC 手里还是旧 list。
+   必须 `[:] =` 原地替换。这一条是 `test_the_chronicle_survives_and_can_be_told`
+   抓出来的（断言 `agent.chronicle is cast.events`）。
+3. **`resolved` 没恢复 ⇒ 让步说第二遍**。只恢复事件、不恢复"这对冲突
+   已经裁定过"，下一轮 `poll` 会再裁定一次。实测读档后
+   「行，那就依小舟，再唱一首。」又说了一次。
+
+### 演示
+
+```
+python -m npc_agent.cli demo --scenario duet --save s.json
+python -m npc_agent.cli demo --scenario duet --load s.json
+
+玩家：我又来了，你还记得我吗？
+阿柚：对了，你之前提过你喜欢偏酸的豆子，是这个没错吧？
+```
+
+`--load` 会自动在最前面插一句"你还记得我吗" —— 不插的话，存档的效果
+在 demo 里是看不见的（第一句照旧是"接着话头往下聊"）。
+
+### 基准
+
+世界能力基准加第五个维度「记忆延续」3 条，总数 12 → 15。
+新增注入「读档时什么都不恢复」→ 13/15，抓到。
+`test_persistence.py` 10 条，其中三条是行为断言（记忆还能被回引、
+关系还在、编年史还能被说出来），不是字段相等。

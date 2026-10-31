@@ -146,3 +146,8 @@ utterance_templates:
     - "嗯，听见了。"
   yield_to_peer:
     - "行，那就依{peer_name}。"
+  # 编年史：玩家问"上次那件事"。见 `modules/motives.py` 与 `NPCAgent._chronicle_match`。
+  recall_event_win:
+    - "上次为{resource}那事，最后还是按我说的来。"
+  recall_event_lose:
+    - "上次为{resource}，我让了一步。"

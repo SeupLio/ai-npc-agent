@@ -74,6 +74,9 @@ class WorldEvent:
     winner: str
     loser: str
     loser_line: str = ""
+    #: 争的是什么（"营业时间"）。台词要说"上次为营业时间…"，
+    #: 从 `text` 里抠字符串不如直接带一个字段。
+    resource: str = ""
     #: 让步那句话有没有真的说出口。说了就不再重复 ——
     #: 反复说"行，那就依你"是复读，不是涌现。
     spoken: bool = False
@@ -159,6 +162,7 @@ class MotiveBoard:
                 winner=winner.owner,
                 loser=loser.owner,
                 loser_line=loser.yield_line,
+                resource=a.resource,
             )
             self.events.append(event)
             fresh.append(event)

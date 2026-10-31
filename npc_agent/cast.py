@@ -135,6 +135,8 @@ class Cast:
         if not personas:
             raise ValueError("Cast 至少需要一个 NPC")
         self.scenario = scenario
+        # 场景标识：存档要靠它判断"这份档是不是同一场戏"。
+        self.scenario_id = str(scenario.get("id") or scenario.get("name") or "")
         self.env = env
         self.config = config or RuntimeConfig()
         # 每个 NPC 一个独立 Agent。reset_env=False 是必须的：
@@ -224,6 +226,9 @@ class Cast:
             agent.board = self.board
             agent.gossip = self.gossip
             agent.pending_motive = None
+            # 编年史是**引用**而不是拷贝：新事件随时会追加进来，
+            # NPC 下一轮就该能提到它。
+            agent.chronicle = self.events
         # 同伴名单也是运行期的（见 `Persona.peers`）：单人场景没有这一项，
         # 多人场景每个 NPC 都要知道"场上还有谁"，否则模型会对着空气说话。
         for pid, agent in self.agents.items():

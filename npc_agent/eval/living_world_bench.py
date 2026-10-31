@@ -45,6 +45,7 @@ DIMENSIONS = {
     "relationship": "关系与称号",
     "motives": "动机事件",
     "attention": "注意力",
+    "persistence": "记忆延续",
 }
 
 
@@ -232,6 +233,65 @@ def _check_attention_ranking(cast: Cast) -> tuple[bool, str]:
     return (ranked[0] == "a", f"排序 {ranked}")
 
 
+# -- persistence -------------------------------------------------------------- #
+def _fresh_pair(tmp: str):
+    """建一对剧组：一个用来存档，一个用来读档。"""
+    from npc_agent.modules import persistence as P
+
+    source = build_cast(load_scenario("duet"), NullLLM(), RuntimeConfig())
+    target = build_cast(load_scenario("duet"), NullLLM(), RuntimeConfig())
+    return P, source, target, Path(tmp) / "save.json"
+
+
+def _check_relationship_survives(cast: Cast) -> tuple[bool, str]:
+    import tempfile
+
+    P, source, target, path = _fresh_pair(tempfile.mkdtemp())
+    source.env.actors["ayou"].bump_affinity("player_a", 8)
+    for _ in range(2):
+        source.step(None)
+    stage = source.agents["ayou"].relationships.stage("player_a")
+    P.save(source, path)
+    P.load(target, path)
+    got = target.agents["ayou"].relationships.stage("player_a")
+    return (got == stage and stage != "生客", f"存档 {stage} → 读档 {got}")
+
+
+def _check_memory_survives(cast: Cast) -> tuple[bool, str]:
+    """tick 没接上时这条会红 —— 它是"静默失忆"的行为证据。"""
+    import tempfile
+
+    P, source, target, path = _fresh_pair(tempfile.mkdtemp())
+    source.step(source.env.record_player_utterance("player_a", "我喜欢偏酸的豆子。"))
+    source.step(None)
+    P.save(source, path)
+    P.load(target, path)
+    turns = target.step(
+        target.env.record_player_utterance("player_a", "你还记得我的口味吗？")
+    )
+    says = {t.actor_id: t.say for t in turns if t.say}
+    ok = any("酸" in line for line in says.values())
+    return (ok, f"读档后回答：{says or '（没人说话）'}")
+
+
+def _check_chronicle_survives(cast: Cast) -> tuple[bool, str]:
+    import tempfile
+
+    P, source, target, path = _fresh_pair(tempfile.mkdtemp())
+    for _ in range(6):
+        source.step(None)
+    if not source.events:
+        return False, "用例前提不成立：没产生事件"
+    P.save(source, path)
+    P.load(target, path)
+    if not target.events:
+        return False, "读档后编年史空了"
+    turns = target.step(target.env.record_player_utterance("player_a", "上次那事怎么样了？"))
+    says = {t.actor_id: t.say for t in turns if t.say}
+    ok = any("营业时间" in line for line in says.values())
+    return (ok, f"读档后回答：{says or '（没人说话）'}")
+
+
 # --------------------------------------------------------------------------- #
 def cases() -> list[WorldCase]:
     return [
@@ -318,6 +378,24 @@ def cases() -> list[WorldCase]:
             "两个人同时在场，问过问题的先被理",
             _check_attention_ranking,
         ),
+        WorldCase(
+            "relationship_survives_reload",
+            "persistence",
+            "好感与称号跨会话保留",
+            _check_relationship_survives,
+        ),
+        WorldCase(
+            "memory_survives_reload",
+            "persistence",
+            "读档后还记得玩家说过什么（tick 接不上的话这条会红）",
+            _check_memory_survives,
+        ),
+        WorldCase(
+            "chronicle_survives_reload",
+            "persistence",
+            "世界事件跨会话保留，而且能被说出来",
+            _check_chronicle_survives,
+        ),
     ]
 
 
@@ -333,8 +411,8 @@ class CaseResult:
     events: list[str] = field(default_factory=list)
 
 
-def _apply_disable(cast: Cast, module: str) -> None:
-    """故障注入：把某个能力**掐掉**，用于敏感性测试。
+def _apply_disable(cast: Cast, module: str) -> Callable[[], None]:
+    """故障注入：把某个能力**掐掉**，用于敏感性测试。返回"撤销"函数。
 
     用 monkeypatch 而不是加一堆 `*_enabled` 配置项：
     这些开关只为"证明护栏会响"存在，不该进产品的配置面。
@@ -350,26 +428,40 @@ def _apply_disable(cast: Cast, module: str) -> None:
     elif module == "attention":
         for agent in cast.agents.values():
             agent.attention.note_question = lambda *a, **k: None  # type: ignore[assignment]
+    elif module == "persistence":
+        # 存档这条链路的失败方式是"读进来了但少了东西"，
+        # 所以掐法是"读档时什么都不恢复" —— 比"不读档"更接近真实故障。
+        from npc_agent.modules import persistence as P
+
+        original = P.restore_agent
+        P.restore_agent = lambda agent, data: None  # type: ignore[assignment]
+        return lambda: setattr(P, "restore_agent", original)
+    return lambda: None
 
 
 def run_case(case: WorldCase, disable: str = "") -> CaseResult:
     config = RuntimeConfig(**case.config)
     cast = build_cast(load_scenario(case.scenario), NullLLM(), config)
+    undo: Callable[[], None] = lambda: None
     if disable:
-        _apply_disable(cast, disable)
-    if case.setup is not None:
-        case.setup(cast)
-    if case.act is not None:
-        case.act(cast)
-    for line in case.script:
-        utterance = (
-            cast.env.record_player_utterance("player_a", line) if line is not None else None
-        )
-        cast.step(utterance)
+        undo = _apply_disable(cast, disable)
     try:
+        if case.setup is not None:
+            case.setup(cast)
+        if case.act is not None:
+            case.act(cast)
+        for line in case.script:
+            utterance = (
+                cast.env.record_player_utterance("player_a", line)
+                if line is not None
+                else None
+            )
+            cast.step(utterance)
         passed, note = case.check(cast)
     except Exception as exc:
         passed, note = False, f"用例异常：{type(exc).__name__}: {exc}"
+    finally:
+        undo()
     transcript = [
         f"{u.speaker_name}{'→' + u.addressed_to if u.addressed_to else ''}: {u.text}"
         for u in cast.env.utterances
@@ -417,6 +509,7 @@ DEFECTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "掐掉关系账本": ("relationship", ("relationship",)),
     "掐掉动机裁定": ("motives", ("motives",)),
     "掐掉注意力记账": ("attention", ("attention",)),
+    "读档时什么都不恢复": ("persistence", ("persistence",)),
 }
 
 

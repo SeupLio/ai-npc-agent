@@ -111,3 +111,7 @@ utterance_templates:
     - "行，记下了。{target}以后就是{title}。"
   yield_to_peer:
     - "行，听{peer_name}的。"
+  recall_event_win:
+    - "上次{resource}，听我的。"
+  recall_event_lose:
+    - "上次{resource}，我让了。"
