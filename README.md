@@ -393,10 +393,10 @@ python -m npc_agent.cli demo --scenario duet --load s.json
 
 ```bash
 python -m pytest tests
-# 1197 passed, 1 skipped
+# 1200 passed, 1 skipped
 ```
 
-> 收集到的是 **1198** 条，默认跳过 **1** 条：`tests/test_minecraft_e2e.py`
+> 收集到的是 **1201** 条，默认跳过 **1** 条：`tests/test_minecraft_e2e.py`
 > （需要真实 Minecraft 服务端，设 `NPC_AGENT_MC_E2E=1` 才跑）。
 
 除了常规单测，仓库里有一批**护栏测试**在守"文档不许说假话"：
@@ -413,14 +413,14 @@ game-npc-agent/
 ├── configs/            场景与人设（YAML，加角色不用改代码）
 ├── docs/               报告与文档
 ├── scripts/            重生成报告 / 测量脚本
-└── tests/                  1198 个单元与端到端测试
+└── tests/                  1201 个单元与端到端测试
 ```
 
 ## 十、路线图
 
 - [x] 七大模块 + 环境抽象 + 离线回退
 - [x] 六套可配置场景（破冰 / 新手指引 / 游戏主持 / 双 NPC 协作 / 三人同场 / 村庄）
-- [x] 六维评测 harness + 1198 个测试
+- [x] 六维评测 harness + 1201 个测试
 - [x] 自测控制台 `studio`：一条命令起个网页，离线可玩
 - [x] 评测敏感性 + 评测分辨率（量出报警线画在 10%）
 - [x] LLM-as-judge：校准、kappa、位置偏见检测、留出集封条

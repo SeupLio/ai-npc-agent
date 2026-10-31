@@ -226,6 +226,10 @@ def test_chat_reports_world_state_and_memories(cfg: RuntimeConfig) -> None:
         assert {"episodic", "semantic", "reflection", "consolidated"} <= set(payload)
     assert got["collisions"] == 0, "这两个 NPC 不该抢话"
     assert got["speech"], "发言统计不该是空的"
+    # 发言配平按**名字**列。`Cast.name_of` 只认 NPC，玩家 id 会原样漏到页面上
+    # （曾经显示成 `player_a`），和旁边的「玩家 · 阿澈」对不上。
+    assert not {"player_a", "player_b"} & set(got["speech"]), got["speech"]
+    assert {"阿澈", "小满"} <= set(got["speech"]), got["speech"]
 
 
 def test_chat_reports_repetition_and_the_count_matches_the_lines(

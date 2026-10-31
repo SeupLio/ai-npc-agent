@@ -45,6 +45,7 @@ from .config import RuntimeConfig, list_scenarios, load_scenario
 from .env import env_label
 from .eval.harness import EvalHarness, EvalReport
 from .eval.report_index import DOCS_DIR, index as report_index
+from .eval.sensitivity import DIMENSIONS as EVAL_DIMENSIONS
 from .eval.sensitivity import MUTANTS, run_sensitivity
 from .llm import build_llm
 from .modules.repetition import find_repeats
@@ -103,6 +104,17 @@ def _scenario_summaries(cfg: RuntimeConfig) -> list[dict[str, Any]]:
                 "description": scenario.get("description") or "",
                 "world_label": env_label(cast.env.name),
                 "npcs": [a.persona.name for a in cast.agents.values()],
+                # 角色卡。页面要画出「谁在这个世界里」，就不能只有名字 ——
+                # 角色、人设、此刻的打算都来自人设卡，页面**不另抄一份**。
+                "roster": [
+                    {
+                        "name": agent.persona.name,
+                        "role": agent.persona.role,
+                        "traits": list(agent.persona.traits)[:2],
+                        "goal": (list(agent.persona.goals) or [""])[0],
+                    }
+                    for agent in cast.agents.values()
+                ],
                 "players": [
                     {"id": p.get("id"), "name": p.get("name") or p.get("id")}
                     for p in (scenario.get("players") or [])
@@ -111,6 +123,18 @@ def _scenario_summaries(cfg: RuntimeConfig) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _world_bench_summary() -> dict[str, int]:
+    """世界能力基准的规模。**用基准自己的清单数**，不手抄份数 ——
+    加一条用例却忘了改页面，是这项目最熟悉的一种过期。"""
+    from .eval.living_world_bench import DIMENSIONS as WORLD_DIMENSIONS
+    from .eval.living_world_bench import cases as world_cases
+
+    return {
+        "world_dimensions": len(WORLD_DIMENSIONS),
+        "world_case_total": len(world_cases()),
+    }
 
 
 def _case_categories(cfg: RuntimeConfig) -> list[dict[str, Any]]:
@@ -150,6 +174,9 @@ def build_meta(cfg: RuntimeConfig) -> dict[str, Any]:
         "scenarios": _scenario_summaries(cfg),
         "categories": categories,
         "case_total": sum(c["total"] for c in categories),
+        # 维度数也来自定义处 —— 页面上那句「六维」不许写死。
+        "dimensions": len(EVAL_DIMENSIONS),
+        **_world_bench_summary(),
         "mutants": [
             {
                 "id": m.id,
@@ -308,6 +335,11 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
     env = cast.env
     player_ids = [p.get("id") for p in (scenario.get("players") or [])]
     fallback_speaker = player_ids[0] if player_ids else "player_a"
+    player_names = {
+        str(p.get("id")): str(p.get("name") or p.get("id"))
+        for p in (scenario.get("players") or [])
+        if p.get("id")
+    }
 
     rendered: list[dict[str, Any]] = []
     for event in events:
@@ -382,8 +414,10 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
         "memories": _memory_payload(cast),
         "chronicle": _chronicle_payload(cast),
         "peer_affinity": _peer_affinity_payload(cast),
+        # 发言配平要按**名字**列，不能把玩家显示成 `player_a` ——
+        # `cast.name_of` 只认 NPC，玩家 id 会原样漏到界面上。
         "speech": {
-            cast.name_of(pid): count
+            player_names.get(pid) or cast.name_of(pid): count
             for pid, count in (env.speech_counts() or {}).items()
         },
         "collisions": collisions,
