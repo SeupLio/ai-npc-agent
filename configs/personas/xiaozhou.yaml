@@ -108,3 +108,10 @@ utterance_templates:
     - "{source}说过，{fact}。"
   ack_delegate:
     - "……来了。"
+  # 见 ayou.yaml：回头客问候 + 称号播报。
+  welcome_back:
+    - "……嗯，你回来了。"
+  grant_title:
+    - "记住这个：{title}。{target}。"
+  yield_to_peer:
+    - "……好，听{peer_name}的。"

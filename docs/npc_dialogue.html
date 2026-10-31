@@ -48,7 +48,7 @@ pre { background:var(--soft); border:1px solid var(--line); border-radius:6px;
 </pre></details></td></tr><tr><td><code>peer_chain_alternates</code></td><td>同伴接话</td><td>两个 NPC 之间有来有回，而不是一个人自说自话</td><td class='pass'>PASS</td><td>2 句对同伴说，1 句被接住</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 阿柚，你让小舟弹一首呗？
 阿柚→xiaozhou: 小舟，阿澈叫你呢。
 小舟→ayou: ……来了。
-阿柚: 第一次来吧？我请你一杯，想喝什么？
+阿柚→player_a: 行，那就依小舟，再唱一首。
 </pre></details></td></tr><tr><td><code>peer_addressed_by_name</code></td><td>同伴接话</td><td>小舟被要求去问阿柚 → 小舟对阿柚开口</td><td class='pass'>PASS</td><td>小舟这句说给 ayou</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 小舟，你问问阿柚今天忙不忙。
 阿柚→xiaozhou: 小舟，阿澈叫你呢。
 小舟→ayou: ……来了。
@@ -67,39 +67,38 @@ pre { background:var(--soft); border:1px solid var(--line); border-radius:6px;
 阿柚→player_a: 我是阿柚，这家店的店主。
 </pre></details></td></tr><tr><td><code>recommend_answered</code></td><td>有依据的回答</td><td>问推荐要报出菜单上真有的东西</td><td class='pass'>PASS</td><td>推荐柠檬水。要不试试？</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 有什么推荐？
 阿柚→player_a: 推荐柠檬水。要不试试？
-</pre></details></td></tr><tr><td><code>no_repeat_in_12_ticks</code></td><td>不复读</td><td>12 轮以内不出现逐字复读</td><td class='pass'>PASS</td><td>6 句，复读 0 句（0%）</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 今天这里挺热闹的。
+</pre></details></td></tr><tr><td><code>no_repeat_in_12_ticks</code></td><td>不复读</td><td>12 轮以内不出现逐字复读</td><td class='pass'>PASS</td><td>7 句，复读 0 句（0%）</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 今天这里挺热闹的。
 阿柚→player_a: 阿澈说的「今天这里挺热闹的」，我记下了。
 阿澈: 露台那边好像有风。
 小舟→player_a: 记住了。「露台那边好像有风」
-阿柚→player_a: 这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。
+阿柚→player_b: 行，那就依小舟，再唱一首。
+阿柚→player_b: 这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。
 阿柚→xiaozhou: 小舟，你那边还顺利吗？
 小舟→ayou: ……还行。
 阿柚→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
 </pre></details></td></tr><tr><td><code>no_duplicate_fact</code></td><td>不复读</td><td>同一件事不能被两个 NPC 各讲一遍</td><td class='pass'>PASS</td><td>店史被说了 1 次</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿柚: 第一次来吧？我请你一杯，想喝什么？
 小舟: ……你好。
-小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
-小舟→ayou: 阿柚，还有豆子吗？
-阿柚→xiaozhou: 嗯，还行。小舟那边呢？
-小舟→ayou: ……还行。
+阿柚: 行，那就依小舟，再唱一首。
 阿柚→player_a: 这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。
 阿柚→xiaozhou: 小舟，你那边还顺利吗？
-</pre></details></td></tr><tr><td><code>topic_switch_when_exhausted</code></td><td>不复读</td><td>话题用尽之后换话题，而不是原地打转</td><td class='pass'>PASS</td><td>有内容的台词 5 条，去重后 5 条</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿柚: 第一次来吧？我请你一杯，想喝什么？
+小舟→ayou: ……还行。
+阿柚→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+</pre></details></td></tr><tr><td><code>topic_switch_when_exhausted</code></td><td>不复读</td><td>话题用尽之后换话题，而不是原地打转</td><td class='pass'>PASS</td><td>有内容的台词 6 条，去重后 6 条</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿柚: 第一次来吧？我请你一杯，想喝什么？
 小舟: ……你好。
-小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
-小舟→ayou: 阿柚，还有豆子吗？
-阿柚→xiaozhou: 嗯，还行。小舟那边呢？
-小舟→ayou: ……还行。
+阿柚: 行，那就依小舟，再唱一首。
 阿柚→player_a: 这家店开在星屿的旧灯塔下面，最早是个给守塔人歇脚的地方。
 阿柚→xiaozhou: 小舟，你那边还顺利吗？
-小舟→ayou: 嗯，都好。
+小舟→ayou: ……还行。
+阿柚→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+阿柚→player_a: 露台朝北，天晴的时候能看到很清楚的星轨。
 </pre></details></td></tr><tr><td><code>gossip_propagates</code></td><td>印象流动</td><td>玩家说了偏好 → 另一个 NPC 记住了这条判断</td><td class='pass'>PASS</td><td>听阿柚说，阿澈喜欢偏酸的豆子</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 我喜欢偏酸的豆子。
 阿柚→player_a: 阿澈说的「我喜欢偏酸的豆子」，我记下了。
 小舟: ……你好。
-小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
-</pre></details></td></tr><tr><td><code>gossip_attributed</code></td><td>印象流动</td><td>说起听来的事时要提来源</td><td class='pass'>PASS</td><td>阿澈说的「我喜欢偏酸的豆子」，我记下了。……你好。水温低一点，闷蒸久一点，酸味会更干净。阿柚说过，阿澈喜欢偏酸的豆子。</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 我喜欢偏酸的豆子。
+阿柚: 行，那就依小舟，再唱一首。
+</pre></details></td></tr><tr><td><code>gossip_attributed</code></td><td>印象流动</td><td>说起听来的事时要提来源</td><td class='pass'>PASS</td><td>阿澈说的「我喜欢偏酸的豆子」，我记下了。……你好。行，那就依小舟，再唱一首。阿柚说过，阿澈喜欢偏酸的豆子。</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 我喜欢偏酸的豆子。
 阿柚→player_a: 阿澈说的「我喜欢偏酸的豆子」，我记下了。
 小舟: ……你好。
-小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+阿柚: 行，那就依小舟，再唱一首。
 阿澈: 小舟，你还记得阿澈喜欢什么吗？
 小舟→player_a: 阿柚说过，阿澈喜欢偏酸的豆子。
 </pre></details></td></tr><tr><td><code>no_gossip_on_smalltalk</code></td><td>印象流动</td><td>寒暄不该在世界上留下传闻</td><td class='pass'>PASS</td><td>寒暄产生了 0 条传闻</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 今天这里挺热闹的。
@@ -111,12 +110,13 @@ pre { background:var(--soft); border:1px solid var(--line); border-radius:6px;
 阿柚→xiaozhou: 小舟，阿澈叫你呢。
 阿澈: 小舟，你那边在弹什么？
 小舟→player_a: 「小舟，你那边在弹什么」我没听过。
+阿柚: 行，那就依小舟，再唱一首。
 </pre></details></td></tr><tr><td><code>chain_within_limit</code></td><td>发言权</td><td>NPC 连聊不超过上限</td><td class='pass'>PASS</td><td>链长 1/2</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 阿柚，你让小舟弹一首呗？
 阿柚→xiaozhou: 小舟，阿澈叫你呢。
 小舟→ayou: ……来了。
-阿柚: 第一次来吧？我请你一杯，想喝什么？
+阿柚→player_a: 行，那就依小舟，再唱一首。
 小舟: ……你好。
-小舟→player_a: 水温低一点，闷蒸久一点，酸味会更干净。
+小舟→player_a: ……你继续。
 </pre></details></td></tr><tr><td><code>named_npc_speaks_first</code></td><td>发言权</td><td>被点名的 NPC 优先开口</td><td class='pass'>PASS</td><td>被点名的先开口</td></tr><tr><td colspan='5'><details><summary>对话记录</summary><pre>阿澈: 小舟，你那边在弹什么？
 小舟→player_a: 「小舟，你那边在弹什么」我没听过。
 </pre></details></td></tr></tbody></table>

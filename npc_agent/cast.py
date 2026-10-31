@@ -30,6 +30,7 @@ from .env.mc_client import WorldClient
 from .env.star_isle import DEFAULT_START
 from .llm.base import LLM
 from .modules.conversation import ConversationBoard
+from .modules.motives import MotiveBoard, WorldEvent
 from .modules.persona import Persona
 from .modules.social import GossipNetwork
 from .types import AgentTurn, Utterance
@@ -203,6 +204,14 @@ class Cast:
         self.rounds = 0
         self.history = []
         self.board = ConversationBoard(chain_limit=self.config.max_peer_exchanges)
+        # 动机裁定台。场景没配 `motives:` 时是空的 —— 空裁定台不产生任何事件，
+        # 所以其余四个场景的行为一个字都不变。
+        self.motives = MotiveBoard.from_dicts(
+            self.scenario.get("motives"),
+            min_tick=self.config.motive_resolve_after,
+        )
+        #: 这一局发生过的世界事件（按时间）。报告与转写从这里取。
+        self.events: list[WorldEvent] = []
         # 传闻网络：这一局里"谁说过什么"是公共事实，和各自的记忆分开。
         self.gossip = (
             GossipNetwork(threshold=self.config.gossip_importance)
@@ -214,6 +223,7 @@ class Cast:
         for agent in self.agents.values():
             agent.board = self.board
             agent.gossip = self.gossip
+            agent.pending_motive = None
         # 同伴名单也是运行期的（见 `Persona.peers`）：单人场景没有这一项，
         # 多人场景每个 NPC 都要知道"场上还有谁"，否则模型会对着空气说话。
         for pid, agent in self.agents.items():
@@ -366,6 +376,7 @@ class Cast:
         self._advance_floor(order, tick)
         self.rounds += 1
         self.history.append(turns)
+        self._resolve_motives(tick)
         self._spread_gossip(tick)
         # 这一轮没人接那句话 → 作废。留着会让"三轮前的一句问话"
         # 在玩家插了一句之后突然被回答。
@@ -373,6 +384,19 @@ class Cast:
             self.board.expire()
         self.env.advance_tick()
         return turns
+
+    def _resolve_motives(self, tick: int) -> None:
+        """裁定动机冲突，并把"该说一句让步"的通知交给让步方。
+
+        事件在**一轮结束时**产生，下一轮由让步方说出口 —— 不在同一轮里
+        一边裁定一边发言：那样玩家看到的是"世界刚决定完，NPC 立刻宣布"，
+        像念旁白。
+        """
+        for event in self.motives.poll(tick, {pid: a.persona.name for pid, a in self.agents.items()}):
+            self.events.append(event)
+            loser = self.agents.get(event.loser)
+            if loser is not None:
+                loser.pending_motive = event
 
     def _spread_gossip(self, tick: int) -> None:
         """把这一轮新说出口的事实，投给还没听过的同伴。

@@ -36,6 +36,44 @@ world:
 activities:
   - {id: song_request, name: 点一首歌}
 
+# 动机（见 `npc_agent/modules/motives.py`）：两个 NPC 各自想要什么。
+# 同一个 resource 上强度不同 → 产生一次**冲突事件**，强度低的一方让步，
+# 并且会把让步**说出口**。这就是"涌现叙事"的最小闭环：
+# 动机不同 → 相互影响 → 世界状态变了 → NPC 的反应也变了。
+motives:
+  - id: ayou_close_early
+    owner: ayou
+    want: 早点收摊，把灯关了
+    resource: 营业时间
+    intensity: 40
+    yield_line: "行，那就依{peer_name}，再唱一首。"
+  - id: xiaozhou_encore
+    owner: xiaozhou
+    want: 再唱一首，把露台的灯留着
+    resource: 营业时间
+    intensity: 70
+    yield_line: "……好，那就听{peer_name}的。"
+
+# 世界观设定（canon）。判据见 `npc_agent/modules/lore.py`：
+# **同一句话里**同时出现主体和矛盾说法才算冲突 —— 只查矛盾词会误伤闲聊
+# （「山顶的风景不错」没有断言这家店在山顶）。
+lore:
+  - id: 位置
+    subject: [这家店, 这店, 咖啡屋, 咖啡馆, 我们店, 小店]
+    relation: 位置
+    value: 星屿的旧灯塔下面
+    wrong: [山顶, 山上, 海边, 码头, 市中心, 地下一层]
+  - id: 来历
+    subject: [这家店, 这店, 咖啡屋, 咖啡馆]
+    relation: 来历
+    value: 最早是给守塔人歇脚的地方
+    wrong: [我爷爷开的, 十年前开的, 刚开业, 新建的, 上个月开的]
+  - id: 朝向
+    subject: [露台, 天台]
+    relation: 朝向
+    value: 朝北，能看到星轨
+    wrong: [朝南, 朝东, 朝西, 看不到星星]
+
 objectives:
   # 阿柚那份：做一杯饮品，亲手递到客人手里
   - id: serve_guest

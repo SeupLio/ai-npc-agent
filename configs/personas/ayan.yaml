@@ -104,3 +104,10 @@ utterance_templates:
     - "听{source}讲的，{fact}。"
   ack_delegate:
     - "行，来了。"
+  # 见 ayou.yaml：回头客问候 + 称号播报。
+  welcome_back:
+    - "又来了。{target}，老地方。"
+  grant_title:
+    - "行，记下了。{target}以后就是{title}。"
+  yield_to_peer:
+    - "行，听{peer_name}的。"

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from ..types import DialogueDecision, Utterance
 from .persona import Persona
@@ -61,14 +61,22 @@ class AddresseeSelector:
         return any(name and name in text for name in candidates)
 
     def pick_addressee(
-        self, tracker: StateTracker, utterance: Optional[Utterance]
+        self,
+        tracker: StateTracker,
+        utterance: Optional[Utterance],
+        attention: Any = None,
     ) -> Optional[str]:
         """选出这句话应该对谁说。
 
-        优先级：被点名的人 > 刚说话的人 > 最近活跃的玩家
+        优先级：被点名的人 > 刚说话的人 > **注意力排序** > 最近活跃的玩家
 
         被点名的可以是**同伴 NPC** —— 这样"阿柚转头跟小舟说：你来弹一首"
         才有一个明确的收件人，下一轮小舟才知道该自己接。
+
+        `attention` 只在"没有具体某句话"（冷场主动开口）时起作用：
+        场上有好几个人，先理谁不是"列表里的第一个"，而是
+        "被点名 / 问过没答 / 等得最久 / 更熟"综合分最高的那个。
+        少了这一条，多玩家场景里 NPC 会一直只理同一个人。
         """
         if utterance is not None:
             for pid in utterance.mentions:
@@ -81,6 +89,10 @@ class AddresseeSelector:
                 return utterance.speaker_id
 
         active = tracker.active_players()
+        if len(active) > 1 and attention is not None:
+            ranked = attention.rank(tracker.players, tracker.tick)
+            if ranked:
+                return ranked[0]
         if active:
             return active[0].id
         return None
@@ -93,6 +105,7 @@ class AddresseeSelector:
         *,
         has_pending_plan: bool = False,
         other_npc_spoke_last: bool = False,
+        attention: Any = None,
     ) -> DialogueDecision:
         """核心决策。返回 should_speak / addressed_to / 理由 / 紧急度。"""
         cfg = self.config
@@ -142,14 +155,14 @@ class AddresseeSelector:
         if has_pending_plan:
             return DialogueDecision(
                 True,
-                self.pick_addressee(tracker, utterance),
+                self.pick_addressee(tracker, utterance, attention),
                 "继续执行未完成的计划",
                 urgency=0.55,
             )
 
         # 2) 被点名 —— 最高优先级，必须回应
         if utterance is not None and self.mentions_npc(utterance.text):
-            target = self.pick_addressee(tracker, utterance)
+            target = self.pick_addressee(tracker, utterance, attention)
             return DialogueDecision(
                 True,
                 target,
@@ -166,7 +179,7 @@ class AddresseeSelector:
                 )
             return DialogueDecision(
                 True,
-                self.pick_addressee(tracker, utterance),
+                self.pick_addressee(tracker, utterance, attention),
                 "现场有人抛出问题，我来接",
                 urgency=0.6,
             )
@@ -179,7 +192,7 @@ class AddresseeSelector:
 
         # 5) 冷场 —— 主动发起话题（这是"活世界"的关键动作）
         if tracker.silence_ticks >= cfg.idle_ticks_before_proactive:
-            target = self.pick_addressee(tracker, utterance)
+            target = self.pick_addressee(tracker, utterance, attention)
             return DialogueDecision(
                 True,
                 target,
@@ -197,7 +210,7 @@ class AddresseeSelector:
                 )
             return DialogueDecision(
                 True,
-                self.pick_addressee(tracker, utterance),
+                self.pick_addressee(tracker, utterance, attention),
                 "接着玩家的话头往下聊",
                 urgency=0.45,
             )
@@ -271,12 +284,14 @@ class TurnManager:
         *,
         has_pending_plan: bool = False,
         other_npc_spoke_last: bool = False,
+        attention: Any = None,
     ) -> DialogueDecision:
         decision = self.selector.decide(
             tracker,
             utterance,
             has_pending_plan=has_pending_plan,
             other_npc_spoke_last=other_npc_spoke_last,
+            attention=attention,
         )
         self.history.append(decision)
         return decision

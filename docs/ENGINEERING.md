@@ -2094,7 +2094,7 @@ NPC ：对了，你之前提过**阿柚，我还记得你习惯坐哪儿吗**，
 
 ```bash
 python -m pytest tests
-# 1081 passed, 1 skipped
+# 1139 passed, 1 skipped
 ```
 
 > ⚠️ **别再在后面补一个 `-q`。** `pyproject.toml` 里已经有 `addopts = "-q"`，
@@ -2105,7 +2105,7 @@ python -m pytest tests
 > 文档里这条命令和它下面那行输出**是被测试钉在一起的**
 > （见 `tests/test_test_hygiene.py`），改了命令不改输出会红。
 
-> 收集到的是 **1082** 条，默认跳过 **1** 条：
+> 收集到的是 **1140** 条，默认跳过 **1** 条：
 > `tests/test_minecraft_e2e.py`（需要真实 Minecraft 服务端，`NPC_AGENT_MC_E2E=1` 才跑）。
 > 报告新鲜度校验曾经也在这份名单里（约 2 分钟、要设环境变量），2026-09-21 起
 > **默认就跑** —— 见附十九。
@@ -5415,3 +5415,56 @@ NPC 台词        5 句
 * `scripts/probe_npc_dialogue.py`（量"能不能聊起来"的探针）
 * `tests/{test_conversation,test_npc_dialogue,test_social,test_budget,test_dialogue_bench}.py`
 * `docs/TECHNICAL.md`（技术文档；README 改成面向读者）
+
+---
+
+## 附二十四：把"活世界"补齐 —— 设定、关系、动机、注意力（2026-10-31）
+
+### 出发点：哪些能力是"配置里写着、玩家看不见"的
+
+上一轮补完 NPC 之间的对话之后，按米哈游公开方案逐条对照，发现四块空白。
+它们的共同点不是"难"，是**没有消费方**：
+
+| 痛点（公开方案里提到的） | 项目里的现状 |
+|---|---|
+| 世界观与编年史、角色一致性 / OOC | 只有出戏词表和剧透词表，**事实错误没人管** |
+| 关系养成、专属称号 | 环境在算好感（+4/+6），**没有任何决策读它** |
+| 涌现叙事：动机相互影响 | 只有目标计划，**没有动机与冲突** |
+| 一对多场景知道该优先回应谁 | 有发言占比，**没有"谁在等我"的账** |
+
+第三条"好感没人读"是最典型的：一个会动、没人用的数字，比没有更糟 ——
+调参的人会以为自己能改变体验。
+
+### 四个模块
+
+- `modules/lore.py`：设定书 + 同句共现判据（主体 + 矛盾说法）+ 工具层拦截 + 提示词注入
+- `modules/relationship.py`：好感 → 阶段 → 称号；称号**当面播报**，只说一次
+- `modules/motives.py`：动机冲突 → 按强度裁定 → 世界事件 → 让步说出口，只发生一次
+- `modules/attention.py`：多人排序 + 未答问题记账 + 冷场补答
+
+### 这一轮自己踩的五个坑（全部记下来）
+
+1. **关系阈值从 30 起** ⇒ 初始好感 50 直接是「面熟」，第一次见面就领称号。
+   实测小舟第一轮说「记住这个：熟面孔。阿澈。」—— 一眼假。改成 56 起。
+2. **`as_utterance()` 漏传 `expects_reply`**（上一轮埋的）⇒ 转达被答成「……还行。」。
+   这次才发现，因为它只在"转达 + 不是问句"时暴露。
+3. **`render_template` 的重复关键字**：补答路径把 `answer_hint` / `said_hint`
+   从 `extra` 传进来，`_render_intent` 又显式传一次 ⇒ `TypeError`。
+   全部改成 `slots.setdefault`，**只留一个拼槽位的地方**。
+4. **动机让步被计划饿死**：阿柚的计划 8 步，不让让步插队的话 8 轮都说不出来，
+   事件等于没发生。改成"让步与回答同级，可以插队说一句"。
+5. **`_materialize_step` 里的问候是写死的 `greet_new`**：回头客仍被问
+   「第一次来吧」。关系和计划只能在那一个汇合点接上 —— 加了三行，但找了很久。
+
+### 新增第三套基准：`eval/living_world_bench.py`
+
+四个维度各 3 条，12 条，0 次模型调用。敏感性用**故障注入**（掐掉某个能力），
+不加 `*_enabled` 配置项 —— 那些开关只为证明护栏会响，不该进产品配置面。
+四个注入全部被抓到：10/12、10/12、9/12、11/12。
+
+### 交付物
+
+* `npc_agent/modules/{lore,relationship,motives,attention}.py`
+* `npc_agent/eval/living_world_bench.py` + `docs/living_world.html`（12 条）
+* `tests/{test_lore,test_relationship,test_motives,test_attention,test_living_world_bench}.py`
+* 场景 YAML：`lore:` 与 `motives:` 两段（四个文字世界场景共用同一份设定）

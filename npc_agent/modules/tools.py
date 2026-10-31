@@ -16,6 +16,7 @@ from typing import Any, Callable, Optional
 
 from ..env.base import Environment, ToolSpec
 from ..types import OUTCOME_DECLINED, ActionCall, ActionResult
+from .lore import LoreBook
 from .memory import MemoryManager
 from .persona import Persona
 from .state import StateTracker
@@ -58,6 +59,9 @@ class ToolContext:
     # 放在工具层而不是对话层，是因为计划步骤里的 speak 也会经过这里 ——
     # 只在对话层拦截的话，正在执行计划的 NPC 仍然会插话。
     allow_speech: bool = True
+    #: 世界观设定书。为空（单 NPC / 体素世界）时不做一致性检查 ——
+    #: 没有设定书就没有"矛盾"可言，硬查会把正常台词拦掉。
+    lore: Optional[LoreBook] = None
 
 
 class ToolRegistry:
@@ -111,6 +115,16 @@ class ToolRegistry:
             return ActionResult(
                 False, INTERNAL_SPEAK, f"台词越界被拦下: {'; '.join(violations)}"
             )
+        # 世界观一致性。**放在工具层**，和出戏词、剧透同一个位置 ——
+        # 提示词里"请不要说错设定"是请求，这里才是约束。
+        if ctx.lore is not None:
+            conflicts = ctx.lore.check(text)
+            if conflicts:
+                return ActionResult(
+                    False,
+                    INTERNAL_SPEAK,
+                    f"台词与世界观冲突: {conflicts[0].render()}",
+                )
         share = ctx.tracker.npc_share()
         if share > ctx.npc_share_ceiling and not args.get("to"):
             return ActionResult(

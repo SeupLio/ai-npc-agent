@@ -296,6 +296,10 @@ class StarIsleEnv(Environment):
             "recipes": {k: dict(v) for k, v in RECIPES.items()},
             "items": dict(ITEM_NAMES),
             "knowledge": {k: dict(v) for k, v in KNOWLEDGE.items()},
+            # 世界观设定。它和 `knowledge` 是两件事：
+            # `knowledge` 是"能说出口的知识点"，`lore` 是"这个世界的事实边界"——
+            # 后者用来**拦截**说错的话，前者用来**生成**该说的话。
+            "lore": [dict(item) for item in (self.scenario.get("lore") or [])],
         }
 
     def available_topics(self, actor_id: str) -> list[str]:

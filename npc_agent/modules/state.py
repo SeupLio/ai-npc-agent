@@ -29,6 +29,10 @@ class PlayerModel:
     seated: bool = False
     location: str = ""
     here: bool = False  # 是否与 NPC 同位置（决定能不能递东西）
+    #: 这个人有没有一个"问了但还没被回答"的问题。
+    #: 注意力分配读它（`modules/attention.py` 的 `score`）——
+    #: 没有这个字段，"谁的问题更该先答"就无从判断。
+    pending_question: bool = False
     revealed: dict[str, str] = field(default_factory=dict)  # 玩家透露过的信息
 
     def render(self) -> str:
@@ -133,6 +137,8 @@ class StateTracker:
         if model:
             model.utterance_count += 1
             model.last_spoke_tick = utterance.tick
+            # 陈述句会把"欠着的回答"清掉 —— 玩家换了话题，旧账作废。
+            model.pending_question = bool(utterance.is_question)
 
         self.silence_ticks = 0
         self.recent_mentions = list(utterance.mentions)

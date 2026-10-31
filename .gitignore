@@ -38,3 +38,6 @@ eula.txt
 .vscode/
 .idea/
 .DS_Store
+
+# 本地 agent 记忆（不进公开仓库）
+.workbuddy-ai/

@@ -65,6 +65,7 @@ __all__ = [
 #: 这是 `OFFLINE_REPORTS` 的准入条件，不是可选项。
 MODULE_REPORTS: dict[str, str] = {
     "dialogue": "npc_agent.eval.dialogue_bench",
+    "living_world": "npc_agent.eval.living_world_bench",
 }
 
 

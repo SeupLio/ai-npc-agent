@@ -132,6 +132,17 @@ utterance_templates:
   heard_from:
     - "听{source}说，{fact}。"
   # 同伴**转达**一句话给我（不是问我问题）→ 应一声"来了"，别答成"还行"。
+  # --- 关系养成（见 `modules/relationship.py`）---
+  # `welcome_back`：回头客不能再用"第一次来吧"招呼。这句话在 demo 里最容易露馅。
+  welcome_back:
+    - "又见面了，{target}。老位置给你留着。"
+    - "{target}来了。今天想喝点不一样的？"
+  # `grant_title`：称号必须**说出口**才算数 —— 只存进数据库的称号玩家看不见。
+  grant_title:
+    - "从今天起，{target}是这家店的{title}。"
+    - "记一下——{target}，你现在的称号是「{title}」。"
   ack_delegate:
     - "来了。{target}稍等。"
     - "嗯，听见了。"
+  yield_to_peer:
+    - "行，那就依{peer_name}。"

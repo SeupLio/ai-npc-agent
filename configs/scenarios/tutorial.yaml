@@ -45,3 +45,22 @@ objectives:
       - {goal: 解释点单方式, tool: speak, args: {intent: teach_order}}
       - {goal: 标记已完成教学, tool: set_flag, args: {key: learned_order, value: "1"}}
     success_when: {flag: learned_order}
+
+# 世界观设定（canon）。同一个世界，四套场景共用同一份设定 ——
+# 换个场景就换一套设定的话，NPC 会在不同玩法里说出互相矛盾的店史。
+lore:
+  - id: 位置
+    subject: [这家店, 这店, 咖啡屋, 咖啡馆, 我们店, 小店]
+    relation: 位置
+    value: 星屿的旧灯塔下面
+    wrong: [山顶, 山上, 海边, 码头, 市中心, 地下一层]
+  - id: 来历
+    subject: [这家店, 这店, 咖啡屋, 咖啡馆]
+    relation: 来历
+    value: 最早是给守塔人歇脚的地方
+    wrong: [我爷爷开的, 十年前开的, 刚开业, 新建的, 上个月开的]
+  - id: 朝向
+    subject: [露台, 天台]
+    relation: 朝向
+    value: 朝北，能看到星轨
+    wrong: [朝南, 朝东, 朝西, 看不到星星]

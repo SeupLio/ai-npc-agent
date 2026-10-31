@@ -296,6 +296,12 @@ class AgentTurn:
     used_memories: list[str] = field(default_factory=list)
     decision_reason: str = ""
     persona_violations: list[str] = field(default_factory=list)
+    #: 被世界观护栏拦下的台词（`modules/lore.py`）。
+    #:
+    #: 和 `persona_violations` 分开记：出戏词是"角色不像角色"，
+    #: 设定冲突是"世界不像这个世界"。两者的修法完全不同 ——
+    #: 前者改人设卡，后者改设定书或提示词。
+    lore_violations: list[str] = field(default_factory=list)
     latency_ms: float = 0.0
 
     @property
