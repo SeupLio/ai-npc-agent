@@ -391,6 +391,9 @@ class StarIsleEnv(Environment):
         text: str,
         addressed_to: str | None = None,
         expects_reply: bool = False,
+        *,
+        audience: tuple[str, ...] | None = None,
+        channel: str = "",
     ) -> None:
         actor = self.actors[actor_id]
         self._utterances.append(
@@ -404,10 +407,20 @@ class StarIsleEnv(Environment):
                 is_question=looks_like_question(text),
                 addressed_to=addressed_to,
                 expects_reply=expects_reply,
+                audience=audience,
+                channel=channel,
             )
         )
 
-    def record_player_utterance(self, player_id: str, text: str) -> Utterance:
+    def record_player_utterance(
+        self,
+        player_id: str,
+        text: str,
+        *,
+        addressed_to: str | None = None,
+        audience: tuple[str, ...] | None = None,
+        channel: str = "",
+    ) -> Utterance:
         """外部驱动（CLI / 评测用例）注入玩家发言。"""
         actor = self.actors[player_id]
         utterance = Utterance(
@@ -418,6 +431,9 @@ class StarIsleEnv(Environment):
             role="player",
             mentions=self._mentions(text, player_id),
             is_question=looks_like_question(text),
+            addressed_to=addressed_to,
+            audience=audience,
+            channel=channel,
         )
         self._utterances.append(utterance)
         return utterance

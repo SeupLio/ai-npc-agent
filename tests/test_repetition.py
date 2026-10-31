@@ -552,13 +552,49 @@ def test_the_npc_answers_every_turn(scenario_id: str) -> None:
 
     修法见 `NPCAgent.step` 里"先回答、再照常跑计划"那一段。
     这里把"每轮都开口"钉死：以后谁再把静默加回来，这条会红。
+
+    **分组场景的判据是"每轮至少有一个组接上"**，不是"全场只有一句"：
+    两组并行对话本来就是两组各说一句。但也不能变成"四个人一起抢"——
+    所以上限是**组数**，不是人数。
     """
     turns = 10
-    lines = _replay(scenario_id, turns=turns)
-    assert len(lines) == turns, (
-        f"{scenario_id} 10 轮里只开口 {len(lines)} 次 —— "
-        f"有 {turns - len(lines)} 轮玩家说了话、NPC 没回应（对话会卡住）\n"
-        + "\n".join(f"  {name}：{text}" for name, text in lines)
+    cfg = RuntimeConfig()
+    cfg.llm_provider = "null"
+    payload = {
+        "scenario": scenario_id,
+        "events": [
+            {"kind": "say", "speaker": "player_a", "text": text}
+            for text in CONVERSATION_LONG[:turns]
+        ],
+    }
+    out = run_chat(cfg, payload)
+    per_turn = [
+        [turn for turn in event["turns"] if turn["say"]]
+        for event in out["events"]
+    ]
+    silent = [i + 1 for i, said in enumerate(per_turn) if not said]
+    assert not silent, (
+        f"{scenario_id} 第 {silent} 轮玩家说了话、NPC 没回应（对话会卡住）\n"
+        + "\n".join(
+            f"  {turn['name']}：{turn['say']}"
+            for event in out["events"]
+            for turn in event["turns"]
+            if turn["say"]
+        )
+    )
+    groups = (load_scenario(scenario_id).get("groups") or {}) or {"main": []}
+    max_speakers = len(groups)
+    crowded = [
+        (i + 1, [turn["name"] for turn in said])
+        for i, said in enumerate(per_turn)
+        if len(said) > max_speakers
+    ]
+    assert not crowded, (
+        f"{scenario_id} 某一轮开口的人比组还多（{crowded}）—— "
+        f"每组每轮最多一个人，组数 {max_speakers}"
+    )
+    assert out["collisions"] == 0, (
+        f"{scenario_id} 同一组里两个人抢了同一轮：{out['collisions']}"
     )
 
 

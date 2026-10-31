@@ -41,6 +41,14 @@ class Utterance:
     #: 判据交给产出方，和 `ActionResult.outcome` 是同一条原则：
     #: **消费方按文案猜意图，上游一改文案就静默失效。**
     expects_reply: bool = False
+    #: 这句话的收件范围。None = 频道默认（公开：所有 NPC 都听得见）；
+    #: 元组 = **只有名单里的人**听得见。导演靠它隔离分组与私聊 ——
+    #: 不隔离的话，"悄悄话"会被所有 NPC 记进记忆，下一个人转口就漏了。
+    audience: Optional[tuple[str, ...]] = None
+    #: 频道标记：公开为空串，私聊为 `"private"`，分组场景里是组 id。
+    #: 它只用于展示与调度归因，**不参与**收件判定（收件只看 audience）——
+    #: 两个字段各答一个问题，别让展示字段变成权限字段。
+    channel: str = ""
 
     def render(self) -> str:
         return f"{self.speaker_name}: {self.text}"

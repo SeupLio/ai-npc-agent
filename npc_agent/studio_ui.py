@@ -175,10 +175,25 @@ button.ghost:hover{border-color:rgba(231,185,120,.38);color:var(--amber)}
 .composer{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:14px;
   padding-top:14px;border-top:1px dashed var(--line)}
 .composer .ava{width:34px;height:34px;border-radius:11px;font-size:14px}
-.composer-who,.composer-say{display:flex;flex-direction:column}
+.composer-who,.composer-say,.composer-scope{display:flex;flex-direction:column}
 .composer-say{flex:1;min-width:220px}
 .composer-say input{width:100%}
+.composer-scope select{max-width:210px}
 .composer-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+.scope-tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;
+  font:10.5px/1.5 var(--mono);color:var(--dim);border:1px solid var(--line);background:var(--soft)}
+.scope-tag.private{color:var(--violet);border-color:rgba(178,165,255,.34);background:rgba(178,165,255,.08)}
+.scope-tag.group{color:var(--teal);border-color:rgba(116,214,194,.34);background:rgba(116,214,194,.08)}
+.scope-tag.bad{color:var(--bad);border-color:rgba(239,143,143,.32);background:rgba(239,143,143,.07)}
+.group-badge{display:inline-flex;align-items:center;margin-left:6px;padding:1px 7px;border-radius:999px;
+  font:9.5px/1.6 var(--mono);font-weight:500;color:var(--teal);
+  border:1px solid rgba(116,214,194,.3);background:rgba(116,214,194,.07);vertical-align:1px}
+.bubble-player.private{border-color:rgba(178,165,255,.4);
+  background:linear-gradient(180deg,rgba(178,165,255,.15),rgba(178,165,255,.05))}
+.bubble-player.group{border-color:rgba(116,214,194,.38);
+  background:linear-gradient(180deg,rgba(116,214,194,.13),rgba(116,214,194,.04))}
+.bubble-player .scope-tag{display:inline-flex;margin:0 0 3px}
 
 .columns{display:grid;grid-template-columns:minmax(0,1.58fr) minmax(336px,.92fr);
   gap:14px;align-items:start;margin-top:14px}
@@ -427,6 +442,7 @@ footer{color:var(--dim);font-size:11px;padding:0 32px 40px;max-width:1440px;marg
     <div class="composer">
       <span class="ava player" id="whoAva">?</span>
       <div class="composer-who"><label for="who">以谁的身份说话</label><select id="who"></select></div>
+      <div class="composer-scope"><label for="scope">说给谁听</label><select id="scope"></select></div>
       <div class="composer-say"><label for="msg">说点什么</label><input id="msg" placeholder="例如：我第一次来，这里怎么点单呀？"></div>
       <div class="composer-actions">
         <button class="primary" id="send">发送</button>
@@ -441,7 +457,7 @@ footer{color:var(--dim);font-size:11px;padding:0 32px 40px;max-width:1440px;marg
   <div class="columns">
     <div class="card theater">
       <div class="card-head">
-        <div><h3>世界剧场</h3><span class="hint">每轮所有 NPC 依次行动，但最多一个人开口</span></div>
+        <div><h3>世界剧场</h3><span class="hint" id="theaterHint">每轮所有 NPC 依次行动，但最多一个人开口</span></div>
         <div class="hint">发言权由 Cast 统一收放</div>
       </div>
       <p class="rep" id="repnote"></p>
@@ -456,7 +472,7 @@ footer{color:var(--dim);font-size:11px;padding:0 32px 40px;max-width:1440px;marg
             <circle cx="58" cy="56" r="1.5"></circle>
           </svg>
           <b>世界还没开始</b>
-          <span>选一个场景，说一句话。NPC 会各自决定、各自行动，<br>但同一轮最多一个人开口。</span>
+          <span>选一个场景，说一句话。NPC 会各自决定、各自行动，<br>同一分组里每轮最多一个人开口，不同分组可以同时说话。</span>
           <code>今天这里挺热闹的。</code>
         </div>
       </div>
@@ -657,14 +673,56 @@ function onScenario(){
   HUES = {};
   (CURRENT.roster || []).forEach((p, i) => { HUES[p.name] = HUE_LIST[i % HUE_LIST.length]; });
 
+  const groups = CURRENT.groups || [];
+  const multi = groups.length > 1;
+
   $("#who").innerHTML = (CURRENT.players || []).map((p) =>
     "<option value='" + esc(p.id) + "'>" + esc(p.name) + "</option>").join("");
+  // 说话范围：默认公开；多组场景多出「对某组说」；私聊对每个 NPC 一档。
+  // 私聊的选项 id 带 `npc:` 前缀 —— 和组 id 共用同一个 select，前缀是唯一区分。
+  let scope = "<option value=''>公开 · 所有人</option>";
+  if (multi) {
+    scope += groups.map((g) =>
+      "<option value='group:" + esc(g.id) + "'>对组 · " + esc(g.name) + "</option>").join("");
+  }
+  scope += (CURRENT.roster || []).map((p) =>
+    "<option value='npc:" + esc(p.id) + "'>私聊 · " + esc(p.name) + "</option>").join("");
+  $("#scope").innerHTML = scope;
+
   $("#scnName").textContent = CURRENT.name;
   $("#worldLabel").textContent = CURRENT.world_label;
-  $("#chatnote").textContent = CURRENT.description || "";
-  $("#msg").placeholder = CURRENT.sample ? ("例如：" + CURRENT.sample) : "说点什么…";
+  $("#chatnote").textContent = (CURRENT.description || "") + (multi
+    ? " 场上有 " + groups.length + " 个分组（" + groups.map((g) => g.name).join(" / ") +
+      "）：同组轮流，不同组可以同时说话。"
+    : "");
+  $("#theaterHint").textContent = multi
+    ? "每个分组每轮最多一个人开口，不同分组可以同时说话"
+    : "每轮所有 NPC 依次行动，但最多一个人开口";
   syncWho();
   resetChat();
+}
+
+// select 里读回的「这一句说给谁」。返回 [组, NPC]，两个都空就是公开。
+// 用数组而不是对象：页面的字段护栏会把对象属性名当成 API 字段查，
+// 而 `npc` / `target` 只存在于**请求**里，响应里没有。
+function scopeTarget(){
+  if (!CURRENT) return [null, null];
+  const v = $("#scope").value || "";
+  return [
+    v ? (CURRENT.groups || []).find((g) => v === "group:" + g.id) : null,
+    v ? (CURRENT.roster || []).find((p) => v === "npc:" + p.id) : null,
+  ];
+}
+
+// 输入框提示随范围变 —— 不说清楚，用户会以为私聊的话全场都听见了。
+function syncScope(){
+  if (!CURRENT) return;
+  const [group, npc] = scopeTarget();
+  $("#msg").placeholder = npc
+    ? ("只对 " + npc.name + " 一个人说 —— 其他角色听不见")
+    : (group
+      ? ("只对「" + group.name + "」说 —— 另一组听不见")
+      : (CURRENT.sample ? ("例如：" + CURRENT.sample) : "说点什么…"));
 }
 
 function renderReports(reports){
@@ -685,6 +743,7 @@ function renderReports(reports){
 function resetChat(){
   EVENTS = [];
   $("#msg").value = "";
+  if ($("#scope")) $("#scope").value = "";
   $("#repnote").innerHTML = "";
   renderRoster({});
   renderGraph({});
@@ -694,12 +753,13 @@ function resetChat(){
     "<path d='M22 48 L58 20 L96 46'></path>" +
     "<circle cx='22' cy='48' r='2.6'></circle><circle cx='58' cy='20' r='3.4'></circle>" +
     "<circle cx='96' cy='46' r='2.6'></circle><circle cx='58' cy='56' r='1.5'></circle></svg>" +
-    "<b>世界还没开始</b><span>说一句话，NPC 的决定、动作与世界状态会一起出现。<br>同一轮最多一个人开口。</span>" +
+    "<b>世界还没开始</b><span>说一句话，NPC 的决定、动作与世界状态会一起出现。<br>同一分组每轮最多一个人开口，不同分组可以同时说话。</span>" +
     "<code>" + esc((CURRENT && CURRENT.sample) || "今天这里挺热闹的。") + "</code></div>";
   $("#world").innerHTML = emptyBlock("还没有脉搏", "说一句话，目标与标记会在这里更新。");
   $("#mems").innerHTML = emptyBlock("记忆还是空的", "NPC 会记住你说过的话 —— 以及后来从谁那里听说了什么。");
   $("#chronicle").innerHTML = emptyBlock("还没发生过什么", "世界事件会在这里按时间排开。");
   $("#speech").innerHTML = emptyBlock("还没人开口", "发言配平是多 NPC 场景最该盯的数。");
+  syncScope();
 }
 
 async function step(ev){
@@ -755,7 +815,9 @@ function renderRoster(d){
     const bonds = Object.entries(m.bonds || {}).map(([who, b]) => esc(who) + " " + b.score).join(" · ") || "尚未建立";
     return "<div class='npc' style='--h:" + hueOf(p.name) + "'>" + ava(p.name) +
       "<div class='npc-main'>" +
-        "<div class='npc-id'><b>" + esc(p.name) + "</b><span>" + esc(p.role || "NPC") + "</span></div>" +
+        "<div class='npc-id'><b>" + esc(p.name) +
+          (p.group_name ? "<span class='group-badge'>" + esc(p.group_name) + "</span>" : "") +
+          "</b><span>" + esc(p.role || "NPC") + "</span></div>" +
         "<div class='npc-stats'><span>发言 <b>" + spoken + "</b></span><span>记忆 <b>" + total + "</b></span><span>好感 <b>" + bonds + "</b></span></div>" +
         "<div class='npc-goal'>" + esc(p.goal || (p.traits && p.traits[0]) || "") + "</div>" +
         "<div class='npc-bar'><i style='width:" + conf + "%'></i></div>" +
@@ -856,7 +918,7 @@ function renderWorld(d){
 
   $("#world").innerHTML =
     "<div class='stat-row'>" +
-      "<div class='stat'><span>抢话轮次</span><b class='" + (d.collisions ? "down" : "up") + "'>" + d.collisions + "</b></div>" +
+      "<div class='stat'><span>同组抢话</span><b class='" + (d.collisions ? "down" : "up") + "'>" + d.collisions + "</b></div>" +
       "<div class='stat'><span>静默回落</span><b class='" + (PLANNER.silent_fallbacks ? "down" : "up") + "'>" +
         (PLANNER.silent_fallbacks || 0) + "</b></div>" +
     "</div>" +
@@ -947,7 +1009,7 @@ function renderSpeech(d){
     "<div class='speech-track' style='--h:" + hueOf(name) + "'><i style='width:" + (n / maxN * 100).toFixed(1) + "%'></i></div>" +
     "<em>" + n + "</em></div>").join("") +
     "<div class='mem-line'>共 " + sum + " 次发言" +
-      (d.collisions ? " · 抢话 " + d.collisions + " 轮" : " · 没有抢话") + "</div>";
+      (d.collisions ? " · 同组抢话 " + d.collisions + " 轮" : " · 没有抢话") + "</div>";
 }
 
 function paint(d){
@@ -961,9 +1023,19 @@ function paint(d){
   const llmOn = !!PLANNER.llm_active;
 
   $("#log").innerHTML = d.events.map((ev, i) => {
+    // 说话范围标签由后端发的事件字段决定，页面不猜。收件人写错时后端
+    // 让这一轮没人接话（不广播），页面在这里把原因原样印出来。
+    const scopeCls = ev.scope === "private" ? "private" : (ev.scope === "group" ? "group" : "");
+    const scopeBadge = ev.scope_error
+      ? "<span class='scope-tag bad'>" + esc(ev.scope_error) + "</span>"
+      : (ev.scope === "private"
+        ? "<span class='scope-tag private'>私聊 → " + esc(ev.target_name || "?") + "</span>"
+        : (ev.scope === "group"
+          ? "<span class='scope-tag group'>对组 · " + esc(ev.group_name || "?") + "</span>"
+          : ""));
     const head = ev.kind === "say"
-      ? "<span class='turn-no'>第 " + (i + 1) + " 轮</span>" +
-        "<span class='bubble-player'><i>玩家 · " + esc(ev.speaker_name) + "</i>" + esc(ev.text) + "</span>"
+      ? "<span class='turn-no'>第 " + (i + 1) + " 轮</span>" + scopeBadge +
+        "<span class='bubble-player " + scopeCls + "'><i>玩家 · " + esc(ev.speaker_name) + "</i>" + esc(ev.text) + "</span>"
       : "<span class='turn-no'>第 " + (i + 1) + " 轮</span><span class='idle-tag'>无人说话 · 世界自转</span>";
     const turns = (ev.turns || []).map((t) => {
       const acts = (t.actions || []).map((a) => {
@@ -993,8 +1065,14 @@ function paint(d){
       const outcome = t.say
         ? "<div class='say'>" + esc(t.say) + "</div>"
         : (visible ? "<div class='decision'>" + esc(t.name) + " 没说话，但在忙自己的事</div>" : "");
+      // 频道标签来自**真正落进世界的那条发言**（后端按 speaker 配好）。
+      // 私聊回复也是私聊 —— 玩家悄悄问、NPC 大声答曾经是一个真实的泄漏。
+      const chBadge = t.channel_label
+        ? "<span class='scope-tag " + (t.channel === "private" ? "private" : "group") + "'>" +
+          esc(t.channel_label) + "</span>"
+        : "";
       return "<div class='turn'>" + ava(t.name) + "<div class='turn-main'>" +
-        "<div class='turn-name'><b>" + esc(t.name) + "</b>" + srcBadge + "</div>" +
+        "<div class='turn-name'><b>" + esc(t.name) + "</b>" + chBadge + srcBadge + "</div>" +
         (t.decision_reason ? "<div class='decision'>" + esc(t.decision_reason) + "</div>" : "") +
         acts + mems + viol + outcome +
         "</div></div>";
@@ -1016,7 +1094,13 @@ function paint(d){
 $("#send").onclick = () => {
   const text = $("#msg").value.trim();
   if (!text) return;
-  step({kind: "say", speaker: $("#who").value, text});
+  const [group, npc] = scopeTarget();
+  // 范围字段直接写进对象字面量：`ev.target = ...` 里的 `.target` 会被
+  // 页面字段护栏当成"读了响应里的 target"，而它只存在于请求里。
+  step({
+    kind: "say", speaker: $("#who").value, text,
+    group: group ? group.id : "", target: npc ? npc.id : "",
+  });
   $("#msg").value = "";
 };
 $("#msg").onkeydown = (e) => { if (e.key === "Enter") $("#send").click(); };
@@ -1025,6 +1109,7 @@ $("#seed").onclick = () => { if (CURRENT && CURRENT.sample) $("#msg").value = CU
 $("#reset").onclick = resetChat;
 $("#scn").onchange = onScenario;
 $("#who").onchange = syncWho;
+$("#scope").onchange = syncScope;
 
 // ---------- eval ----------
 function bar(v){

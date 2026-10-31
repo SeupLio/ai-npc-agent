@@ -428,15 +428,20 @@ def turn_taking(
     npc_ids: list[str],
     *,
     require_all_spoke: bool = False,
+    groups_by_tick: dict[int, dict[str, list[str]]] | None = None,
 ) -> Score:
     """多 NPC 的发言权纪律。这是单 NPC 场景里根本不存在的维度。
 
     两件事分开判：
 
-    **不撞车** —— 任何一个 tick 里，开口的 NPC 不超过一个。
+    **不撞车** —— 任何一个 tick、**同一个组**里，开口的 NPC 不超过一个。
     这是硬约束。两个 NPC 同时说话，玩家看到的是两行字挤在一起，
     比单个 NPC 说错话更伤体验，而且它是多 Agent 最典型的翻车方式：
     每个 NPC 各自看自己的状态，都觉得自己该说话。
+
+    `groups_by_tick` 给了就按 `(tick, 组)` 判：分组场景里两组各说一句
+    是**并行对话**，不是抢话。不给就退回"一个 tick 全场一个人"——
+    单组场景的行为一个字都不变。
 
     **都有机会** —— 每个 NPC 至少说过一次话。只在用例显式声明
     ``require_all_spoke`` 时才检查：短对话里让安静的角色一直不开口，
@@ -446,14 +451,20 @@ def turn_taking(
     if len(npc_set) <= 1:
         return Score(1.0, "单 NPC 场景，无需调度")
 
-    collisions: dict[int, list[str]] = {}
-    for tick, speakers in speakers_by_tick.items():
-        npcs = sorted({s for s in speakers if s in npc_set})
-        if len(npcs) > 1:
-            collisions[tick] = npcs
+    collisions: list[str] = []
+    if groups_by_tick is not None:
+        for tick, groups in groups_by_tick.items():
+            for group_id, speakers in groups.items():
+                npcs = sorted({s for s in speakers if s in npc_set})
+                if len(npcs) > 1:
+                    collisions.append(f"t{tick} 组 {group_id} 同时开口 {npcs}")
+    else:
+        for tick, speakers in speakers_by_tick.items():
+            npcs = sorted({s for s in speakers if s in npc_set})
+            if len(npcs) > 1:
+                collisions.append(f"t{tick} 同时开口 {npcs}")
     if collisions:
-        detail = "；".join(f"t{tick} 同时开口 {ids}" for tick, ids in sorted(collisions.items()))
-        return Score(0.0, f"两个 NPC 在同一轮抢话 —— {detail}")
+        return Score(0.0, f"同一组里两个 NPC 在同一轮抢话 —— {'；'.join(collisions)}")
 
     spoke = {s for speakers in speakers_by_tick.values() for s in speakers if s in npc_set}
     if require_all_spoke:

@@ -1,0 +1,185 @@
+# 场景七：四人两组（分组与私聊）
+#
+# 三人场景解决的是"第三个人插不进来"；四个人如果还排进同一条队列，
+# 只是把队列变长 —— 第四个人要等三轮才能说上一句，玩家看到的是
+# 四个人**轮流值日**，不是一间活着的店。
+#
+# 所以这个场景把现场分成两处：
+#
+#   吧台组（阿柚、阿棠）—— 点单、做饮品、烤派
+#   露台组（小舟、洛）  —— 唱歌、调琴
+#
+# 三件事同时成立，缺一条"分组"就只是配置里的一个字段：
+#
+#   1. **同一 tick 可以两组各说一句。** 两组是并行对话，不是抢话；
+#      撞车判据是 `(tick, group)`，不是全场只许一个人开口。
+#   2. **公开发言按组隔离。** 吧台这边聊拿铁，露台那边不该突然接一句
+#      "我也要一杯" —— 那会暴露两组其实共用了一双耳朵。
+#   3. **私聊只落在收件人身上。** 玩家把话递到阿柚耳边，
+#      同组的阿棠不该听见，更不该把它带进传闻网络。
+#
+# 配置里 `groups:` / `group_names:` 是这一场的关键；没有它们的场景
+# （duet / trio / village …）自动退化成单组，行为一个字都不变。
+id: quartet
+name: 四人两组
+description: 吧台两人备饮烤派、露台两人唱歌调琴；两组并行，私聊只落在一个人身上
+npcs:
+  - {id: ayou, persona: ayou, start: counter}
+  - {id: tang, persona: tang, start: counter}
+  - {id: xiaozhou, persona: xiaozhou, start: terrace}
+  - {id: luo, persona: luo, start: terrace}
+
+# 分组：键是组 id，值是成员。四个人必须全部有组 ——
+# 少写一个人，导演会在构造时直接报错，而不是让那个人静默地永远不开口。
+groups:
+  counter: [ayou, tang]
+  terrace: [xiaozhou, luo]
+
+group_names:
+  counter: 吧台组
+  terrace: 露台组
+
+players:
+  - {id: player_a, name: 阿澈, start: counter}
+  - {id: player_b, name: 小满, start: terrace}
+
+world:
+  items:
+    beans: {loc: kitchen}
+    milk: {loc: kitchen}
+    lemon: {loc: kitchen}
+    apple: {loc: counter}
+    old_book: {loc: shelf}
+    gramophone: {loc: terrace}
+  knowledge_unlocked: [house_story, brewing, constellation]
+  settable_flags:
+    - welcome_drink_served
+    - pie_baked
+    - song_started
+    - piano_tuned
+
+activities:
+  - {id: song_request, name: 点一首歌}
+
+objectives:
+  # 吧台组 · 阿柚：一杯拿铁，亲手递到阿澈手里。
+  - id: serve_guest
+    owner: ayou
+    goal: 给坐在吧台的阿澈做一杯拿铁并亲手递过去
+    priority: 1
+    steps:
+      - {goal: 招呼客人并问想喝什么, tool: speak, args: {intent: greet_new}}
+      - {goal: 去后厨准备, tool: move_to, args: {location: kitchen}}
+      - {goal: 取咖啡豆, tool: take_item, args: {item: beans}}
+      - {goal: 取牛奶, tool: take_item, args: {item: milk}}
+      - {goal: 做一杯拿铁, tool: craft_item, args: {recipe: latte}}
+      - {goal: 回到吧台, tool: move_to, args: {location: counter}}
+      - {goal: 把拿铁递给阿澈, tool: give_item, args: {item: latte, player: player_a}}
+      - {goal: 标记饮品已送出, tool: set_flag, args: {key: welcome_drink_served, value: "1"}}
+    success_when: {player_has: {player_a: [latte]}}
+
+  # 吧台组 · 阿棠：一块苹果派。她和阿柚**同时**在吧台忙，
+  # 但各自的目标不同 —— 这是"同组并行"不打架的证据。
+  - id: bake_pie
+    owner: tang
+    goal: 烤一块苹果派，切给吧台的阿澈
+    priority: 1
+    steps:
+      - {goal: 拿起台面上的苹果, tool: take_item, args: {item: apple}}
+      - {goal: 去后厨开烤箱, tool: move_to, args: {location: kitchen}}
+      - {goal: 烤一块苹果派, tool: craft_item, args: {recipe: apple_pie}}
+      - {goal: 回到吧台, tool: move_to, args: {location: counter}}
+      - {goal: 把苹果派递给阿澈, tool: give_item, args: {item: apple_pie, player: player_a}}
+      - {goal: 标记派已出炉, tool: set_flag, args: {key: pie_baked, value: "1"}}
+    success_when: {player_has: {player_a: [apple_pie]}}
+
+  # 露台组 · 小舟：把声音立起来。
+  - id: play_song
+    owner: xiaozhou
+    goal: 在露台起一首歌
+    priority: 1
+    steps:
+      - {goal: 说一句开场的短话, tool: speak, args: {intent: opening}}
+      - {goal: 开启点歌, tool: start_activity, args: {activity: song_request}}
+      - {goal: 标记歌声起来了, tool: set_flag, args: {key: song_started, value: "1"}}
+    success_when: {flag: song_started}
+
+  # 露台组 · 洛：把琴调好。
+  - id: tune_piano
+    owner: luo
+    goal: 把露台的琴调准，并留下标记
+    priority: 2
+    steps:
+      - {goal: 去露台看琴, tool: move_to, args: {location: terrace}}
+      - {goal: 把琴头取下, tool: take_item, args: {item: gramophone}}
+      - {goal: 标记琴已调好, tool: set_flag, args: {key: piano_tuned, value: "1"}}
+    success_when: {flag: piano_tuned}
+
+  # 两组各自的联合目标：**组内**协作，不需要等另一组。
+  - id: counter_warm
+    goal: 吧台这边：客人手里有拿铁，也有派
+    priority: 9
+    success_when:
+      all_of:
+        - {player_has: {player_a: [latte]}}
+        - {player_has: {player_a: [apple_pie]}}
+
+  - id: terrace_night
+    goal: 露台这边：琴调好了，歌也起来了
+    priority: 9
+    success_when:
+      all_of:
+        - {flag: piano_tuned}
+        - {flag: song_started}
+
+  # 全场目标：两组都收工，才算这一晚成立。
+  - id: quartet_evening
+    goal: 吧台有热饮和甜点，露台有琴声和歌
+    priority: 0
+    success_when:
+      all_flags: [welcome_drink_served, pie_baked, song_started, piano_tuned]
+
+# 四个人抢同一个"营业时间"：裁定台按资源只裁一次，
+# **不能**因为人多就多裁几次（三人的那次事故见 `motives.py` 的注释）。
+motives:
+  - id: ayou_close_early
+    owner: ayou
+    want: 早点收摊，把灯关了
+    resource: 营业时间
+    intensity: 40
+    yield_line: "行，那就依{peer_name}，再唱一首。"
+  - id: tang_prep_tomorrow
+    owner: tang
+    want: 今晚把明天的面团发上
+    resource: 营业时间
+    intensity: 45
+    yield_line: "行吧，{peer_name}说了算，我明天早点来。"
+  - id: xiaozhou_encore
+    owner: xiaozhou
+    want: 再唱一首，把露台的灯留着
+    resource: 营业时间
+    intensity: 70
+    yield_line: "……好，那就听{peer_name}的。"
+  - id: luo_tune_late
+    owner: luo
+    want: 把琴调完再走
+    resource: 营业时间
+    intensity: 55
+    yield_line: "唔——听{peer_name}的，我再留一会儿。"
+
+lore:
+  - id: 位置
+    subject: [这家店, 这店, 咖啡屋, 咖啡馆, 我们店, 小店]
+    relation: 位置
+    value: 星屿的旧灯塔下面
+    wrong: [山顶, 山上, 海边, 码头, 市中心, 地下一层]
+  - id: 来历
+    subject: [这家店, 这店, 咖啡屋, 咖啡馆]
+    relation: 来历
+    value: 最早是给守塔人歇脚的地方
+    wrong: [我爷爷开的, 十年前开的, 刚开业, 新建的, 上个月开的]
+  - id: 朝向
+    subject: [露台, 天台]
+    relation: 朝向
+    value: 朝北，能看到星轨
+    wrong: [朝南, 朝东, 朝西, 看不到星星]

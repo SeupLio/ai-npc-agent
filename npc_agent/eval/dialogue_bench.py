@@ -4,7 +4,7 @@
 
 六维评测（`eval/harness.py`）量的是**单 NPC 的任务完成**：
 目标达成没有、工具调对没有、人设崩没有。它对"两个 NPC 之间"这件事
-**结构上盲** —— `turn_taking` 只看"一个 tick 里是不是只有一个人开口"，
+**结构上盲** —— `turn_taking` 只看"同一轮同一组里是不是只有一个人开口"，
 两个 NPC 全程不说话它也满分。
 
 所以这套基准补的是那个空档。它**不改**六维用例集（那是回归基线，
@@ -15,7 +15,7 @@
     grounding      问"你们俩"、问"你是谁"，答不答得上来
     novelty        复不复读、会不会两个 NPC 抢着说同一件事
     memory_flow    印象传不传到另一个 NPC 那里
-    turn_taking    一个 tick 一个人、链长有上限、被点名的优先
+    turn_taking    同一轮每组一个人、链长有上限、被点名的优先
 
 ## 判据只断言"可观测的行为"
 
@@ -85,14 +85,6 @@ def _npc_said(cast: Cast) -> dict[str, list[str]]:
 
 def _all_npc_text(cast: Cast) -> str:
     return "".join(u.text for u in _npc_lines(cast))
-
-
-def _speakers_by_tick(cast: Cast) -> dict[int, list[str]]:
-    ids = set(cast.npc_ids)
-    out: dict[int, list[str]] = {}
-    for u in _npc_lines(cast):
-        out.setdefault(u.tick, []).append(u.speaker_id)
-    return {t: [s for s in v if s in ids] for t, v in out.items()}
 
 
 # -- peer_turn --------------------------------------------------------------- #
@@ -257,10 +249,12 @@ def _check_no_gossip_on_smalltalk(cast: Cast) -> tuple[bool, str]:
 
 # -- turn_taking ------------------------------------------------------------- #
 def _check_one_speaker(cast: Cast) -> tuple[bool, str]:
-    for tick, speakers in _speakers_by_tick(cast).items():
-        if len(speakers) > 1:
-            return False, f"tick {tick} 有 {len(speakers)} 个 NPC 同时开口"
-    return True, "每个 tick 最多一个 NPC 开口"
+    # 判据是 `(tick, 组)`，不是 `tick`。这个基准跑的都是单组场景，
+    # 所以结果和从前一样；换成分组场景时，两组各说一句不会被误判成抢话。
+    collisions = cast.collisions()
+    if collisions:
+        return False, f"{len(collisions)} 处同组抢话：{collisions}"
+    return True, "每个 tick 每组最多一个 NPC 开口"
 
 
 def _check_chain_limit(cast: Cast) -> tuple[bool, str]:

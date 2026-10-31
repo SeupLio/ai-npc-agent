@@ -148,8 +148,21 @@ class Cast:
             for persona in personas
         }
         self.order: list[str] = list(self.agents)
+        # 分组（见 `_parse_groups`）。没有 `groups:` 的场景退化成**一个组**，
+        # 于是 duet / trio 的调度语义一个字都不变 —— 分组是加法，不是改写。
+        self.groups, self._group_by_actor = self._parse_groups()
+        self.group_names: dict[str, str] = {
+            str(key): str(value)
+            for key, value in (scenario.get("group_names") or {}).items()
+        }
+        #: 演员表第一位所在的组。`_next_first` 始终是这个组的游标 ——
+        #: 既有的单组场景与直接改 `_next_first` 的测试因此继续成立。
+        self._primary_group = self.group_of(self.order[0])
         # 下一轮"没人被点名时"谁先开口。初始按配置顺序。
         self._next_first: str = self.order[0]
+        self._group_next: dict[str, str] = {
+            gid: members[0] for gid, members in self.groups.items()
+        }
         self.rounds = 0
         self.history: list[list[AgentTurn]] = []
         # 对话线程（谁欠谁一句话 / 哪些内容点说过了 / 连聊到第几轮）。
@@ -157,12 +170,92 @@ class Cast:
         self.board = ConversationBoard(chain_limit=self.config.max_peer_exchanges)
         self.reset()
 
+    def _parse_groups(self) -> tuple[dict[str, list[str]], dict[str, str]]:
+        """把场景里的 `groups:` 读成 {组 id: [成员]} 与 {成员: 组 id}。
+
+        两种写法：
+
+            groups:                 # 字典（推荐）
+              counter: [ayou, tang]
+              terrace: [xiaozhou, luo]
+            groups:                 # 列表（组名里带空格/冒号时更好写）
+              - {id: counter, members: [ayou, tang]}
+
+        没配 `groups:` → 全部人一个组 `main`。这是 duet / trio 的现状，
+        也是"分组是加法"的保证：单组时所有新逻辑都退化成旧行为。
+
+        ⚠️ 配了分组就必须**把人分全**。少一个人不是"默认随便放进某组"，
+        而是配置错了 —— 那个 NPC 会永远不在任何发言队列里，所有模块指标
+        都正常，只有玩家发现"第四个人从来没说过话"。所以这里直接报错。
+        """
+        raw = self.scenario.get("groups")
+        if not raw:
+            return {"main": list(self.order)}, {pid: "main" for pid in self.order}
+
+        pairs: list[tuple[str, list[str]]] = []
+        if isinstance(raw, dict):
+            pairs = [(str(gid), list(members or [])) for gid, members in raw.items()]
+        elif isinstance(raw, list):
+            for entry in raw:
+                if not isinstance(entry, dict):
+                    raise ValueError(f"groups 的列表项必须是对象：{entry!r}")
+                pairs.append(
+                    (
+                        str(entry.get("id") or ""),
+                        list(entry.get("members") or entry.get("npcs") or []),
+                    )
+                )
+        else:
+            raise ValueError("groups 必须是字典或列表")
+
+        groups: dict[str, list[str]] = {}
+        group_of: dict[str, str] = {}
+        for gid, members in pairs:
+            if not gid:
+                raise ValueError("groups 里有一个分组没有 id")
+            if gid in groups:
+                raise ValueError(f"分组 {gid!r} 定义了两次")
+            if not members:
+                raise ValueError(f"分组 {gid!r} 没有成员")
+            for pid in members:
+                pid = str(pid)
+                if pid not in self.agents:
+                    raise ValueError(f"分组 {gid!r} 里的 {pid!r} 不在演员表 {self.order}")
+                if pid in group_of:
+                    raise ValueError(
+                        f"{pid!r} 同时出现在 {group_of[pid]!r} 和 {gid!r} 两个分组里"
+                    )
+                group_of[pid] = gid
+                groups.setdefault(gid, []).append(pid)
+
+        missing = [pid for pid in self.order if pid not in group_of]
+        if missing:
+            raise ValueError(
+                f"这些 NPC 没有分组：{missing}。配了 groups 就必须把人分全 —— "
+                "漏掉的人永远不会被排进任何发言队列。"
+            )
+        return groups, group_of
+
     # ------------------------------------------------------------------ #
     # 只读视图
     # ------------------------------------------------------------------ #
     @property
     def npc_ids(self) -> list[str]:
         return list(self.agents)
+
+    @property
+    def group_map(self) -> dict[str, str]:
+        """{NPC id: 组 id}。评测按 (tick, 组) 判撞车时读它。"""
+        return dict(self._group_by_actor)
+
+    def group_of(self, actor_id: str) -> str:
+        return self._group_by_actor.get(actor_id, "")
+
+    def group_name(self, group_id: str) -> str:
+        return self.group_names.get(group_id, group_id)
+
+    def group_members(self, group_id: str) -> list[str]:
+        return list(self.groups.get(group_id, []))
 
     @property
     def is_multi_npc(self) -> bool:
@@ -203,6 +296,7 @@ class Cast:
         for agent in self.agents.values():
             agent.reset(reset_env=False)
         self._next_first = self.order[0]
+        self._group_next = {gid: members[0] for gid, members in self.groups.items()}
         self.rounds = 0
         self.history = []
         self.board = ConversationBoard(chain_limit=self.config.max_peer_exchanges)
@@ -245,8 +339,10 @@ class Cast:
     # ------------------------------------------------------------------ #
     # 发言权调度
     # ------------------------------------------------------------------ #
-    def speaking_order(self, utterance: Optional[Utterance]) -> list[str]:
-        """决定这一轮 NPC 的出场顺序。
+    def speaking_order(
+        self, utterance: Optional[Utterance], *, group: Optional[str] = None
+    ) -> list[str]:
+        """决定这一轮 NPC 的出场顺序（默认返回全场的拼接顺序）。
 
         被点名的人排第一 —— 玩家的指令优先于调度器的公平性，
         "会听话"比"轮流发言"重要。
@@ -259,21 +355,48 @@ class Cast:
         实测（duet 的 `duet_named` 用例）：阿柚在第 1 轮回应玩家，
         第 3 轮又轮到它冷场开口，小舟从头到尾没说过一个字。
         活世界不该是"谁先开口谁一直开口"。
+
+        `group=` 只看某一个组。多组场景里，每组各有一个游标 ——
+        共用一个游标会让第二组永远排在后面，第三、四个人形同虚设。
         """
-        ids = self.order
+        if group is not None:
+            return self._group_order(group, utterance)
+        out: list[str] = []
+        for gid in self.groups:
+            out.extend(self._group_order(gid, utterance))
+        return out
+
+    def _group_order(
+        self,
+        group_id: str,
+        utterance: Optional[Utterance],
+        obligation: Any = None,
+    ) -> list[str]:
+        """一个组内部的出场顺序。单组时与旧的 ``speaking_order`` 完全一致。"""
+        ids = self.groups.get(group_id, [])
         if len(ids) <= 1:
             return list(ids)
+
+        if obligation is not None and obligation.target_id in ids:
+            target = obligation.target_id
+            return [target] + [pid for pid in ids if pid != target]
 
         named = [
             pid
             for pid in (utterance.mentions if utterance is not None else [])
-            if pid in self.agents
+            if pid in ids
         ]
         if named:
             first = named[0]
             return [first] + [pid for pid in ids if pid != first]
 
-        start = ids.index(self._next_first) if self._next_first in ids else 0
+        # 主组始终读 `_next_first`（既有测试会直接改它）；其余组各读各的游标。
+        cursor = (
+            self._next_first
+            if group_id == self._primary_group
+            else self._group_next.get(group_id, ids[0])
+        )
+        start = ids.index(cursor) if cursor in ids else 0
         rotation = [ids[(start + i) % len(ids)] for i in range(len(ids))]
         if utterance is None:
             rank = {pid: index for index, pid in enumerate(rotation)}
@@ -281,6 +404,89 @@ class Cast:
                 key=lambda pid: (self.agents[pid].state.npc_utterances, rank[pid])
             )
         return rotation
+
+    # ------------------------------------------------------------------ #
+    # 频道：谁听得见、谁有发言权
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _is_private(utterance: Optional[Utterance]) -> bool:
+        return utterance is not None and utterance.channel == "private"
+
+    def _private_targets(self, utterance: Utterance) -> list[str]:
+        """私聊的收件 NPC。
+
+        优先用产出方声明的 `addressed_to`；没有就取 audience 里的 NPC。
+        两者都没有 ⇒ 这是一条**没有收件人的悄悄话**，按公开处理会泄漏，
+        所以返回空——导演会让整轮无人接话。失败方向必须是"少说一句"。
+        """
+        if utterance.addressed_to in self.agents:
+            return [utterance.addressed_to]  # type: ignore[list-item]
+        return [pid for pid in (utterance.audience or ()) if pid in self.agents]
+
+    def _active_groups(self, utterance: Optional[Utterance]) -> set[str]:
+        """这一轮哪些组可以开口（不等于一定开口）。
+
+        * 冷场轮：所有组都能自己决定要不要主动开口；
+        * 公开玩家发言：所有组都听得见，但**点名只叫得动被点的那一组** ——
+          点阿柚做咖啡时，露台那组不该同时冒出一句无关的话；
+        * 限范围发言（audience 非空）：只有收件人所在的组；
+        * 私聊：只有收件人所在的那一组，而且组里只有他一个人有发言权。
+        """
+        if utterance is None:
+            return set(self.groups)
+        if self._is_private(utterance):
+            return {
+                self.group_of(pid)
+                for pid in self._private_targets(utterance)
+                if pid in self.agents
+            }
+        if utterance.audience is not None:
+            return {
+                self.group_of(pid)
+                for pid in utterance.audience
+                if pid in self.agents
+            }
+        named = [pid for pid in utterance.mentions if pid in self.agents]
+        if named:
+            return {self.group_of(pid) for pid in named}
+        return set(self.groups)
+
+    def _hears(self, actor_id: str, utterance: Optional[Utterance]) -> bool:
+        """这句话是否落在某个 NPC 的收件范围里。
+
+        `audience=None` 是公开频道，所有人都听得见（玩家公开发言、
+        单组场景里的 NPC 台词）；给了 audience 就只认名单。
+        """
+        if utterance is None:
+            return False
+        if utterance.audience is None:
+            return True
+        return actor_id in utterance.audience
+
+    def speakers_by_group_tick(self) -> dict[int, dict[str, list[str]]]:
+        """每轮每个组里谁开过口。
+
+        多组场景的撞车判据是 `(tick, 组)`，不是 `tick` ——
+        两组在同一个 tick 各说一句是**并行对话**，不是抢话。
+        """
+        out: dict[int, dict[str, list[str]]] = {}
+        for utterance in self.env.utterances:
+            if utterance.speaker_id not in self.agents:
+                continue
+            gid = self.group_of(utterance.speaker_id)
+            speakers = out.setdefault(utterance.tick, {}).setdefault(gid, [])
+            if utterance.speaker_id not in speakers:
+                speakers.append(utterance.speaker_id)
+        return out
+
+    def collisions(self) -> list[tuple[int, str, list[str]]]:
+        """同一轮同一个组里有两个人开口 —— 这才是真的撞车。"""
+        out: list[tuple[int, str, list[str]]] = []
+        for tick, groups in sorted(self.speakers_by_group_tick().items()):
+            for gid, speakers in groups.items():
+                if len(speakers) > 1:
+                    out.append((tick, gid, list(speakers)))
+        return out
 
     def _speakers_this_tick(self, tick: int) -> set[str]:
         """这一轮里真的开过口的 NPC。
@@ -340,31 +546,61 @@ class Cast:
                 if obligation is not None:
                     peer_turn = True
                     utterance = obligation.as_utterance()
+                    # 同伴对聊只发生在**同一个组**里。多组场景下把这句话的
+                    # 收件范围收紧到那一组，别让另一组听见半截对话。
+                    if len(self.groups) > 1:
+                        gid = self.group_of(obligation.target_id)
+                        utterance.audience = tuple(self.groups.get(gid, []))
+                        utterance.channel = gid
             else:
                 self.board.expire()
 
-        order = self._order_for(utterance, obligation)
+        private = self._is_private(utterance)
+        private_targets = self._private_targets(utterance) if private else []
+        private_target = private_targets[0] if private_targets else ""
+        # 没有收件人的悄悄话：整轮无人接话。宁可少说一句，也不能广播。
+        active_groups = self._active_groups(utterance)
+        order = [
+            pid
+            for pid in self._order_for(utterance, obligation)
+            if self.group_of(pid) in active_groups
+        ]
         turns: list[AgentTurn] = []
-        spoke = False
+        # 每组的发言权各自收放：A 组说过话不影响 B 组开口。
+        spoke_groups: set[str] = set()
 
-        for index, pid in enumerate(order):
+        for pid in order:
             agent = self.agents[pid]
+            gid = self.group_of(pid)
             before = len(self.env.utterances)
-            # 同伴轮：只有被点名的人有发言权。其余人这一轮只是"在场"。
-            allowed = (not spoke) and (not peer_turn or pid == obligation.target_id)
+            heard = utterance if self._hears(pid, utterance) else None
+            if private:
+                # 悄悄话只有收件人能答。同组的人在场，但既听不见也插不上话。
+                allowed = bool(private_target) and pid == private_target
+            elif peer_turn:
+                # 同伴轮：只有被点名的人有发言权。其余人这一轮只是"在场"。
+                allowed = obligation is not None and pid == obligation.target_id
+            else:
+                allowed = gid not in spoke_groups
             turn = agent.step(
-                utterance,
-                # 已经有人开口 → 后面的 NPC 让出话头。两道闸门都要给：
+                heard,
+                # 已经有人开口 → **同组**后面的 NPC 让出话头。两道闸门都要给：
                 # 对话层管"要不要新建发言计划"，工具层管"正在跑的计划里的 speak"。
-                other_npc_spoke_last=spoke,
+                other_npc_spoke_last=(gid in spoke_groups),
                 allow_speech=allowed,
                 # 冷场是**世界**的属性：这一轮没人开口，每个人都该记一轮。
                 # 曾经写成 `index == 0`（"同一轮只加一次"），但发言顺序是轮转的
                 # ⇒ 每个 NPC 每 N 轮才加一次，阈值 2 在 duet 要 3 轮、trio 要 4 轮
                 # 才触发，而界面上写着"冷场 2 轮"。已经有人开口就不再记
                 # （这一轮不是冷场）；开口的人稍后由自己清零（见 agent.step）。
-                # 同伴轮不算冷场 —— 有人正在说话。
-                count_silence=(not peer_turn and not spoke),
+                # 分组之后这条按组计：A 组聊得热闹，不该把 B 组的冷场计数清零。
+                # 同伴轮 / 私聊不算冷场 —— 有人正在说话。
+                count_silence=(
+                    not private
+                    and not peer_turn
+                    and gid not in spoke_groups
+                    and heard is None
+                ),
             )
             turns.append(turn)
 
@@ -375,7 +611,11 @@ class Cast:
             ]
             if not new_speeches:
                 continue
-            spoke = True
+            spoke_groups.add(gid)
+            for spoken in new_speeches:
+                self._stamp_scope(
+                    spoken, private_input=utterance if private else None
+                )
             # NPC 之间说的话，同伴也要听见。
             # Agent.step 内部的监听只处理传进来的那条玩家发言，
             # 不补这一步，"阿柚转头跟小舟说：你来弹一首" 就断在半路 ——
@@ -384,12 +624,14 @@ class Cast:
             # ⚠️ 曾经试过"只让同一个地点的人听见"（想给传闻腾出空间），
             # 结果是**既有契约被破坏**：`multi_turn_taking` 用例明确要求
             # 小舟记得阿柚说过的话（"没说话的听见了吗"）。
-            # 传闻因此换了内容 —— 它传的不是原话，是**判断**（见 `social.py`）。
+            # 现在按**频道**过滤：公开频道（单组场景）仍然人人听得见，
+            # 分组/私聊则只送到收件范围 —— 那正是分组存在的意义。
             for other_id, other in self.agents.items():
                 if other_id == pid:
                     continue
                 for spoken in new_speeches:
-                    other.observe_utterance(spoken)
+                    if self._hears(other_id, spoken):
+                        other.observe_utterance(spoken)
             for spoken in new_speeches:
                 self._note_dialogue(spoken, peer_turn=peer_turn)
 
@@ -462,6 +704,42 @@ class Cast:
             return [target] + [pid for pid in self.order if pid != target]
         return self.speaking_order(utterance)
 
+    def _stamp_scope(
+        self,
+        spoken: Utterance,
+        *,
+        private_input: Optional[Utterance] = None,
+    ) -> None:
+        """给 NPC 刚说出口的话盖上车道标记。
+
+        两件事：
+
+        1. **私聊的回复也要是私聊。** 玩家悄悄问，NPC 大声答，
+           等于把悄悄话广播给全店 —— 泄漏发生在回复上，不在提问上。
+        2. **多组场景里，NPC 的话只送到自己的组。** 不隔离的话，
+           两组并行对话会互相串台，"分组"就只剩一个配置字段。
+
+        单组场景**什么都不盖**：保留 `audience=None` 的公开语义，
+        既有场景的观察范围一个字都不变。
+        """
+        if private_input is not None:
+            spoken.channel = "private"
+            audience = tuple(private_input.audience or ())
+            if not audience:
+                target = self._private_targets(private_input)
+                audience = tuple(target)
+            spoken.audience = audience
+            return
+        if len(self.groups) <= 1:
+            return
+        if spoken.audience is not None or spoken.channel:
+            return
+        gid = self.group_of(spoken.speaker_id)
+        members = self.groups.get(gid, [])
+        if members:
+            spoken.audience = tuple(members)
+            spoken.channel = gid
+
     def _note_dialogue(self, spoken: Utterance, *, peer_turn: bool = False) -> None:
         """把一句 NPC 发言记进对话板，并决定要不要开一条接话义务。
 
@@ -476,7 +754,12 @@ class Cast:
         想喝什么？」—— 一句对**全场**说的问句。按"2 个 NPC + 问句"判，
         小舟会以为在问自己，于是回一句「……还行。」，她自己的目标永远没开工。
         玩家看到的是：一个 NPC 在忙，另一个只会应声。
+
+        私聊**不进公共对话板**：板子会开"下一轮该谁接"的义务，
+        而悄悄话不该把第三个人卷进来。私聊的来回由玩家自己继续。
         """
+        if spoken.channel == "private":
+            return
         target = None
         if spoken.addressed_to in self.agents and spoken.addressed_to != spoken.speaker_id:
             target = spoken.addressed_to
@@ -491,16 +774,24 @@ class Cast:
                 if pid in self.agents and pid != spoken.speaker_id:
                     target = pid
                     break
+        members = self.groups.get(self.group_of(spoken.speaker_id), [])
         if (
             target is None
             and peer_turn
             and spoken.addressed_to is None
-            and len(self.agents) == 2
+            and len(members) == 2
         ):
-            # 两个 NPC 在场、说话的是 NPC、而且是问句 → 问的就是另一个人。
-            others = [pid for pid in self.agents if pid != spoken.speaker_id]
+            # 这个组里只有两个人、说话的是 NPC、而且是问句 → 问的就是另一个。
+            # 用**组内人数**而不是全场人数：分组之后，"另一个"必须是同组的
+            # 那一个；拿全场人数判，四人场景里会挑到一个听不见这句话的人。
+            others = [pid for pid in members if pid != spoken.speaker_id]
             if others and spoken.is_question and spoken.speaker_id in self.agents:
                 target = others[0]
+
+        if target is not None and self.group_of(target) != self.group_of(spoken.speaker_id):
+            # 跨组点名不作数：对方根本听不见，开出来的义务会让他下一轮
+            # 对着空气回答一句 —— 这是分组隔离最容易漏的一处。
+            target = None
 
         self.board.record(
             tick=spoken.tick,
@@ -540,18 +831,27 @@ class Cast:
         actor.bump_affinity(other_id, delta)
 
     def _advance_floor(self, order: list[str], tick: int) -> None:
-        """把下一轮的话头交给"这一轮没轮上的人"。"""
-        if len(order) <= 1:
-            self._next_first = order[0]
-            return
+        """把下一轮的话头交给**每个组**里这一轮没轮上的人。
+
+        单组时与旧实现逐字等价（`order` 就是全场顺序）。
+        多组时每组各推各的游标 —— 共用一个游标会让一组永远压着另一组。
+        """
+        by_group: dict[str, list[str]] = {}
+        for pid in order:
+            if pid in self.agents:
+                by_group.setdefault(self.group_of(pid), []).append(pid)
         spoke = self._speakers_this_tick(tick)
-        silent = [pid for pid in order if pid not in spoke]
-        if spoke and silent:
-            # 有人开口、有人没轮到 → 下一轮让没开口的先来，避免被饿死
-            self._next_first = silent[0]
-        else:
-            # 全开口或全没开口 → 正常轮转
-            self._next_first = order[1]
+        for gid, members in by_group.items():
+            if len(members) <= 1:
+                nxt = members[0]
+            else:
+                silent = [pid for pid in members if pid not in spoke]
+                # 有人开口、有人没轮到 → 下一轮让没开口的先来，避免被饿死；
+                # 全开口或全没开口 → 正常轮转。
+                nxt = silent[0] if spoke and silent else members[1]
+            self._group_next[gid] = nxt
+            if gid == self._primary_group:
+                self._next_first = nxt
 
     # ------------------------------------------------------------------ #
     def transcript(self) -> list[str]:

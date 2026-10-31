@@ -1294,7 +1294,15 @@ class NPCAgent:
         # 玩家声明了"别告诉别人" → 秘密不进传闻网络。
         # 这条必须在**发布点**拦，而不是指望下游每个 NPC 都记得过滤：
         # 一旦进入公共网络，第二次投递就不再经过原说话人。
+        #
+        # 私聊 / 带收件范围的发言也一样。**悄悄话不是"小声的公开话"**：
+        # 只要它进了传闻网络，下一次投递就不再经过收件人，
+        # 而"阿柚注意到阿澈口味偏酸"这种印象一旦传开，收件范围就白设了。
         if is_secret_text(utterance.text):
+            return
+        if utterance.channel == "private" or (
+            utterance.role == "player" and utterance.audience is not None
+        ):
             return
         clause = preference_clause(utterance.text)
         if not clause:

@@ -421,6 +421,9 @@ class EvalHarness:
                 env.speakers_by_tick(),
                 env.npc_ids,
                 require_all_spoke=bool(expect.get("all_npcs_spoke")),
+                # 分组场景按 `(tick, 组)` 判撞车：两组各说一句是并行对话。
+                # 单组场景传进来也只会得到同样的结论（一个组 = 全场）。
+                groups_by_tick=cast.speakers_by_group_tick(),
             ),
         )
         if expect.get("check_stage_share"):

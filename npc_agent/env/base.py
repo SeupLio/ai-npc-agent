@@ -133,6 +133,9 @@ class Environment(ABC):
         text: str,
         addressed_to: str | None = None,
         expects_reply: bool = False,
+        *,
+        audience: tuple[str, ...] | None = None,
+        channel: str = "",
     ) -> None:
         """把一次发言广播进世界，让其他 Agent / 玩家能观察到。
 
@@ -141,6 +144,10 @@ class Environment(ABC):
         发言记录（`utterances`），不是某个 Agent 的内部字段。
         少传这一项，NPC 之间的点名就断在产出方手里 —— 实测表现是
         「阿柚：小舟，你来一首？」之后，小舟完全不知道有人在叫她。
+
+        `audience` / `channel` 是分组与私聊的车道标记：前者决定**谁听得见**，
+        后者只说明这句话走的是哪条频道。环境只负责把它们记进世界，
+        调度与观察过滤由导演（Cast）做 —— 环境不该知道"组"是什么。
         """
 
     # ------------------------------------------------------------------ #
@@ -162,11 +169,22 @@ class Environment(ABC):
             self._utterances: list[Utterance] = []
         return self._utterances
 
-    def record_player_utterance(self, player_id: str, text: str) -> Utterance:
+    def record_player_utterance(
+        self,
+        player_id: str,
+        text: str,
+        *,
+        addressed_to: str | None = None,
+        audience: tuple[str, ...] | None = None,
+        channel: str = "",
+    ) -> Utterance:
         """外部驱动（CLI / 评测用例）注入一句玩家发言。
 
         默认只记进发言日志；需要世界本身也知道这句话的环境
         （例如 Minecraft 要把聊天发进服务器）可以覆盖它。
+
+        私聊也是从这里进来的：`audience=(玩家, 目标 NPC)` + `channel="private"`。
+        导演据此只让目标听见、只让目标接话，且不让这句话进传闻网络。
         """
         utterance = Utterance(
             speaker_id=player_id,
@@ -175,6 +193,9 @@ class Environment(ABC):
             tick=self.tick,
             role="player",
             is_question=looks_like_question(text),
+            addressed_to=addressed_to,
+            audience=audience,
+            channel=channel,
         )
         self.utterances.append(utterance)
         return utterance

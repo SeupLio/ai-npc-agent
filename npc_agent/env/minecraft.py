@@ -572,6 +572,9 @@ class MinecraftEnv(Environment):
         text: str,
         addressed_to: str | None = None,
         expects_reply: bool = False,
+        *,
+        audience: tuple[str, ...] | None = None,
+        channel: str = "",
     ) -> None:
         """发言 = 在世界里发一条聊天。
 
@@ -592,6 +595,15 @@ class MinecraftEnv(Environment):
             expects_reply=expects_reply,
         )
         self._invalidate_utterances()
+        # 桥只回传它认识的聊天字段（actor / text / addressed_to）。
+        # audience / channel 是导演层的车道标记，桥不认 —— 所以在适配器里
+        # 把它盖到刚写进去的那条上。**不能指望后端回传**：
+        # 那样换个桥就静默丢掉私聊的收件范围，悄悄话会变成全服广播。
+        if audience is not None or channel:
+            log = self.utterances
+            if log:
+                log[-1].audience = audience
+                log[-1].channel = channel
 
     @property
     def utterances(self) -> list[Utterance]:
@@ -628,12 +640,32 @@ class MinecraftEnv(Environment):
     def _invalidate_utterances(self) -> None:
         self._utterance_cache = None
 
-    def record_player_utterance(self, player_id: str, text: str) -> Utterance:
+    def record_player_utterance(
+        self,
+        player_id: str,
+        text: str,
+        *,
+        addressed_to: str | None = None,
+        audience: tuple[str, ...] | None = None,
+        channel: str = "",
+    ) -> Utterance:
         """玩家的发言也要进世界 —— 否则 NPC 在游戏里"听不见"玩家说话。"""
-        self._call("chat", actor=player_id, text=text)
+        self._call("chat", actor=player_id, text=text, addressed_to=addressed_to)
         self._invalidate_utterances()
         log = self.utterances
-        return log[-1] if log else super().record_player_utterance(player_id, text)
+        if log:
+            # 同 broadcast：桥不认识的字段在这里补上，别让私聊语义过不了适配器。
+            log[-1].addressed_to = addressed_to or log[-1].addressed_to
+            log[-1].audience = audience
+            log[-1].channel = channel
+            return log[-1]
+        return super().record_player_utterance(
+            player_id,
+            text,
+            addressed_to=addressed_to,
+            audience=audience,
+            channel=channel,
+        )
 
     def speaker_name(self, actor_id: str) -> str:
         actors = self._snapshot().get("actors") or {}

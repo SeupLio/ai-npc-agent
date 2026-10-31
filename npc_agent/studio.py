@@ -106,14 +106,32 @@ def _scenario_summaries(cfg: RuntimeConfig) -> list[dict[str, Any]]:
                 "npcs": [a.persona.name for a in cast.agents.values()],
                 # 角色卡。页面要画出「谁在这个世界里」，就不能只有名字 ——
                 # 角色、人设、此刻的打算都来自人设卡，页面**不另抄一份**。
+                # 分组名只在**多组场景**里发：单组场景没有"组"可展示，
+                # 发一个 `main` 只会让页面上多一行没意义的标签。
                 "roster": [
                     {
+                        "id": agent.id,
                         "name": agent.persona.name,
                         "role": agent.persona.role,
                         "traits": list(agent.persona.traits)[:2],
                         "goal": (list(agent.persona.goals) or [""])[0],
+                        "group": cast.group_of(agent.id) if len(cast.groups) > 1 else "",
+                        "group_name": (
+                            cast.group_name(cast.group_of(agent.id))
+                            if len(cast.groups) > 1
+                            else ""
+                        ),
                     }
                     for agent in cast.agents.values()
+                ],
+                # 分组清单：页面用它画组标签和"对谁说"选择器。
+                "groups": [
+                    {
+                        "id": gid,
+                        "name": cast.group_name(gid),
+                        "members": [cast.name_of(pid) for pid in members],
+                    }
+                    for gid, members in cast.groups.items()
                 ],
                 "players": [
                     {"id": p.get("id"), "name": p.get("name") or p.get("id")}
@@ -198,16 +216,32 @@ def build_meta(cfg: RuntimeConfig) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # 对话
 # --------------------------------------------------------------------------- #
-def _turn_payload(turn: Any, cast: Cast) -> dict[str, Any]:
+def _turn_payload(turn: Any, cast: Cast, spoken: Any = None) -> dict[str, Any]:
     # ⚠️ 这里**不发** `turn.acted`。它曾经在响应里，而页面拿它判断
     # "这一轮该怎么显示" —— 但 `acted = say or actions`，一个只说了一句话的
     # 回合 `acted=True` 而 `actions` 为空（成功的 speak 会被下面滤掉），
     # 于是界面显示"在忙自己的事"却一条动作都列不出来。
     # 结局由**可见动作数**决定，`acted` 是回答另一个问题的字段 ——
     # 唯一消费方（页面）已经不用它了，留着只会再次引人用错。
+    #
+    # ⚠️ `spoken` 是**这一次开口真正落进世界的发言**（可能为 None：没说话）。
+    # 频道来自它，不是来自 `turn` —— `turn` 根本不知道这句话是悄悄话
+    # 还是只送到本组。页面据此画"吧台组 / 私聊"标签；单组公开频道发空串，
+    # 既有多人场景的页面**一个字都不变**。
+    channel = getattr(spoken, "channel", "") or ""
+    if channel == "private":
+        channel_label = "私聊"
+    elif channel:
+        channel_label = getattr(cast, "group_name", lambda gid: gid)(channel)
+    else:
+        channel_label = ""
     return {
         "name": cast.name_of(turn.actor_id),
         "say": turn.say,
+        # 这句话走的是哪条频道：公开是空串，私聊是 `"private"`，
+        # 分组场景里是组 id。展示归展示，**收件判定只看 utterance.audience**。
+        "channel": channel,
+        "channel_label": channel_label,
         "decision_reason": turn.decision_reason,
         # 这个计划是谁产出的（见 `types.PLAN_SOURCES`）。
         # 规划失败会**静默回落**到启发式规划器，不显示来源的话，
@@ -340,12 +374,21 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
         for p in (scenario.get("players") or [])
         if p.get("id")
     }
+    npc_ids = set(cast.agents)
 
     rendered: list[dict[str, Any]] = []
     for event in events:
         kind = str(event.get("kind") or "idle")
         utterance = None
-        entry: dict[str, Any] = {"kind": kind}
+        # 默认值让**每一个**事件都有同一种形状：页面可以直接读 ev.scope，
+        # 不用先判断它是不是 say。空串 = 这一栏不适用。
+        entry: dict[str, Any] = {
+            "kind": kind,
+            "scope": "",
+            "target_name": "",
+            "group_name": "",
+            "scope_error": "",
+        }
         if kind == "say":
             text = str(event.get("text") or "").strip()
             if not text:
@@ -353,22 +396,69 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
             speaker = str(event.get("speaker") or fallback_speaker)
             if player_ids and speaker not in player_ids:
                 speaker = fallback_speaker
-            utterance = env.record_player_utterance(speaker, text)
+
+            # 说话范围。三个值：公开（默认）/ 只对某组 / 悄悄话给某个人。
+            #
+            # ⚠️ 收件人写错时**不能退化成公开**：那会把一句本该只有一个人
+            # 听见的话广播给全场。失败方向必须是"少说一句"——
+            # 所以未知收件人/分组会得到空的 audience，整轮没人接话。
+            target = str(event.get("target") or "").strip()
+            group = str(event.get("group") or "").strip()
+            addressed_to = None
+            audience = None
+            channel = ""
+            if target:
+                entry["scope"] = "private"
+                if target in npc_ids:
+                    addressed_to = target
+                    audience = (speaker, target)
+                    channel = "private"
+                    entry["target_name"] = env.speaker_name(target)
+                else:
+                    audience = ()
+                    channel = "private"
+                    entry["target_name"] = target
+                    entry["scope_error"] = f"没有这个收件人：{target}"
+            elif group:
+                entry["scope"] = "group"
+                if group in cast.groups:
+                    audience = tuple(cast.groups[group])
+                    channel = group
+                    entry["group_name"] = cast.group_name(group)
+                else:
+                    audience = ()
+                    channel = group
+                    entry["group_name"] = group
+                    entry["scope_error"] = f"没有这个分组：{group}"
+
+            utterance = env.record_player_utterance(
+                speaker,
+                text,
+                addressed_to=addressed_to,
+                audience=audience,
+                channel=channel,
+            )
             entry["speaker_id"] = speaker
             entry["speaker_name"] = utterance.speaker_name
             entry["text"] = text
+
+        before = len(env.utterances)
+        turns = cast.step(utterance)
+        # 这一轮真正落进世界的话，按说话人配给对应的 turn ——
+        # 频道标签必须来自**世界里的那条发言**，不是页面猜的。
+        spoken_by = {
+            line.speaker_id: line for line in env.utterances[before:]
+        }
         entry["turns"] = [
-            _turn_payload(turn, cast) for turn in cast.step(utterance)
+            _turn_payload(turn, cast, spoken_by.get(turn.actor_id))
+            for turn in turns
         ]
         rendered.append(entry)
 
     snapshot = env.snapshot()
-    npc_ids = set(cast.npc_ids)
-    collisions = sum(
-        1
-        for _, speakers in env.speakers_by_tick().items()
-        if len({s for s in speakers if s in npc_ids}) > 1
-    )
+    # 撞车判据是 `(tick, 组)`，不是 `tick` —— 分组场景里两组各说一句
+    # 是**并行对话**，不是抢话。单组场景退化成和从前完全一样的判据。
+    collisions = len(cast.collisions())
     # 复读统计。**必须在控制台里看得见**：这个毛病是用户在这里发现的，
     # 而它最阴的地方是"每一句单看都没问题"—— 六维评测一条都抓不到
     # （每一维都只看单句）。不给一个数，就只能靠人一句句读。
@@ -406,6 +496,16 @@ def run_chat(cfg: RuntimeConfig, payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "scenario": scenario_id,
         "world_label": env_label(env.name),
+        # 分组清单随对话一起回：页面重放时只拿这一份，不再去 meta 里找 ——
+        # 两份清单漂移，界面上的组标签就会和实际调度对不上。
+        "groups": [
+            {
+                "id": gid,
+                "name": cast.group_name(gid),
+                "members": [cast.name_of(pid) for pid in members],
+            }
+            for gid, members in cast.groups.items()
+        ],
         "events": rendered,
         "snapshot": {
             "world_flags": list(snapshot.get("world_flags") or []),

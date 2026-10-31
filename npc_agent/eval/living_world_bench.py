@@ -48,6 +48,7 @@ DIMENSIONS = {
     "persistence": "记忆延续",
     "metabolism": "记忆代谢",
     "ensemble": "多 NPC 同场",
+    "channels": "分组与私聊",
 }
 
 
@@ -500,6 +501,147 @@ def _check_trio_clash_once(cast: Cast) -> tuple[bool, str]:
     )
 
 
+# -- channels ---------------------------------------------------------------- #
+def _act_public_rumor(cast: Cast) -> None:
+    utterance = cast.env.record_player_utterance("player_a", "今天这里挺热闹的。")
+    cast.step(utterance)
+
+
+def _npc_lines_at(cast: Cast, tick: int) -> list[Any]:
+    return [
+        u
+        for u in cast.env.utterances
+        if u.tick == tick and u.speaker_id in cast.agents
+    ]
+
+
+def _check_groups_run_in_parallel(cast: Cast) -> tuple[bool, str]:
+    """一句公开发言 → **两组各说一句**，不算撞车，而且各说各的组听得见。
+
+    这是分组存在的**行为证据**：如果调度还是全場一个游标，
+    第二组的人只会排在队尾，玩家看到的仍是四条人命共用一张嘴。
+    """
+    tick = cast.env.tick - 1
+    by_group = cast.speakers_by_group_tick().get(tick, {})
+    missing = [gid for gid in cast.groups if not by_group.get(gid)]
+    if missing:
+        return False, f"这些组没有开口：{missing}（实际 {by_group}）"
+    crowded = {gid: sp for gid, sp in by_group.items() if len(sp) > 1}
+    if crowded:
+        return False, f"同组里两个人抢了同一轮：{crowded}"
+    if cast.collisions():
+        return False, f"把并行对话误判成撞车：{cast.collisions()}"
+
+    for line in _npc_lines_at(cast, tick):
+        gid = cast.group_of(line.speaker_id)
+        if line.channel != gid:
+            return False, f"{line.speaker_name} 的话没盖组标记：{line.channel!r}"
+        if tuple(line.audience or ()) != tuple(cast.groups[gid]):
+            return False, (
+                f"{line.speaker_name} 的收件范围是 {line.audience}，"
+                f"应该是本组成员 {tuple(cast.groups[gid])}"
+            )
+    return True, f"{len(by_group)} 组并行、每组一人；台词只送到本组"
+
+
+def _act_mention_one_npc(cast: Cast) -> None:
+    utterance = cast.env.record_player_utterance(
+        "player_a", "阿柚，能给我来杯拿铁吗？"
+    )
+    cast.step(utterance)
+
+
+def _check_mention_narrows_to_one_group(cast: Cast) -> tuple[bool, str]:
+    """点名吧台的阿柚 → 露台组不该突然接一句。
+
+    这是"两组共用一双耳朵"最典型的暴露方式：玩家只叫了一个人，
+    另一组却回答了 —— 说明 `groups:` 只改了配置，没有改调度。
+    """
+    tick = cast.env.tick - 1
+    by_group = cast.speakers_by_group_tick().get(tick, {})
+    if not by_group.get("counter"):
+        return False, f"被点名的吧台组没有回应：{by_group}"
+    if by_group.get("terrace"):
+        return False, f"露台组也接了话（跨组偷听）：{by_group}"
+    leaked = [
+        u
+        for u in _npc_lines_at(cast, tick)
+        if cast.group_of(u.speaker_id) != "counter"
+    ]
+    if leaked:
+        return False, f"不该开口的组说了话：{[u.speaker_name for u in leaked]}"
+    for pid in ("xiaozhou", "luo"):
+        remembered = [
+            r.content
+            for r in cast.agents[pid].memory.store.records
+            if "拿铁" in r.content
+        ]
+        if remembered:
+            return False, f"{pid} 记住了别组的事：{remembered}"
+    return True, "点名只叫得动吧台组，露台组没听见也没记住"
+
+
+def _act_private_confession(cast: Cast) -> None:
+    private = cast.env.record_player_utterance(
+        "player_a",
+        "阿柚，我只跟你说：我其实怕黑。",
+        addressed_to="ayou",
+        audience=("player_a", "ayou"),
+        channel="private",
+    )
+    cast.step(private)
+    # 再走一轮公开寒暄：如果秘密进了传闻网络，这是它扩散的机会。
+    public = cast.env.record_player_utterance("player_b", "今天店里人不多啊。")
+    cast.step(public)
+
+
+def _check_private_stays_with_its_target(cast: Cast) -> tuple[bool, str]:
+    """悄悄话只落在收件人身上：回复也是悄悄话，同组的人听不见、记不住。
+
+    三处泄漏都要挡：观察（别组没听见）、记忆（同组的人没记住）、
+    传闻（印象没进公共网络）。只挡一处，另外两处会把秘密带出去。
+    """
+    private_tick = cast.env.tick - 2
+    replies = _npc_lines_at(cast, private_tick)
+    if not replies:
+        return False, "私聊没有任何 NPC 回应"
+    for line in replies:
+        if line.channel != "private":
+            return False, (
+                f"{line.speaker_name} 的回复是公开的（channel={line.channel!r}）—— "
+                "玩家悄悄问，NPC 大声答"
+            )
+        if "player_a" not in (line.audience or ()):
+            return False, f"私聊回复没送回玩家：{line.audience}"
+
+    owners = [
+        r for r in cast.agents["ayou"].memory.store.records if "怕黑" in r.content
+    ]
+    if not owners:
+        return False, "收件人没有记住这句悄悄话"
+    if any(r.privacy != "secret" for r in owners):
+        return False, f"悄悄话没被标成秘密：{[r.privacy for r in owners]}"
+
+    for pid in ("tang", "xiaozhou", "luo"):
+        leaked = [
+            r.content
+            for r in cast.agents[pid].memory.store.records
+            if "怕黑" in r.content
+        ]
+        if leaked:
+            return False, f"{pid} 记住了不属于他的悄悄话：{leaked}"
+    if any(
+        "怕黑" in u.text
+        for u in cast.env.utterances
+        if u.speaker_id in cast.agents and u.speaker_id != "ayou"
+    ):
+        return False, "悄悄话从别的 NPC 嘴里说了出来"
+    facts = cast.gossip.facts() if cast.gossip is not None else []
+    if any("怕黑" in f.content for f in facts):
+        return False, "悄悄话进了传闻网络"
+    return True, "私聊回复仍是私聊；同组的人没听见、没记住、没传出去"
+
+
 # --------------------------------------------------------------------------- #
 def cases() -> list[WorldCase]:
     return [
@@ -677,6 +819,30 @@ def cases() -> list[WorldCase]:
             script=_TRIO_SCRIPT,
             scenario="trio",
         ),
+        WorldCase(
+            "quartet_groups_run_in_parallel",
+            "channels",
+            "一句公开发言 → 吧台和露台各说一句，互不抢话、只送到本组",
+            _check_groups_run_in_parallel,
+            scenario="quartet",
+            act=_act_public_rumor,
+        ),
+        WorldCase(
+            "quartet_mention_narrows_to_one_group",
+            "channels",
+            "点名吧台的阿柚 → 露台组不接话、也没记住",
+            _check_mention_narrows_to_one_group,
+            scenario="quartet",
+            act=_act_mention_one_npc,
+        ),
+        WorldCase(
+            "quartet_private_stays_with_its_target",
+            "channels",
+            "私聊只有收件人回应，回复仍是私聊；同组的人听不见也记不住",
+            _check_private_stays_with_its_target,
+            scenario="quartet",
+            act=_act_private_confession,
+        ),
     ]
 
 
@@ -780,6 +946,20 @@ def _apply_disable(cast: Cast, module: str) -> Callable[[], None]:
             agent_module.is_secret_text = original_agent  # type: ignore[assignment]
 
         return undo_privacy
+    elif module == "channels":
+        # 频道隔离的两端一起掐：收件判定退回"谁都在听"，车道标记不再盖。
+        # 只掐一端会得到半穿的衣服 —— 私聊仍然只有收件人回答，
+        # 但回复变成了公开的，泄漏发生在后半程。
+        original_hears = cast._hears
+        original_stamp = cast._stamp_scope
+        cast._hears = lambda actor_id, utterance: utterance is not None  # type: ignore[method-assign]
+        cast._stamp_scope = lambda spoken, *, private_input=None: None  # type: ignore[method-assign]
+
+        def undo_channels() -> None:
+            cast._hears = original_hears  # type: ignore[method-assign]
+            cast._stamp_scope = original_stamp  # type: ignore[method-assign]
+
+        return undo_channels
     return lambda: None
 
 
@@ -862,6 +1042,7 @@ DEFECTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "掐掉记忆代谢": ("metabolism", ("metabolism",)),
     "掐掉隐私分区": ("privacy", ("metabolism",)),
     "掐掉第三人调度": ("ensemble", ("ensemble",)),
+    "掐掉频道隔离": ("channels", ("channels",)),
 }
 
 

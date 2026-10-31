@@ -452,10 +452,18 @@ class MemoryManager:
         #
         # ⚠️ 也要管 **NPC 的转述**。实测：阿柚把秘密用自己的话对当事人说了一遍
         # （模板会原样带着「别告诉别人」），这句话是广播的，小舟的 `observe`
-        # 把它记成了**公开**记忆 —— 隐私在第二跳被绕过去了。
+        # 把它记成了**公开记忆** —— 隐私在第二跳被绕过去了。
         # NPC 转述时我们不知道原始当事人是谁，所以 audience 留空；
         # 配合 `restricted` 的判据，那等于"对所有人关闭"（失败方向安全）。
-        secret = is_secret_text(utterance.text)
+        #
+        # 私聊同理，而且**不需要**玩家说"别告诉别人"：
+        # 走 private 频道本身就是一句"只给你听"。任何带 audience 的玩家发言
+        # 都按受限记忆写入 —— 收件范围是调度层的事实，不该指望每条文本
+        # 都自带一句保密声明。
+        private = utterance.channel == "private" or (
+            utterance.role == "player" and utterance.audience is not None
+        )
+        secret = private or is_secret_text(utterance.text)
         audience = (
             [utterance.speaker_id]
             if secret and utterance.role == "player"
