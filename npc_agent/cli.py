@@ -65,6 +65,19 @@ DEMO_SCRIPTS: dict[str, list[Optional[tuple[str, str]]]] = {
         None,
         None,
     ],
+    # 三人同场：每个人都要被点到一次。最后一句让阿柚**转达**给小舟 ——
+    # 演示"第三个人不是背景板"：三个 NPC 都开口，而且 NPC 之间真的接得上。
+    # 动机冲突在 t3 附近只裁定一次，洛代表两个让步方说那句台词。
+    "trio": [
+        ("player_a", "阿柚，能给我来杯拿铁吗？"),
+        ("player_a", "小舟，露台今天能唱歌吗？"),
+        ("player_a", "洛，你也在这儿？"),
+        ("player_a", "我口味偏酸，酸一点的都喜欢。"),
+        ("player_a", "阿柚，你让小舟弹一首呗？"),
+        None,
+        None,
+        None,
+    ],
     # 双 NPC：前两轮分别由两位客人起话头，让两个 NPC 都有机会开工；
     # 第三轮是**玩家让阿柚转达给小舟** —— 这一段专门用来演示 NPC 之间
     # 怎么对话（阿柚 → 小舟 → 阿柚），后面留空轮把饮品做完。
@@ -187,11 +200,16 @@ def cmd_demo(args: argparse.Namespace) -> int:
             for action, result in zip(turn.actions, turn.results):
                 if action.tool == "speak":
                     continue
-                # 「主动让出话头」不是失败 —— 印绿色，别印红配 ✗。
+                # 「主动让出话头」不是失败 —— 印绿色，别印红配 ×。
+                #
+                # 为什么用「→ / ×」而不是「▸ / ✗」：中文 Windows 的控制台
+                # 默认是 GBK，那两个符号编不出来，rich 会在打印时抛
+                # UnicodeEncodeError —— 整个 demo 直接崩掉，而用户只是
+                # 想看一眼 NPC 说话。这两个符号在 GBK 里存在。
                 style = "red" if not result.ok and not result.declined else "green"
-                console.print(f"  [{style}]▸ {name} {action.render()}[/{style}]")
+                console.print(f"  [{style}]→ {name} {action.render()}[/{style}]")
                 if not result.ok and not result.declined:
-                    console.print(f"      [red]✗ {result.detail}[/red]")
+                    console.print(f"      [red]× {result.detail}[/red]")
             if turn.say:
                 console.print(f"  [yellow]{name}[/yellow]：{turn.say}")
 
@@ -308,7 +326,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
                     continue
                 # 同上：「主动让出话头」不是失败。
                 style = "red" if not result.ok and not result.declined else "green"
-                console.print(f"  [{style}]▸ {name} {action.render()}[/{style}]")
+                console.print(f"  [{style}]→ {name} {action.render()}[/{style}]")
             if turn.say:
                 console.print(f"[yellow]{name}[/yellow]：{turn.say}")
             elif cast.is_multi_npc and turn.acted:
@@ -1055,12 +1073,12 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 )
             console.print(htable)
             console.print(
-                "[dim]差值 = 开发集 kappa − 留出集 kappa，就是**拟合的量**。"
+                "[dim]差值 = 开发集 kappa - 留出集 kappa，就是**拟合的量**。"
                 "差得多不代表裁判差，只代表那个数不能再当泛化能力用。[/dim]"
             )
 
             if not hold.get("quotable"):
-                console.print("[red]⛔ 这份留出集的封条对不上，上面的 kappa 不可引用：[/red]")
+                console.print("[red]× 这份留出集的封条对不上，上面的 kappa 不可引用：[/red]")
                 for problem in hold.get("problems") or []:
                     console.print(f"  [red]{problem['kind']}[/red] {problem['detail']}")
             else:

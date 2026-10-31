@@ -194,7 +194,7 @@ def render_resolution(result: dict[str, Any], console: Any = None) -> None:
             "整条曲线上**恒为 1.000 的维度**（结构上看不见这次退化）："
             + "、".join(result["blind_dimensions"])
         )
-        lines.append("          ⚠️ 这不是「这些维度不重要」，是「它们测不到规划」——")
+        lines.append("          注意：这不是「这些维度不重要」，是「它们测不到规划」——")
         lines.append("             它们各有各的靶子，但**不能拿来当规划的证据**。")
     text = "\n".join(lines)
     if console is not None:
