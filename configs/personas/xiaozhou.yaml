@@ -106,6 +106,9 @@ utterance_templates:
     - "{peer_name}，今天几点打烊？"
   heard_from:
     - "{source}说过，{fact}。"
+  recall_vague:
+    - "……记不清了。只记得{vague_source}提过{vague_topic}。"
+    - "太久啦。{vague_source}好像说过{vague_topic}，可我想不起细节。"
   ack_delegate:
     - "……来了。"
   # 见 ayou.yaml：回头客问候 + 称号播报。

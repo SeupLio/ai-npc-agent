@@ -46,6 +46,7 @@ DIMENSIONS = {
     "motives": "动机事件",
     "attention": "注意力",
     "persistence": "记忆延续",
+    "metabolism": "记忆代谢",
     "ensemble": "多 NPC 同场",
 }
 
@@ -60,6 +61,9 @@ class WorldCase:
     desc: str
     check: Callable[[Cast], tuple[bool, str]]
     script: list[Optional[str]] = field(default_factory=list)
+    #: 每句话由谁说。空 = 全部由 player_a 说；用 `None` 占位表示"这一轮没人说话"。
+    #: 隐私用例必须让两个玩家轮流问 —— 只有换人，才能看出记忆是不是分区了。
+    actors: list[str] = field(default_factory=list)
     scenario: str = "duet"
     config: dict[str, Any] = field(default_factory=dict)
     #: 用例开始前的准备（例如调好感）。
@@ -293,6 +297,148 @@ def _check_chronicle_survives(cast: Cast) -> tuple[bool, str]:
     return (ok, f"读档后回答：{says or '（没人说话）'}")
 
 
+# -- metabolism --------------------------------------------------------------- #
+def _check_gossip_degrades(cast: Cast) -> tuple[bool, str]:
+    """转述必须同时做到三件事：带来源、掉细节、确信高于保真。"""
+    heard = [
+        r
+        for r in cast.agents["xiaozhou"].memory.store.records
+        if "gossip" in r.tags
+    ]
+    if not heard:
+        return False, "小舟没有收到传闻"
+    record = heard[0]
+    if "阿柚" not in record.content or "阿澈" not in record.content:
+        return False, f"传闻没带来源或主体：{record.content}"
+    if "越酸" in record.content:
+        return False, f"转述保留了细节，和原话一样全：{record.content}"
+    if record.hop != 1:
+        return False, f"跳数不对：{record.hop}"
+    if record.confidence <= record.fidelity:
+        return False, (
+            "没有出现「越传越确信」："
+            f"保真 {record.fidelity} 确信 {record.confidence}"
+        )
+    return (
+        True,
+        f"{record.content}（{record.hop} 跳，保真 {record.fidelity:.0%}，"
+        f"确信 {record.confidence:.0%}）",
+    )
+
+
+def _check_forgotten_stays_vague(cast: Cast) -> tuple[bool, str]:
+    """细节忘了，关系还在：被追问时只能说"记不清"，不能把细节背出来。"""
+    forgotten = [
+        r for r in cast.agents["xiaozhou"].memory.store.records if r.forgotten
+    ]
+    if not forgotten:
+        return False, "小舟没有任何记忆被归档（遗忘没发生）"
+    said = [u.text for u in cast.env.utterances if u.speaker_id == "xiaozhou"]
+    if not said:
+        return False, "被点名之后小舟没说话"
+    last = said[-1]
+    if not any(word in last for word in ("记不清", "忘了", "想不起", "模糊")):
+        return False, f"被问起遗忘的事，却给了确定的回答：{last}"
+    if "靠窗" in last:
+        return False, f"细节已经忘了，却仍然复述出来：{last}"
+    return True, f"归档 {len(forgotten)} 条；回答：{last}"
+
+
+def _replies_at(cast: Cast, utterance: Any) -> list[str]:
+    """同一轮里 NPC 说的话。用来区分"回答玩家_a"和"回答玩家_b"。"""
+    return [
+        u.text
+        for u in cast.env.utterances
+        if u.speaker_id in cast.npc_ids and u.tick == utterance.tick
+    ]
+
+
+def _check_secret_stays_with_owner(cast: Cast) -> tuple[bool, str]:
+    """秘密不进传闻网络，也不对另一个玩家可见；当事人自己仍然问得出来。"""
+    facts = cast.gossip.facts() if cast.gossip is not None else []
+    if facts:
+        return False, f"秘密进了传闻网络：{[f.content for f in facts]}"
+    leaks = [
+        r
+        for agent in cast.agents.values()
+        for r in agent.memory.store.records
+        if "偏酸" in r.content and not r.restricted
+    ]
+    if leaks:
+        return False, f"秘密以公开记忆的形式存在：{[r.content for r in leaks]}"
+
+    asked_b = [
+        u
+        for u in cast.env.utterances
+        if u.speaker_id == "player_b" and "记得" in u.text
+    ]
+    if not asked_b:
+        return False, "用例前提不成立：玩家_b 没问"
+    said_b = _replies_at(cast, asked_b[-1])
+    if not said_b:
+        return False, "玩家_b 的问题没人接"
+    if any("酸" in line for line in said_b):
+        return False, f"玩家_b 问到了玩家_a 的秘密：{said_b}"
+
+    asked_a = [
+        u
+        for u in cast.env.utterances
+        if u.speaker_id == "player_a" and "记得" in u.text
+    ]
+    said_a = _replies_at(cast, asked_a[-1])
+    if not any("酸" in line for line in said_a):
+        return False, f"当事人也问不出来了 —— 分区做成了删除：{said_a}"
+    return True, f"玩家_b 没问到；玩家_a 问到了：{said_a}"
+
+
+def _check_provenance_survives(cast: Cast) -> tuple[bool, str]:
+    """来源、跳数、保真、确信都要跨存档 —— 否则读档后"听谁说的"就断了。"""
+    import tempfile
+
+    P, source, target, path = _fresh_pair(tempfile.mkdtemp())
+    source.step(
+        source.env.record_player_utterance("player_a", "我喜欢偏酸的豆子，越酸越好")
+    )
+    for _ in range(4):
+        source.step(None)
+    heard = [
+        r for r in source.agents["xiaozhou"].memory.store.records if "gossip" in r.tags
+    ]
+    if not heard:
+        return False, "用例前提不成立：没有传闻"
+    before = heard[0]
+    P.save(source, path)
+    P.load(target, path)
+    restored = [
+        r
+        for r in target.agents["xiaozhou"].memory.store.records
+        if r.content == before.content
+    ]
+    if not restored:
+        return False, "读档后传闻没了"
+    record = restored[0]
+    if (record.origin, record.hop, record.fidelity, record.confidence) != (
+        before.origin,
+        before.hop,
+        before.fidelity,
+        before.confidence,
+    ):
+        return False, (
+            "知识状态没接上："
+            f"{record.origin}/{record.hop}/{record.fidelity}/{record.confidence}"
+        )
+    turns = target.step(
+        target.env.record_player_utterance("player_b", "小舟，你还记得阿澈喜欢什么吗？")
+    )
+    says = "".join(t.say for t in turns if t.actor_id == "xiaozhou" and t.say)
+    if "阿柚" not in says:
+        return False, f"读档后传闻说不出来源：{says or '（没说话）'}"
+    return (
+        True,
+        f"{record.content}（接上了 {record.hop} 跳、保真 {record.fidelity:.0%}）",
+    )
+
+
 # -- ensemble ---------------------------------------------------------------- #
 _TRIO_SCRIPT = [
     "阿柚，能给我来杯拿铁吗？",
@@ -459,6 +605,63 @@ def cases() -> list[WorldCase]:
             _check_chronicle_survives,
         ),
         WorldCase(
+            "gossip_degrades_and_inverts",
+            "metabolism",
+            "转述丢细节、带来源，而且确信度高于保真度",
+            _check_gossip_degrades,
+            script=["我喜欢偏酸的豆子，越酸越好", None, None, None, None],
+        ),
+        WorldCase(
+            "forgotten_detail_stays_vague",
+            "metabolism",
+            "细节忘掉之后，被追问只能说「记不清」，不能背出原文",
+            _check_forgotten_stays_vague,
+            # 遗忘是长期代谢：把阈值调小，让它在用例长度内真的发生。
+            # top_k=1 是为了让这条琐事「最近没被想起」——否则每轮都被检索到，
+            # 按间隔重复的规则它永远不会被归档。
+            config={
+                "memory_forget_after": 3,
+                "memory_forget_below": 0.8,
+                "memory_top_k": 1,
+            },
+            script=[
+                "我喜欢那个靠窗的位置",
+                None,
+                None,
+                None,
+                None,
+                "小舟，你还记得我喜欢什么吗？",
+            ],
+        ),
+        WorldCase(
+            "secret_stays_with_its_owner",
+            "metabolism",
+            "秘密不进传闻、不向另一个玩家泄漏，但当事人仍问得出来",
+            _check_secret_stays_with_owner,
+            script=[
+                "我喜欢偏酸的豆子，别告诉别人",
+                None,
+                None,
+                None,
+                "阿柚，你还记得我喜欢什么吗？",
+                "阿柚，你还记得我喜欢什么吗？",
+            ],
+            actors=[
+                "player_a",
+                "player_a",
+                "player_a",
+                "player_a",
+                "player_b",
+                "player_a",
+            ],
+        ),
+        WorldCase(
+            "provenance_survives_reload",
+            "metabolism",
+            "来源 / 跳数 / 保真 / 确信跨存档保留，读档后仍能说出「听谁说的」",
+            _check_provenance_survives,
+        ),
+        WorldCase(
             "trio_everyone_speaks",
             "ensemble",
             "三个人同场时，第三个人真的会开口（不是背景板）",
@@ -519,12 +722,64 @@ def _apply_disable(cast: Cast, module: str) -> Callable[[], None]:
         # 这正是真实世界里容易犯的"按前 N-1 个写死"的调度错误。
         # 必须**连点名都不理**（不能只是截断 `_order_for` 的结果）：
         # 玩家点「洛」时洛会被排到第一，截断后仍然在名单里 —— 那就测不出来了。
+        #
+        # 只对三人以上生效：这是"第三人调度"故障，不该顺带
+        # 改掉双人戏里"点名谁就谁答"的规则（否则会污染代谢维度的用例，
+        # 让一处故障看起来像两处 —— 归因就失去意义了）。
+        if len(cast.agents) < 3:
+            return lambda: None
         only_two = list(cast.agents)[:2]
         original = cast._order_for
         cast._order_for = (  # type: ignore[method-assign]
             lambda utterance, obligation=None: list(only_two)
         )
         return lambda: setattr(cast, "_order_for", original)
+    elif module == "metabolism":
+        # 掐掉代谢的两端：不再归档遗忘，转述退化成一条没有来源的普通结论。
+        # 这正是"加了字段但机制没动"的样子 —— 最容易骗过只看字段的测试。
+        def degrade(store: Any) -> Any:
+            def receive_gossip(
+                content: str,
+                tick: int,
+                source_id: str,
+                source_name: str,
+                importance: float = 0.6,
+                subject: str = "",
+                *,
+                hop: int = 1,
+                fidelity: float = 0.82,
+                confidence: float = 0.92,
+            ) -> Any:
+                return store.add(
+                    kind="semantic", content=content, tick=tick, importance=importance
+                )
+
+            return receive_gossip
+
+        for agent in cast.agents.values():
+            agent.memory.store.forget_stale = (  # type: ignore[method-assign]
+                lambda now, limit=2: []
+            )
+            agent.memory.receive_gossip = degrade(  # type: ignore[method-assign]
+                agent.memory.store
+            )
+        return lambda: None
+    elif module == "privacy":
+        # 隐私判定整体关掉：写入点不再分区、发布点不再拦秘密。
+        # 这是"我能看见字段，却没有机制"的另一种写法。
+        import npc_agent.agent as agent_module
+        import npc_agent.modules.memory as memory_module
+
+        original_memory = memory_module.is_secret_text
+        original_agent = agent_module.is_secret_text
+        memory_module.is_secret_text = lambda text: False  # type: ignore[assignment]
+        agent_module.is_secret_text = lambda text: False  # type: ignore[assignment]
+
+        def undo_privacy() -> None:
+            memory_module.is_secret_text = original_memory  # type: ignore[assignment]
+            agent_module.is_secret_text = original_agent  # type: ignore[assignment]
+
+        return undo_privacy
     return lambda: None
 
 
@@ -539,9 +794,14 @@ def run_case(case: WorldCase, disable: str = "") -> CaseResult:
             case.setup(cast)
         if case.act is not None:
             case.act(cast)
-        for line in case.script:
+        actors = list(case.actors) or ["player_a"] * len(case.script)
+        if len(actors) != len(case.script):
+            raise ValueError(
+                f"{case.id}: actors 有 {len(actors)} 项，script 有 {len(case.script)} 句"
+            )
+        for line, actor in zip(case.script, actors):
             utterance = (
-                cast.env.record_player_utterance("player_a", line)
+                cast.env.record_player_utterance(actor, line)
                 if line is not None
                 else None
             )
@@ -599,6 +859,8 @@ DEFECTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "掐掉动机裁定": ("motives", ("motives",)),
     "掐掉注意力记账": ("attention", ("attention",)),
     "读档时什么都不恢复": ("persistence", ("persistence",)),
+    "掐掉记忆代谢": ("metabolism", ("metabolism",)),
+    "掐掉隐私分区": ("privacy", ("metabolism",)),
     "掐掉第三人调度": ("ensemble", ("ensemble",)),
 }
 

@@ -93,6 +93,9 @@ utterance_templates:
     - "{peer_name}，那边还顺吗？"
   heard_from:
     - "听{source}说，{fact}。"
+  recall_vague:
+    - "唔——{vague_source}提过{vague_topic}，细节记不牢了。"
+    - "只记得有这么回事。{vague_source}说的，具体忘了。"
   ack_delegate:
     - "唔，来了。"
   welcome_back:

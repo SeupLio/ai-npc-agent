@@ -258,6 +258,70 @@ class MemoryRecord:
     access_count: int = 0
     score: float = 0.0
 
+    # ------------------------------------------------------------------ #
+    # 知识状态：一条记忆不只是"内容"，还带着"我从哪知道的、有多确定"。
+    #
+    # 没有这几项时，亲耳听见和听人转述在引擎里完全相同 ——
+    # 于是 NPC 会把一句三手传闻说得像自己亲眼所见。真实的人不会这样：
+    # 转述会让细节变少（fidelity ↓），但对转述者的信任会让语气更笃定
+    # （confidence ↑）。这个"确信度 - 保真度倒挂"是记忆代谢的核心。
+    # ------------------------------------------------------------------ #
+    #: 来源类型：observed（亲历/亲耳）| told（转述）| explicit（主动记下）
+    #: | inferred（反思/巩固）| consolidated（多条压缩）
+    origin: str = "observed"
+    #: 原始来源。亲历的玩家发言就是那个玩家；听来的就是转述者。
+    source_id: str = ""
+    source_name: str = ""
+    #: 转述跳数。0 = 亲口听见 / 亲眼看见。
+    hop: int = 0
+    #: 内容保真度：细节还在多少。转述、巩固、遗忘都会把它压低。
+    fidelity: float = 1.0
+    #: 主观确信度：NPC 有多相信这件事。它**不必等于**保真度。
+    confidence: float = 1.0
+    #: 隐私分区：public（可说）| secret（只对 audience 里的玩家说）。
+    privacy: str = "public"
+    #: 允许检索这条记忆的玩家 id。空 = 不限制。
+    audience: list[str] = field(default_factory=list)
+    #: 已归档（遗忘）。不再主动检索，但被问到时能以"记不清"的形式重构。
+    forgotten: bool = False
+    forgotten_tick: int = -1
+    #: 巩固时的来源记录 id。旧记录被压掉后，来源图仍然可解释。
+    derived_from: list[str] = field(default_factory=list)
+    #: 多来源的显示名（巩固摘要可能来自好几个人）。
+    sources: list[str] = field(default_factory=list)
+    #: 关联记忆 id。同一实体/同一事件的弱联想，供"顺藤摸瓜"用。
+    associations: list[str] = field(default_factory=list)
+
+    @property
+    def restricted(self) -> bool:
+        """是否需要隐私分区。
+
+        判 `privacy` **而不是只看 audience**：转述带秘密的 NPC 台词时，
+        我们不知道原始当事人是谁（audience 会为空），这种记录必须**对所有人关闭**
+        —— `privacy="secret"` + 空名单 = "谁也别检索到"。失败方向只能是少说一句，
+        不能是把别人的秘密念出来。
+        """
+        return self.privacy == "secret" or bool(self.audience)
+
+    @property
+    def inversion(self) -> float:
+        """确信度高于保真度的幅度 —— 越大越像"越传越确信、越传越失真"。"""
+        return max(0.0, self.confidence - self.fidelity)
+
+    def state_label(self) -> str:
+        """给 Studio / 提示词看的一行知识状态。"""
+        if self.forgotten:
+            return "已遗忘·只记得大概"
+        if self.origin == "told":
+            return f"听{self.source_name or '人'}说·{self.hop} 跳"
+        if self.origin == "consolidated":
+            return "早前对话摘要"
+        if self.origin == "explicit":
+            return "自己记下的"
+        if self.origin == "inferred":
+            return "自己想的"
+        return "亲眼所见" if self.hop == 0 else f"转述·{self.hop} 跳"
+
     def render(self) -> str:
         return f"[{self.kind}@t{self.tick}] {self.content}"
 

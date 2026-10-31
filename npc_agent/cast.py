@@ -415,13 +415,18 @@ class Cast:
             return
         for pid, agent in self.agents.items():
             for fact in self.gossip.digest(pid):
+                # 每转一手：细节掉一层（fidelity × 0.82），
+                # 但对转述者的信任让确信度再涨一点 —— 见 `memory.receive_gossip`。
                 agent.memory.receive_gossip(
-                    content=f"听{fact.source_name}说，{fact.content}",
+                    content=fact.content,
                     tick=tick,
                     source_id=fact.source_id,
                     source_name=fact.source_name,
                     importance=min(0.7, fact.importance),
                     subject=fact.subject,
+                    hop=fact.hop + 1,
+                    fidelity=round(fact.fidelity * 0.82, 4),
+                    confidence=min(0.98, round(fact.confidence + 0.05, 4)),
                 )
                 # 听到同伴的分享，关系近一点（单向：听的人对说的人）。
                 self._bump_affinity(pid, fact.source_id, 1)

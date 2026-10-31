@@ -225,6 +225,7 @@ def _memory_payload(cast: Cast, per_agent: int = 6) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for agent in cast.agents.values():
         stats = agent.memory.store.stats()
+        knowledge = agent.memory.store.provenance_summary()
         records = list(getattr(agent.memory.store, "records", []))[-per_agent:]
         # 关系、称号、欠着的回答：这些能力**必须在页面上看得见**。
         # 只在引擎里成立的机制，调参的人不知道它有没有在动 ——
@@ -242,7 +243,29 @@ def _memory_payload(cast: Cast, per_agent: int = 6) -> dict[str, Any]:
             "semantic": stats.semantic,
             "reflection": stats.reflection,
             "consolidated": stats.consolidated,
+            "forgotten": stats.forgotten,
+            "told": stats.told,
+            # 知识状态汇总：来源、保真、确信、倒挂。
+            # 只在引擎里算、页面上看不见的指标，等于没有指标。
+            "knowledge": knowledge,
             "recent": [f"[{r.kind}] {r.content}" for r in reversed(records)],
+            "recent_meta": [
+                {
+                    "kind": r.kind,
+                    "content": r.content,
+                    "origin": r.origin,
+                    "state": r.state_label(),
+                    "source": r.source_name,
+                    "hop": r.hop,
+                    "fidelity": round(r.fidelity, 2),
+                    "confidence": round(r.confidence, 2),
+                    "inversion": r.inversion >= 0.05,
+                    "forgotten": r.forgotten,
+                    "privacy": r.privacy,
+                    "links": len(r.associations),
+                }
+                for r in reversed(records)
+            ],
             "bonds": bonds,
             "debts": [d.text for d in agent.attention.debts],
         }

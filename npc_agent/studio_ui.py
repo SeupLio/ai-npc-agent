@@ -88,6 +88,11 @@ button.ghost{background:none}
 .mem{font-size:12px;color:var(--dim);margin-top:3px}
 .pill{display:inline-block;padding:0 7px;border-radius:999px;font-size:11.5px;
   border:1px solid var(--line);background:var(--panel2);color:var(--dim);margin:2px 4px 0 0}
+/* 知识状态徽标：越传越确信、已遗忘、私密 —— 三种都该一眼看见，
+   而不是等 NPC 说错话才发现来源早就不清了。 */
+.pill.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
+.pill.bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,var(--line))}
+.mem .gone{text-decoration:line-through;opacity:.75}
 
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
@@ -471,14 +476,37 @@ function paint(d){
       "</span>").join("");
     const debts = (m.debts || []).length
       ? "<div class='mem'>欠着的回答：" + m.debts.map(esc).join(" / ") + "</div>" : "";
+    // 记忆代谢：每条记忆不只有内容，还有「从哪知道的、有多确定」。
+    // 这栏必须显示 —— 只在引擎里算、页面上看不见的指标，等于没有指标。
+    const k = m.knowledge || {};
+    const kline = k.active === undefined ? "" :
+      "<div class='mem'>知识状态：启用 " + k.active +
+      " · 转述 " + k.told + " · 遗忘 " + k.forgotten +
+      " · 平均保真 " + Math.round((k.avg_fidelity || 0) * 100) + "%" +
+      " · 平均确信 " + Math.round((k.avg_confidence || 0) * 100) + "%" +
+      " · 倒挂 " + k.inversions + "</div>";
+    const rows = (m.recent_meta || []).map((r) => {
+      let tags = "<span class='pill'>" + esc(r.state) + "</span>";
+      if (r.origin === "told" || r.forgotten) {
+        tags += "<span class='pill'>保真 " + Math.round(r.fidelity * 100) + "%</span>" +
+          "<span class='pill'>确信 " + Math.round(r.confidence * 100) + "%</span>";
+      }
+      if (r.inversion) tags += "<span class='pill warn'>越传越确信</span>";
+      if (r.forgotten) tags += "<span class='pill bad'>已遗忘</span>";
+      if (r.privacy === "secret") tags += "<span class='pill bad'>私密</span>";
+      if (r.links) tags += "<span class='pill'>关联 " + r.links + "</span>";
+      const body = esc(r.content);
+      return "<div class='mem'>· [" + esc(r.kind) + "] " + tags + "<br>" +
+        (r.forgotten ? "<span class='gone'>" + body + "</span>" : body) + "</div>";
+    }).join("");
     return "<div style='margin-bottom:8px'><b>" + esc(name) + "</b> " +
       "<span class='pill'>episodic " + m.episodic + "</span>" +
       "<span class='pill'>semantic " + m.semantic + "</span>" +
       "<span class='pill'>reflection " + m.reflection + "</span>" +
       "<span class='pill'>巩固 " + m.consolidated + "</span>" +
+      (m.forgotten ? "<span class='pill bad'>遗忘 " + m.forgotten + "</span>" : "") +
       (bonds ? "<div class='mem'>" + bonds + "</div>" : "") +
-      debts +
-      (m.recent || []).map((r) => "<div class='mem'>· " + esc(r) + "</div>").join("") + "</div>";
+      kline + debts + rows + "</div>";
   }).join("") || "<div class='empty'>—</div>";
 
   // 编年史与同伴好感：世界的状态，不属于任何一个 NPC。

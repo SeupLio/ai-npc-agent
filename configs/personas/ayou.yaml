@@ -131,6 +131,10 @@ utterance_templates:
     - "{peer_name}，要不要先歇一会儿？"
   heard_from:
     - "听{source}说，{fact}。"
+  # 只记得大概：遗忘之后不能假装还能复述原话（见 `memory.vague_recall`）。
+  recall_vague:
+    - "唔……我好像听{vague_source}提过{vague_topic}，具体记不清了。"
+    - "让我想想——只记得是从{vague_source}那儿听来的，细节真忘了。"
   # 同伴**转达**一句话给我（不是问我问题）→ 应一声"来了"，别答成"还行"。
   # --- 关系养成（见 `modules/relationship.py`）---
   # `welcome_back`：回头客不能再用"第一次来吧"招呼。这句话在 demo 里最容易露馅。

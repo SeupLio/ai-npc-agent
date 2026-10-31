@@ -316,6 +316,9 @@ RESUME_CRITICAL_FIELDS = (
     "memory_top_k",
     "memory_consolidate_at",
     "memory_half_life",
+    # 遗忘代谢也会改变长局里的行为：忘与不忘，NPC 被问起时的答案不同。
+    "memory_forget_after",
+    "memory_forget_below",
     "use_llm_planner",
     "use_llm_speech",
 )

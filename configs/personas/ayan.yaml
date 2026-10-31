@@ -102,6 +102,9 @@ utterance_templates:
     - "{peer_name}，那边还差什么？"
   heard_from:
     - "听{source}讲的，{fact}。"
+  recall_vague:
+    - "听{vague_source}讲过{vague_topic}，可细节我记不全了。"
+    - "这事我记糊涂了——就记得是{vague_source}说的。"
   ack_delegate:
     - "行，来了。"
   # 见 ayou.yaml：回头客问候 + 称号播报。

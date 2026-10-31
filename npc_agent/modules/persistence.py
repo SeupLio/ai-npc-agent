@@ -128,6 +128,14 @@ def restore_agent(agent: Any, data: dict[str, Any]) -> None:
     board.follow_ups = int(data.get("follow_ups") or 0)
 
 
+def _number(raw: Any, default: float) -> float:
+    """读一个可选数值。不能用 `raw.get(k) or default` —— 0.0 会被当成缺失。"""
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def _record_from_dict(raw: dict[str, Any]) -> MemoryRecord:
     return MemoryRecord(
         id=str(raw.get("id") or "m0000"),
@@ -139,6 +147,21 @@ def _record_from_dict(raw: dict[str, Any]) -> MemoryRecord:
         tags=list(raw.get("tags") or []),
         last_access=int(raw.get("last_access") or 0),
         access_count=int(raw.get("access_count") or 0),
+        # 旧档没有这些字段：按"当时只可能是亲历、且没忘"回退，
+        # 而不是塞一个说不上来源的空壳。
+        origin=str(raw.get("origin") or "observed"),
+        source_id=str(raw.get("source_id") or ""),
+        source_name=str(raw.get("source_name") or ""),
+        hop=int(raw.get("hop") or 0),
+        fidelity=_number(raw.get("fidelity"), 1.0),
+        confidence=_number(raw.get("confidence"), 1.0),
+        privacy=str(raw.get("privacy") or "public"),
+        audience=[str(x) for x in (raw.get("audience") or [])],
+        forgotten=bool(raw.get("forgotten")),
+        forgotten_tick=int(raw.get("forgotten_tick") or -1),
+        derived_from=[str(x) for x in (raw.get("derived_from") or [])],
+        sources=[str(x) for x in (raw.get("sources") or [])],
+        associations=[str(x) for x in (raw.get("associations") or [])],
     )
 
 

@@ -41,6 +41,18 @@ def test_a_plain_statement_is_not_a_preference():
     assert preference_clause("今天这里挺热闹的") == ""
 
 
+def test_a_question_about_a_preference_is_not_a_preference():
+    """「你还记得我喜欢什么吗」含"喜欢"，但它没有提供任何信息。
+
+    这条问句曾经被当成偏好发布出去，传闻网络里于是出现了一条
+    「你还记得小满喜欢什么吗」—— 玩家看到的是 NPC 在背后复读别人的问题，
+    而且它还会顶掉真正的那条偏好（同一个 fact_key 之后不再接收）。
+    """
+    assert preference_clause("你还记得我喜欢什么吗") == ""
+    assert preference_clause("阿柚，你还记得我喜欢什么吗？") == ""
+    assert preference_clause("我喜欢偏酸的豆子，越酸越好") == "我喜欢偏酸的豆子"
+
+
 def test_third_person_replaces_every_first_person():
     """只换句首是不够的：「酸一点的我都喜欢」会剩下一个"我"。
 

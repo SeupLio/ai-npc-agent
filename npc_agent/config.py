@@ -101,6 +101,12 @@ class RuntimeConfig:
     memory_consolidate_at: int = 24     # episodic 超过多少条触发巩固
     memory_half_life: float = 40.0      # 时间衰减半衰期（tick）
     memory_strategy: str = "hybrid"     # hybrid | recency | lexical | importance | none
+    # 遗忘代谢：多久没被强化开始归档、以及多不重要才配被忘。
+    # 默认值**远大于**典型会话长度 —— 遗忘是长期代谢，不是"聊三句就忘"。
+    # 调这两项会改变 NPC 在长局里的行为，所以进恢复指纹。
+    # 0 = 关闭遗忘（对照组）。
+    memory_forget_after: int = 80
+    memory_forget_below: float = 0.6
 
     # --- Planning ---
     max_steps_per_turn: int = 3         # 单轮最多执行几个工具，防止失控
@@ -217,15 +223,6 @@ def load_persona(persona_id: str) -> dict[str, Any]:
 
 def load_scenario(scenario_id: str) -> dict[str, Any]:
     return _load_cached("scenarios", scenario_id)
-
-
-def clear_config_cache() -> None:
-    """清空缓存。
-
-    给**测试**和长期驻留的进程用：万一有人在运行期改了 `configs/` 下的文件，
-    需要能显式地让它失效，而不是重启进程。
-    """
-    _CONFIG_CACHE.clear()
 
 
 def clear_config_cache() -> None:

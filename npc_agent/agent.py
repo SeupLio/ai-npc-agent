@@ -32,7 +32,7 @@ from .modules.conversation import (
 )
 from .modules.dialogue import AddresseeSelector, DialogueConfig, TurnManager
 from .modules.lore import LoreBook
-from .modules.memory import MemoryManager, MemoryStore
+from .modules.memory import MemoryManager, MemoryStore, is_secret_text
 from .modules.persona import Persona
 from .modules.planner import Planner, render_condition
 from .modules.reflection import Reflector
@@ -61,6 +61,26 @@ def _tag_plan(plan: Optional[Plan], source: str) -> Optional[Plan]:
     if plan is not None:
         plan.source = source
     return plan
+
+
+def _impression_fidelity(original: str, impression: str) -> float:
+    """第一手"印象"的保真度：它保留了原话多少。
+
+    传闻的失真有两个环节，不是只有一个：
+
+        原话「我喜欢偏酸的豆子，越酸越好」
+          → 印象「阿澈喜欢偏酸的豆子」   ← 抽取，已丢掉"越酸越好"
+          → 转述「听阿柚说，阿澈喜欢偏酸的豆子」 ← 再丢一层（若还有小句）
+
+    只记第二个环节的话，第一手事实会自称保真 100%，而它明明已经剪掉半句。
+    长度比是个启发式，但方向是对的：抽得越狠，留下的细节越少。
+    钳在 [0.55, 1.0]：印象再短也保住了主干，不该被判成"几乎全是假的"。
+    """
+    source = re.sub(r"\s+", "", original or "")
+    kept = re.sub(r"\s+", "", impression or "")
+    if not source:
+        return 1.0
+    return round(max(0.55, min(1.0, len(kept) / len(source))), 4)
 
 
 #: 玩家在问「有什么推荐」—— 这类问题**能答**，答案就是菜单。
@@ -315,6 +335,8 @@ class NPCAgent:
                 half_life=self.config.memory_half_life,
                 consolidate_at=self.config.memory_consolidate_at,
                 strategy=self.config.memory_strategy,
+                forget_after=self.config.memory_forget_after,
+                forget_below=self.config.memory_forget_below,
             ),
             top_k=self.config.memory_top_k,
             strategy=self.config.memory_strategy,
@@ -499,8 +521,15 @@ class NPCAgent:
             attention=self.attention,
         )
 
+        # 隐私分区按**当前对话人**过滤：秘密只对当事人可见。
+        # 冷场主动开口 / 同伴轮时 viewer 为空，限制级记忆一律不检索。
+        viewer = (
+            utterance.speaker_id
+            if utterance is not None and utterance.role == "player"
+            else ""
+        )
         memories = self.memory.retrieve(
-            self._memory_query(utterance, decision), now=self.state.tick
+            self._memory_query(utterance, decision), now=self.state.tick, viewer_id=viewer
         )
 
         turn = AgentTurn(
@@ -1258,6 +1287,11 @@ class NPCAgent:
             return
         if utterance.role != "player":
             return
+        # 玩家声明了"别告诉别人" → 秘密不进传闻网络。
+        # 这条必须在**发布点**拦，而不是指望下游每个 NPC 都记得过滤：
+        # 一旦进入公共网络，第二次投递就不再经过原说话人。
+        if is_secret_text(utterance.text):
+            return
         clause = preference_clause(utterance.text)
         if not clause:
             return
@@ -1273,6 +1307,10 @@ class NPCAgent:
                 tick=self.state.tick,
                 importance=0.75,
                 subject=utterance.speaker_id,
+                # 「印象」是从原话里**抽**出来的，不是原话本身。
+                # 把这一步的损耗记进保真度，否则第一手事实会自称 1.0，
+                # 而它明明已经扔掉了半句话（见 `_impression_fidelity`）。
+                fidelity=_impression_fidelity(utterance.text, impression),
             )
         )
 
@@ -1287,6 +1325,9 @@ class NPCAgent:
         这不只是措辞：它是玩家能看见"信息在这个世界里流动"的唯一痕迹。
         判据用 tag，不用文本匹配。
         """
+        if getattr(record, "forgotten", False):
+            # 细节已经掉了，不能再假装能复述原话。见 `memory.vague_recall`。
+            return "recall_vague"
         tags = list(getattr(record, "tags", []) or [])
         return "heard_from" if "gossip" in tags else "recall"
 
@@ -1300,7 +1341,7 @@ class NPCAgent:
         它们靠逐字判据去重就够了；给它们记点会把"应一声"也变成稀缺资源，
         于是 NPC 在需要应声的时候反而说不出话。
         """
-        if intent in ("recall", "heard_from") and recall_record is not None:
+        if intent in ("recall", "heard_from", "recall_vague") and recall_record is not None:
             return ContentPoint("recall", str(getattr(recall_record, "id", "")))
         if intent == "tell_fact":
             return None  # 由 `_proactive_share` 用话题 id 记点
@@ -1334,7 +1375,7 @@ class NPCAgent:
         #
         # 口径是**关于同一个人**，不是"关于同一句话"：语义级去重要判两句话
         # 是不是一件事，那需要另一套模型；冷却只需要一个时间窗。
-        if intent in ("recall", "heard_from") and utterance is not None:
+        if intent in ("recall", "heard_from", "recall_vague") and utterance is not None:
             guest = ContentPoint("recall_guest", utterance.speaker_id)
             if self.board.ledger.is_recent(guest, self.state.tick, RECALL_COOLDOWN):
                 return "acknowledge"
@@ -1361,7 +1402,7 @@ class NPCAgent:
         if point is not None:
             self.board.ledger.mark(point, self.state.tick)
         # 回引冷却的计时从"真的说出口"开始 —— 被拦下的那次不算。
-        if intent in ("recall", "heard_from") and utterance is not None:
+        if intent in ("recall", "heard_from", "recall_vague") and utterance is not None:
             self.board.ledger.mark(
                 ContentPoint("recall_guest", utterance.speaker_id), self.state.tick
             )
@@ -1561,6 +1602,7 @@ class NPCAgent:
         "unknown": "这个问题你不知道答案，老实说不知道，不要编。",
         "unavailable_order": "玩家点了一杯这里没有的。老实说做不了，并给一个替代。",
         "recall": "你想起对方之前说过的偏好或事情，主动提起来确认。",
+        "recall_vague": "你只记得大概，细节已经模糊。坦白说记不清，可以提一句是从谁那里听来的。",
         "acknowledge": "简短回应对方，表示你在听。",
         "fallback": "随口接一句话，保持气氛。",
         "delegate": "把对方的话转达给在场的另一个 NPC，直接对他说话，不要对玩家复述。",
@@ -1906,6 +1948,7 @@ class NPCAgent:
 
         memory_hint = ""
         gossip_source = ""
+        vague_record = None
         # 和 `_recallable` 用**同一份筛选结果** —— 两边各写一遍过滤条件，
         # 就会出现"判定说可以回引，但抽出来的 hint 来自另一条记忆"。
         #
@@ -1923,6 +1966,8 @@ class NPCAgent:
             memory_hint = extract_memory_hint(
                 record.content, own_name=self.persona.name
             )
+            if getattr(record, "forgotten", False):
+                vague_record = record
             # 传闻的来源。判据是 tag，不是文本匹配（见 `_recall_intent`）。
             for tag in getattr(record, "tags", []) or []:
                 if str(tag).startswith("source:"):
@@ -1964,6 +2009,14 @@ class NPCAgent:
         slots.setdefault("topic_hint", topic_hint)
         slots.setdefault("said_hint", said_hint)
         slots.setdefault("memory_hint", memory_hint or "那件事")
+        # 模糊回引只说"从哪里听来的 + 关于谁"，不复述细节。
+        # `vague_record` 判空是为了防止意图被别处复用时渲染出空槽。
+        if intent == "recall_vague" and vague_record is not None:
+            slots.setdefault("vague_source", gossip_source or "你")
+            slots.setdefault(
+                "vague_topic",
+                f"{target}的事" if gossip_source and target and target != "你" else "这件事",
+            )
         return self.persona.render_template(intent, variant=variant, **slots)
 
     def _recallable(
@@ -2029,6 +2082,12 @@ class NPCAgent:
         out = []
         for m in memories:
             if m.tick >= now:
+                continue
+            # 遗忘只允许"被问到时"重构。陈述句里主动提一件自己已经忘了的事，
+            # 玩家会觉得 NPC 在装记得。
+            if getattr(m, "forgotten", False) and not (
+                utterance is not None and utterance.is_question
+            ):
                 continue
             about = set(m.entities or ())
             is_gossip = "gossip" in (getattr(m, "tags", None) or ())

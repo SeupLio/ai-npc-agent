@@ -64,6 +64,11 @@ _PREFERENCE_MARKERS = ("喜欢", "讨厌", "不爱", "习惯", "常来", "怕", 
 #: 「你」在玩家的话里通常指 NPC，换掉会变成"阿澈说阿柚喜欢…"这种张冠李戴。
 _FIRST_PERSON = "我"
 
+#: 带这些尾巴的"偏好"其实是问句：「你还记得我喜欢什么吗」。
+#: 它含"喜欢"，却没提供任何偏好 —— 传出去会变成一条空传闻，
+#: 还会把别人的**提问**记成当事人说过的话。
+_QUESTION_TAILS = ("吗", "呢", "么", "?", "？")
+
 
 def preference_clause(text: str) -> str:
     """从一句话里取出"讲偏好"的那一小句。没有则返回空串。
@@ -75,8 +80,11 @@ def preference_clause(text: str) -> str:
         return ""
     for clause in re.split(r"[，。！？、；]", text or ""):
         clause = clause.strip()
-        if clause and any(marker in clause for marker in _PREFERENCE_MARKERS):
-            return clause
+        if not clause or not any(marker in clause for marker in _PREFERENCE_MARKERS):
+            continue
+        if clause.endswith(_QUESTION_TAILS):
+            continue
+        return clause
     return ""
 
 
@@ -96,12 +104,40 @@ def to_third_person(clause: str, name: str) -> str:
     return clause.replace(_FIRST_PERSON, name)
 
 
+def retell_clause(content: str) -> str:
+    """转述一次，丢掉最后一个细节小句。
+
+    这不是"随机篡改"，而是一个**可解释、可复现**的保真度模型：
+    人复述时会先保住主干（谁、什么偏好），先掉的是限定条件
+    （「越酸越好」「只在周末」「不加糖」）。于是：
+
+        阿澈喜欢偏酸的豆子，越酸越好
+        → 阿澈喜欢偏酸的豆子          （1 跳，fidelity 0.82）
+
+    只有一个小句时内容不变 —— 主干还在，但元数据里的 `fidelity`
+    仍然会下降。**不要在文本里伪造不存在的细节**；丢细节可以，
+    编细节会让世界"看起来很会撒谎"。
+    """
+    text = (content or "").strip()
+    if not text:
+        return ""
+    clauses = [c.strip() for c in re.split(r"[，；]", text) if c.strip()]
+    if len(clauses) <= 1:
+        return text
+    return "，".join(clauses[:-1])
+
+
 @dataclass(frozen=True)
 class SharedFact:
     """一条可以被传的事实。
 
     `fact_id` 是去重键，不是随机 id —— 同一件事被两个人说出来时，
     玩家不该听到两遍"听阿柚说…"和"听小舟说…"。
+
+    知识状态跟着事实一起流动：`hop` 是已经转了几手，
+    `fidelity` / `confidence` 是说出这句话的人**当前**的状态。
+    接收方据此继续衰减/加固，而不是从 1.0 重新开始 ——
+    否则每换一个人，传闻都会"恢复成原话"，跨角色传递就失去意义。
     """
 
     fact_id: str
@@ -111,6 +147,12 @@ class SharedFact:
     tick: int
     importance: float = 0.7
     subject: str = "world"
+    #: 已经转述过几跳。说话人亲历 = 0。
+    hop: int = 0
+    #: 说话人版本的内容保真度。
+    fidelity: float = 1.0
+    #: 说话人版本的主观确信度。
+    confidence: float = 0.9
 
 
 @dataclass
@@ -184,5 +226,6 @@ __all__ = [
     "SharedFact",
     "fact_key",
     "preference_clause",
+    "retell_clause",
     "to_third_person",
 ]
