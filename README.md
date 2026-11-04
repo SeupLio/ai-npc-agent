@@ -148,7 +148,7 @@ NPC 说的话和它做的事走同一条路径：`speak`、`move_to`、`craft_it
 
 ## 四、快速开始
 
-需要 Python 3.11+。**不需要任何 API key，也不需要联网。**
+需要 Python 3.10+（CI 实跑 3.10/3.11/3.12 三版本矩阵）。**不需要任何 API key，也不需要联网。**
 
 ```bash
 pip install -r requirements.txt

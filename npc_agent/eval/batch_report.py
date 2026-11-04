@@ -200,11 +200,15 @@ def _planner_block(eval_payload: dict[str, Any]) -> str:
         )
 
     if info["has_provenance"] and info["by_source"]:
+        # 占比分母只算一次：既省得每行重算，也避开 3.12 才允许的
+        # f-string 内层复用引号（`info['by_source']` 嵌在单引号 f-string 里
+        # 在 3.10/3.11 是 SyntaxError —— CI 矩阵抓到的历史隐患）。
+        total = max(sum(info["by_source"].values()), 1)
         rows = "".join(
             f'<tr><td class="name">{_esc(_SOURCE_LABELS.get(k, k))}</td>'
             f'<td class="mono">{_esc(k)}</td>'
             f'<td class="num">{count}</td>'
-            f'<td class="num">{"—" if not info["by_source"] else f"{count / max(sum(info['by_source'].values()), 1):.0%}"}</td>'
+            f'<td class="num">{count / total:.0%}</td>'
             "</tr>"
             for k, count in sorted(
                 info["by_source"].items(), key=lambda kv: (-kv[1], kv[0])
