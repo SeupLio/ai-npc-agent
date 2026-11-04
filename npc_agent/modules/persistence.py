@@ -76,6 +76,8 @@ def snapshot_agent(agent: Any) -> dict[str, Any]:
             "interactions": bond.interactions,
             "stage": bond.stage,
             "titles": list(bond.titles),
+            "terms": list(bond.terms),
+            "secrets_shared": list(bond.secrets_shared),
             "last_tick": bond.last_tick,
         }
         for pid, bond in agent.relationships.bonds.items()
@@ -83,6 +85,10 @@ def snapshot_agent(agent: Any) -> dict[str, Any]:
     debts = [
         {"player_id": d.player_id, "text": d.text, "tick": d.tick, "asked": d.asked}
         for d in agent.attention.debts
+    ]
+    agreements = [
+        {"term": a.term, "player_id": a.player_id, "tick": a.tick}
+        for a in agent.relationships.agreements
     ]
     return {
         "id": agent.id,
@@ -92,6 +98,7 @@ def snapshot_agent(agent: Any) -> dict[str, Any]:
         "debts": debts,
         "titles_granted": agent.relationships.titles_granted,
         "follow_ups": agent.attention.follow_ups,
+        "agreements": agreements,
     }
 
 
@@ -108,9 +115,24 @@ def restore_agent(agent: Any, data: dict[str, Any]) -> None:
         bond.interactions = int(raw.get("interactions", 0))
         bond.stage = str(raw.get("stage") or "生客")
         bond.titles = list(raw.get("titles") or [])
+        bond.terms = list(raw.get("terms") or [])
+        bond.secrets_shared = list(raw.get("secrets_shared") or [])
         bond.last_tick = int(raw.get("last_tick", -99))
     book.titles_granted = int(data.get("titles_granted") or 0)
     book.pending.clear()
+    # 专属称呼约定。存档里没有这一段（老档）就静默跳过 ——
+    # 约定本来就是新功能，不能让旧档读不进来。
+    from .relationship import Agreement
+
+    book.agreements.clear()
+    for raw in data.get("agreements") or []:
+        term = str(raw.get("term") or "").strip()
+        player_id = str(raw.get("player_id") or "")
+        if not term or not player_id:
+            continue
+        book.agreements.append(
+            Agreement(term, player_id, int(raw.get("tick") or 0))
+        )
 
     board = agent.attention
     board.debts.clear()

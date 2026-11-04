@@ -29,9 +29,19 @@ INTERNAL_TOOL_NAMES = {INTERNAL_SPEAK, INTERNAL_REMEMBER}
 INTERNAL_SPECS = [
     ToolSpec(
         "speak",
-        "对现场说一句话（受发言占比上限约束，超限会被拒绝）",
-        {"text": "要说的话", "to": "可选，指定对谁说（玩家 id）"},
-        ["speak(你好呀)", "speak(小鹿，你的拿铁好了, to=player_a)"],
+        "对现场说一句话（受发言占比上限约束，超限会被拒绝）；"
+        "带 to+private 时是小窗私语，只有收件人听得见",
+        {
+            "text": "要说的话",
+            "to": "可选，指定对谁说（玩家 id）",
+            "private": "可选，true 时开小窗（必须同时给 to）",
+            "expects_reply": "可选，true 表示在等对方回话",
+        },
+        [
+            "speak(你好呀)",
+            "speak(小鹿，你的拿铁好了, to=player_a)",
+            "speak(跟我来一下，有件事只告诉你, to=player_a, private=true)",
+        ],
         internal=True,
     ),
     ToolSpec(
@@ -137,17 +147,29 @@ class ToolRegistry:
         styled = ctx.persona.apply_style(text)
         # `to` 必须一路传进世界记录：导演靠它判断"下一轮谁欠谁一句话"。
         # 只留在 `ActionCall.args` 里的话，NPC 之间的点名在世界上是不存在的。
+        #
+        # `private=True` + `to`：NPC **主动**开小窗（此前只有玩家能开）。
+        # 私聊不是"小声的公开话"：收件范围一旦扩到全场，秘密就不再
+        # 是秘密。audience 固定为 (自己, 收件人)，第三个人听不见。
+        to = args.get("to") or None
+        audience = None
+        channel = ""
+        if bool(args.get("private")) and to:
+            audience = (ctx.actor_id, str(to))
+            channel = "private"
         ctx.env.broadcast(
             ctx.actor_id,
             styled,
-            addressed_to=args.get("to") or None,
+            addressed_to=to,
             expects_reply=bool(args.get("expects_reply")),
+            audience=audience,
+            channel=channel,
         )
         return ActionResult(
             True,
             INTERNAL_SPEAK,
             styled,
-            state_delta={"text": styled, "to": args.get("to")},
+            state_delta={"text": styled, "to": to, "private": bool(audience)},
         )
 
     def _remember(self, args: dict[str, Any], ctx: ToolContext) -> ActionResult:

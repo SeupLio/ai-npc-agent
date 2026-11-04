@@ -164,7 +164,7 @@ def test_the_real_config_classes_have_no_unread_fields() -> None:
             f"{class_name} 有没人读的字段"
         )
         counts[class_name] = len(fields)
-    assert counts == {"Persona": 13, "DialogueConfig": 2, "RuntimeConfig": 32}, (
+    assert counts == {"Persona": 14, "DialogueConfig": 2, "RuntimeConfig": 32}, (
         f"配置类的字段数变了：{counts}。\n"
         "  加字段是好事，但要顺手改这个数 —— 改的时候请确认新字段**真的有人读**\n"
         "  （删掉 `min_urgency_to_speak` / `locked_topics` / `relationships` 时\n"
@@ -180,7 +180,10 @@ def test_the_real_config_classes_have_no_unread_fields() -> None:
         "  消费方是 `cast.py`（动机裁定台的前几轮静默期）。\n"
         "  2026-10-31：`RuntimeConfig` 30 → 32，加的是记忆代谢的\n"
         "  `memory_forget_after` / `memory_forget_below`；消费方是 `agent.py`\n"
-        "  （构造 `MemoryStore` 时透传），且两项都进了恢复指纹。"
+        "  （构造 `MemoryStore` 时透传），且两项都进了恢复指纹。\n"
+        "  2026-11-04：`Persona` 13 → 14，加的是 `secret_notes`（主动私语素材，\n"
+        "  `[{id, hint, min_stage}]`）；消费方是 `agent._whisper_secret`（冷场时\n"
+        "  关系到位的玩家主动开小窗），不是又一个没人读的死字段。"
     )
 
 

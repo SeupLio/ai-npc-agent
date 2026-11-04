@@ -40,6 +40,12 @@ knowledge_boundary:
 
 spoiler_terms: [灯塔余晖, 隐藏菜单]
 
+# 主动私语素材（见 ayou.yaml 同段注释）。
+secret_notes:
+  - id: grandma_recipe
+    hint: 派的方子是他外婆留的，最后那一味只有他自己知道是什么
+    min_stage: 常客
+
 goals:
   - 让每一块派都在最好的时候被吃掉
   - 别让吧台这边冷场，也别让后厨那边糊锅
@@ -122,3 +128,21 @@ utterance_templates:
     - "上次为{resource}，我说了算。"
   recall_event_lose:
     - "上次为{resource}，我让了一步。"
+  # --- 玩家情绪 / 专属约定 / 主动私语（见 ayou.yaml 同段注释）---
+  respond_urgent:
+    - "{target}，先坐。天塌下来也先坐。说。"
+    - "急什么，我在这儿。出什么事了？"
+  respond_urgent_answer:
+    - "{answer_hint}——{target}，这是怎么了？"
+  soothe:
+    - "派砸了算我的，重烤一块。别气。"
+    - "行，是我今天手潮。你说怎么改。"
+  delight:
+    - "合口味吧？那这一炉没白烤。"
+    - "你多夸两句，我这派还能更好吃。"
+  accept_term:
+    - "成。{term}——{target}专用，别人不好使。"
+  refuse_term:
+    - "「{term}」是{owner}定的叫法。{target}，换一个。"
+  whisper_secret:
+    - "（往边上一让）{target}，{secret}——就你知道。"

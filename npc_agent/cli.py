@@ -1773,6 +1773,111 @@ def cmd_studio(args: argparse.Namespace) -> int:
 
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """游戏接入服务：把 Cast 包成 HTTP API 给引擎调用。
+
+    studio 是给人看的调试台，这个是给**游戏引擎**调的服务 ——
+    Unity / Godot / Web 客户端通过 /v1/sessions 系列端点接入。
+    文档在 docs/GAME_SERVER.md，含最小 C# / GDScript 调用样例。
+    """
+    from .game_server import serve as serve_game
+
+    serve_game(host=args.host, port=args.port, save_dir=args.save_dir)
+    return 0
+
+
+def cmd_cost(args: argparse.Namespace) -> int:
+    """成本与延迟画像：上线前的"要花多少钱"由数字回答。
+
+    跑一段可复现的脚本对话，给出：
+    - 玩家口径 / NPC 口径两套延迟分位数；
+    - 真实 token 用量（LLM 模式）与估算成本；
+    - 每 100 轮成本推算（外推到"一万个玩家聊十轮"的账）。
+
+    离线路径 token 为 0 —— 那是框架的地板价，本身就是一个有用读数：
+    它告诉你延迟里多少是**框架自己的开销**、多少是模型的。
+    """
+    import time as _time
+
+    from rich.console import Console
+    from rich.table import Table
+
+    from .config import load_scenario
+    from .cast import build_cast
+    from .llm import build_llm
+    from .modules.telemetry import CostProfile, SessionTelemetry
+    from .studio import _make_llm, _config
+
+    console = Console()
+    cfg = _config(
+        {
+            "llm_provider": args.provider,
+            "model": args.model,
+            "base_url": args.base_url,
+            "api_key": args.api_key,
+        }
+    )
+    llm = _make_llm(cfg)
+    telemetry = SessionTelemetry(CostProfile.from_env())
+    scenario = load_scenario(args.scenario)
+    cast = build_cast(scenario, llm, cfg)
+    env = cast.env
+
+    # 脚本对话：覆盖公开/点名/情绪三类真实输入形态。
+    script = [
+        ("player_a", "你们这儿有什么推荐？"),
+        ("player_a", "阿柚，你们这咖啡也太难喝了吧"),
+        ("player_b", "小舟，你的琴声真好听"),
+        ("player_a", "快！还有座位吗？？"),
+    ] * max(1, args.repeats)
+    for pid, text in script:
+        player_id = pid if pid in env.actors else "player_a"
+        started = _time.perf_counter()
+        u = env.record_player_utterance(player_id, text)
+        turns = cast.step(u)
+        elapsed = (_time.perf_counter() - started) * 1000.0
+        telemetry.note_round(elapsed)
+        for turn in turns:
+            telemetry.note_turn(turn.latency_ms, spoken=bool(turn.say))
+        telemetry.adopt_llm_usage(llm)
+    if args.idle:
+        for _ in range(args.idle):
+            started = _time.perf_counter()
+            turns = cast.step()
+            telemetry.note_round((_time.perf_counter() - started) * 1000.0)
+            for turn in turns:
+                telemetry.note_turn(turn.latency_ms, spoken=bool(turn.say))
+        telemetry.adopt_llm_usage(llm)
+
+    provider = cfg.llm_provider
+    snap = telemetry.snapshot()
+    table = Table(title=f"成本画像（{args.scenario} × {len(script) + args.idle} 轮，provider={provider}）")
+    table.add_column("指标", style="cyan")
+    table.add_column("读数", justify="right")
+    table.add_row("玩家输入轮数", str(snap["rounds"]))
+    table.add_row("NPC 回合 / 其中发言", f"{snap['turns']} / {snap['spoken_turns']}")
+    table.add_row("玩家口径延迟 p50 / p95 / 均值(ms)",
+                  f"{snap['round_latency_p50_ms']} / {snap['round_latency_p95_ms']} / {snap['round_latency_mean_ms']}")
+    table.add_row("NPC 轮延迟 p50 / p95 / p99(ms)",
+                  f"{snap['latency_p50_ms']} / {snap['latency_p95_ms']} / {snap['latency_p99_ms']}")
+    table.add_row("LLM 调用 / tokens(入/出)", f"{snap['llm_calls']} / {snap['prompt_tokens']}+{snap['completion_tokens']}")
+    table.add_row("本段成本 / 每 100 轮推算", f"{snap['estimated_cost']} / {snap['cost_per_100_rounds']}")
+    console.print(table)
+    if provider == "null":
+        console.print(
+            "[dim]离线路径：0 token 是框架的地板价（启发式决策全部本地完成）。[/dim]"
+        )
+        console.print(
+            "[dim]接真实模型再看一次（NPC_AGENT_PROVIDER=openai-compat …），"
+            "差值就是模型开销。[/dim]"
+        )
+    else:
+        scale = snap["cost_per_100_rounds"]
+        console.print(f"外推：1000 个玩家 × 10 轮 ≈ {scale * 100:.2f} "
+                      f"{telemetry.profile.currency}（同场景同模型假设下）")
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1879,6 +1984,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_studio.add_argument("--port", type=int, default=8765, help="端口；0 = 让系统挑一个")
     p_studio.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     p_studio.set_defaults(func=cmd_studio)
+
+    p_serve = sub.add_parser(
+        "serve",
+        help="游戏接入服务：HTTP API，Unity/Godot/Web 客户端从这里接入（文档见 docs/GAME_SERVER.md）",
+    )
+    p_serve.add_argument("--host", default="127.0.0.1", help="绑定地址（对外服务改 0.0.0.0，并自行加鉴权）")
+    p_serve.add_argument("--port", type=int, default=8080, help="端口")
+    p_serve.add_argument("--save-dir", dest="save_dir", default="saves", help="存档目录（按玩家身份落盘）")
+    p_serve.set_defaults(func=cmd_serve)
+
+    p_cost = sub.add_parser(
+        "cost",
+        help="成本与延迟画像：上线前回答『一万个玩家聊十轮要花多少』",
+    )
+    p_cost.add_argument("--scenario", default="duet", choices=list_scenarios())
+    p_cost.add_argument("--repeats", type=int, default=5, help="脚本对话重复次数（样本量）")
+    p_cost.add_argument("--idle", type=int, default=0, help="额外冷场轮数（测主动行为成本）")
+    p_cost.set_defaults(func=cmd_cost)
 
     p_gen = sub.add_parser("gencases", help="生成用例集（指纹去重 + 离线可达性门禁）")
     p_gen.add_argument("--target", type=int, default=240, help="用例数上限（不是配额，实际由结构数决定）")

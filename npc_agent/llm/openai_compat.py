@@ -23,6 +23,7 @@ import urllib.request
 from typing import Iterator
 
 from .base import LLM, LLMUnavailable
+from ..modules.telemetry import TokenUsage
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
@@ -94,6 +95,13 @@ class OpenAICompatLLM(LLM):
         #: 解析层重试的次数与理由，供探针/报告读取（**别从外面猜**）。
         self.parse_retries = 0
         self.parse_retry_reasons: list[str] = []
+        #: **真实 token 用量**（来自响应的 `usage` 字段）。
+        #:
+        #: 此前成本只有 `TurnBudget` 的"估算字符"，它管限流不管算账。
+        #: 上线决策需要的是真实读数：这里每次 HTTP 200 都累计 ——
+        #: **包括解析层重试的那些**（失败重试同样烧 token，漏记会让
+        #: 成本画像系统性偏低，而且是偏得最多的那部分）。
+        self.usage = TokenUsage()
 
     @property
     def available(self) -> bool:
@@ -192,6 +200,9 @@ class OpenAICompatLLM(LLM):
             # 传输层故障由 `_post_json` 自己重试；它抛出来时不该再进解析层重试
             # （重试的是"解析不出可用内容"，不是"请求失败"）。
             body = self._post_json(request)
+            # 用量在拿到响应体时**立刻**记，不等解析结果 ——
+            # 解析失败的响应也已经计费，这是"计量必须记失败"的同一逻辑。
+            self._note_usage(body)
 
             try:
                 content = self._extract_content(body)
@@ -210,6 +221,21 @@ class OpenAICompatLLM(LLM):
 
         # 循环走完还没 return ⇒ 最后一次也没成功（理论上上一轮的 raise 已经抛出）
         raise last or LLMUnavailable("解析层重试耗尽")
+
+    def _note_usage(self, body: dict) -> None:
+        """从响应体提取 `usage` 并累计。缺字段就跳过 ——
+        遥测缺失不该影响主流程（有些网关不回 usage）。"""
+        usage = body.get("usage")
+        if not isinstance(usage, dict):
+            return
+        try:
+            prompt = int(usage.get("prompt_tokens", 0) or 0)
+            completion = int(usage.get("completion_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        # 只要 usage 结构合法就记一次调用 —— 0/0 也是一次真实调用
+        # （有些网关 200 但 usage 全 0，漏记会让"调用量"低估）。
+        self.usage.add(prompt, completion)
 
     @staticmethod
     def _extract_content(body: dict) -> str:

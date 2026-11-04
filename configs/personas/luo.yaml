@@ -39,6 +39,12 @@ knowledge_boundary:
 # 调音师知道一点别人不知道的事，但说早了就是剧透。
 spoiler_terms: [灯塔余晖, 隐藏菜单]
 
+# 主动私语素材（见 ayou.yaml 同段注释）。
+secret_notes:
+  - id: old_wire
+    hint: 露台那串灯接的是码头灯塔的旧线，他一直没舍得换
+    min_stage: 常客
+
 goals:
   - 把琴调到能听的程度
   - 不打断别人说话
@@ -108,3 +114,21 @@ utterance_templates:
     - "上次{resource}，按我的来。"
   recall_event_lose:
     - "上次{resource}，我让了。"
+  # --- 玩家情绪 / 专属约定 / 主动私语（见 ayou.yaml 同段注释）---
+  respond_urgent:
+    - "唔——{target}，先坐。慢慢说，我听着。"
+    - "急不得，{target}。先说清是哪件事。"
+  respond_urgent_answer:
+    - "唔——{answer_hint}{target}，这是怎么了？"
+  soothe:
+    - "唔——是我没调好。这杯重来。"
+    - "先别急。你的话我听见了，我来改。"
+  delight:
+    - "唔，合耳朵就好。"
+    - "你这么说，这段没白调。"
+  accept_term:
+    - "唔——记下了。{term}，只应{target}。"
+  refuse_term:
+    - "「{term}」是{owner}的叫法，{target}换一个吧。"
+  whisper_secret:
+    - "（压低声音）{target}——{secret}。只跟你说。"

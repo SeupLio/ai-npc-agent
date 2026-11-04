@@ -42,6 +42,12 @@ knowledge_boundary:
 # 剧透红线：洞口深处有什么，得等灯点起来之后才能说
 spoiler_terms: [矿脉深处, 洞底]
 
+# 主动私语素材（见 ayou.yaml 同段注释）。
+secret_notes:
+  - id: lamp_round
+    hint: 入夜点灯前他会绕村走一圈，谁家的灯坏了他都记在心里
+    min_stage: 常客
+
 goals:
   - 天彻底黑下来之前，洞口得有光
   - 手边的活要一件一件做完，不半途丢下
@@ -118,3 +124,21 @@ utterance_templates:
     - "上次{resource}，听我的。"
   recall_event_lose:
     - "上次{resource}，我让了。"
+  # --- 玩家情绪 / 专属约定 / 主动私语（见 ayou.yaml 同段注释）---
+  respond_urgent:
+    - "{target}，站住。深呼吸，说。"
+    - "急也没用，先说清事。"
+  respond_urgent_answer:
+    - "{answer_hint}{target}，出什么事了？"
+  soothe:
+    - "石头凿坏了能重来。活做坏了，我认。"
+    - "行，是我的手艺问题。重做一个。"
+  delight:
+    - "行。没白凿。"
+    - "你说好，那就是好。"
+  accept_term:
+    - "行。{term}——{target}专用。"
+  refuse_term:
+    - "「{term}」是{owner}的叫法。{target}，另起一个。"
+  whisper_secret:
+    - "（放下锤子，压低声）{target}，{secret}。就你知道。"

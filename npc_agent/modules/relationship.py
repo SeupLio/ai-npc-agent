@@ -42,7 +42,73 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+
+#: 从「以后你就叫我小鹿吧」这类话里抽称呼请求。
+#:
+#: 为什么不在 Agent 里判：**判据和账本必须同一份实现**。抽取规则放
+#: 这里，`RelationshipBook` 的消费方（agent 的意图裁定）和评测用例
+#: 读的是同一个函数 —— 两边各写一份正则，迟早一边改了另一边没改。
+_TERM_REQUEST_RE = re.compile(
+    r"(?:以后|从今往后|接下来|就|干脆|索性)?(?:请|麻烦|可以|能|能不能)?"
+    r"叫(?:我作|我为|我)(?P<term>[^，。！？!?、,\s]{1,8})"
+    r"(?:吧|好吗|好不好|怎么样|行吗|行不行|可以吗|好嘛|呗)?"
+)
+
+#: 叫声里的高频假阳性：「叫我一声」「叫我过去」不是在约称呼。
+#: 单字称呼也不收（噪声多于信号）。「什么」出现在反问里（叫我什么？）。
+_TERM_STOPWORDS = {
+    "一声", "过去", "过来", "起来", "一下", "什么", "名字", "先生", "女士",
+    "同志", "师傅", "服务员", "老板", "客人",
+}
+
+
+#: 尾部要剥掉的语气词/商量句式。正则的 term 组是贪婪的，会把
+#: 「小鹿行不行」整个吞进去 —— 与其在正则里压贪婪（可读性会很差），
+#: 不如抽出来之后统一剥一层尾巴。
+_TERM_TAIL_PARTICLES = "的吧啊嘛呗呀呢哈哟了吗"
+_TERM_TAIL_SUFFIXES = (
+    "行不行", "怎么样", "好不好", "可以吗", "行吗", "好吗", "好嘛", "行不行啊",
+)
+
+
+def _strip_term_tail(term: str) -> str:
+    """剥掉称呼尾部混进来的语气词和商量句式，直到剥不动为止。"""
+    changed = True
+    while changed and term:
+        changed = False
+        for suffix in _TERM_TAIL_SUFFIXES:
+            if term.endswith(suffix) and len(term) - len(suffix) >= 1:
+                term = term[: -len(suffix)]
+                changed = True
+        if term and term[-1] in _TERM_TAIL_PARTICLES and len(term) >= 2:
+            term = term[:-1]
+            changed = True
+    return term
+
+
+def extract_term_request(text: str) -> str:
+    """玩家这句话是不是在提议一个专属称呼？是则返回称呼，否则空串。
+
+    只认「叫我X」这一种方向（X 是**玩家自己**的叫法）。
+    「我能叫你X吗」（给 NPC 起叫法）是另一个方向，判据完全不同，
+    混在一条正则里会把两个语义都判坏 —— 这里明确不处理。
+
+    实测逼出来的两个坑（都有回归用例盯着）：
+    - 「也叫我小鹿呀」→ 语气词「呀」不能算进称呼；
+    - 「叫我小鹿行不行」→ 商量句式是尾缀，不是称呼的一部分。
+    两个都靠 `_strip_term_tail` 在抽取后统一剥掉。
+    """
+    if not text:
+        return ""
+    match = _TERM_REQUEST_RE.search(text)
+    if match is None:
+        return ""
+    term = _strip_term_tail((match.group("term") or "").strip())
+    if len(term) < 2 or term in _TERM_STOPWORDS:
+        return ""
+    return term
 
 #: (下限, 阶段名)，从高到低匹配。
 #:
@@ -97,10 +163,31 @@ class Bond:
     stage: str = "生客"
     titles: list[str] = field(default_factory=list)
     last_tick: int = -99
+    #: 和这个人约过的**专属称呼**（见 `Agreement`）。星布谷地公开实录：
+    #: 玩家跟娜洛约了亲昵称呼，别的玩家再来用，她不认。
+    #: "记住了"和"只对一个人有效"是两种记忆，第二种才叫分寸。
+    terms: list[str] = field(default_factory=list)
+    #: 已经当面私语过的秘密（`persona.secret_notes` 的 id）。
+    #: 一次性：同一条秘密说第二遍就不是秘密，是复读。
+    secrets_shared: list[str] = field(default_factory=list)
 
     def render(self) -> str:
         title = f"，称号「{self.titles[-1]}」" if self.titles else ""
-        return f"{self.player_id}：{self.stage}（好感 {self.score}，互动 {self.interactions} 次{title}）"
+        term = f"，专属称呼「{self.terms[-1]}」" if self.terms else ""
+        return f"{self.player_id}：{self.stage}（好感 {self.score}，互动 {self.interactions} 次{title}{term}）"
+
+
+@dataclass
+class Agreement:
+    """一条专属称呼约定：`term` 这个叫法只对 `player_id` 生效。
+
+    存在 NPC 一侧而不是玩家一侧，因为"谁的叫法"是 NPC 的记忆，
+    不是玩家的属性 —— 换一个 NPC，同一个叫法就不一定有效。
+    """
+
+    term: str
+    player_id: str
+    tick: int
 
 
 @dataclass
@@ -130,6 +217,9 @@ class RelationshipBook:
         self.pending: list[RelationshipEvent] = []
         #: 累计解锁过几个称号（报告用）。
         self.titles_granted = 0
+        #: 专属称呼约定（见 `Agreement`）。跨会话要跟着存档走，
+        #: 否则"关掉重开就忘了约定"比没有约定更伤。
+        self.agreements: list[Agreement] = []
 
     # ------------------------------------------------------------------ #
     def bond(self, player_id: str) -> Bond:
@@ -211,6 +301,47 @@ class RelationshipBook:
         第一次来就说三句话的人仍然是生客。"""
         return stage_rank(self.stage(player_id)) >= stage_rank("面熟")
 
+    # ------------------------------------------------------------------ #
+    # 专属约定
+    # ------------------------------------------------------------------ #
+    def make_agreement(self, term: str, player_id: str, tick: int) -> bool:
+        """和 `player_id` 约定一个专属称呼。已存在（对任何人）返回 False。
+
+        排他是**全局**的：一个叫法在这本账本里只能属于一个人。
+        第二个玩家来约同一个词，得到的应该是拒绝，不是悄悄覆盖。
+        """
+        term = (term or "").strip()
+        if not term:
+            return False
+        if any(a.term == term for a in self.agreements):
+            return False
+        self.agreements.append(Agreement(term, player_id, tick))
+        bond = self.bond(player_id)
+        if term not in bond.terms:
+            bond.terms.append(term)
+        return True
+
+    def check_term(self, term: str, speaker_id: str) -> tuple[bool, str]:
+        """`speaker_id` 说出 `term` 这个称呼，NPC 该怎么接？
+
+        返回 `(violated, owner_id)`：
+
+        - `(False, "")`      —— 不是专属称呼（或约定人本人说的），正常接话；
+        - `(True, owner_id)` —— **别人在用约定人的叫法**，该拒绝。
+          违规判定发生在"说出口"这一刻，不依赖说话人事后认不认。
+
+        约定人自己用 → 永远合法；那是他的叫法。
+        """
+        term = (term or "").strip()
+        if not term:
+            return False, ""
+        for agreement in self.agreements:
+            if agreement.term == term:
+                if agreement.player_id == speaker_id:
+                    return False, ""
+                return True, agreement.player_id
+        return False, ""
+
     def bond_block(self) -> str:
         """拼进 prompt 的关系摘要。没有档案时返回空串。"""
         if not self.bonds:
@@ -219,6 +350,10 @@ class RelationshipBook:
         for bond in self.bonds.values():
             title = f"，你叫他「{bond.titles[-1]}」" if bond.titles else ""
             lines.append(f"  - {bond.player_id}：{bond.stage}，好感 {bond.score}{title}")
+        for agreement in self.agreements:
+            lines.append(
+                f"  - 专属称呼「{agreement.term}」只属于 {agreement.player_id}，别人用要拒绝"
+            )
         return "【你认识的人】\n" + "\n".join(lines)
 
     def render(self) -> str:
@@ -228,12 +363,14 @@ class RelationshipBook:
 
 
 __all__ = [
+    "Agreement",
     "Bond",
     "RelationshipBook",
     "RelationshipEvent",
     "SPECIAL_TITLES",
     "STAGES",
     "STAGE_TITLES",
+    "extract_term_request",
     "stage_of",
     "stage_rank",
 ]

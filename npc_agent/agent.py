@@ -31,12 +31,13 @@ from .modules.conversation import (
     normalize_point,
 )
 from .modules.dialogue import AddresseeSelector, DialogueConfig, TurnManager
+from .modules.emotion import detect_emotion, emotion_label, intent_for
 from .modules.lore import LoreBook
 from .modules.memory import MemoryManager, MemoryStore, is_secret_text
 from .modules.persona import Persona
 from .modules.planner import Planner, render_condition
 from .modules.reflection import Reflector
-from .modules.relationship import RelationshipBook
+from .modules.relationship import RelationshipBook, extract_term_request, stage_rank
 from .modules.repetition import find_repeat
 from .modules.social import (
     GossipNetwork,
@@ -1085,20 +1086,108 @@ class NPCAgent:
             peer_names=[p.name for p in self.state.peers.values()],
         )
 
+        # 玩家情绪先于模板意图裁定。「娜洛！！出事了！！」没有任何问句结构，
+        # 按 statement 走 acknowledge 的话，玩家的体感是"NPC 在敷衍我"——
+        # 语气是输入的一部分（星布谷地公开实录里被引用最多的那条：
+        # 玩家大喊一声名字，NPC 从语气里听出紧迫）。
+        #
+        # 三条硬规则，缺一条都会答非所问：
+        # 1. **急切压过一切**（称号、冷场、推荐）——人可能有急事；
+        # 2. **急切+可答的问题**：先答再关心（`respond_urgent_answer`），
+        #    纯关心不答题会把"快！还开门吗？？"晾在原地；
+        # 3. **投诉/夸赞只在非问句成立**：「好喝吗？」是求信息不是夸，
+        #    拿情绪模板回它就是答非所问（`modules/emotion.py` 的判据同源）。
+        #
+        # 转达（delegate）与同伴轮不参与情绪：急着让阿柚去叫小舟时，
+        # 把事转达出去才是对"急"的正确回应；同伴说话没有玩家情绪。
+        emotion = "neutral"
+        if utterance is not None and utterance.role == "player":
+            emotion = detect_emotion(utterance.text)
+
+        # 专属称呼请求：比情绪更具体、比称号更即时。
+        # 「以后就叫我小鹿吧」是**一个提议**，按普通陈述走 acknowledge
+        # 的话，约定永远立不起来 —— 这条分支负责「立」和「拒」两个方向：
+        # 提议人自己 → 立约定（accept_term）；
+        # 别人用了已约定的叫法 → 当面拒绝（refuse_term）。
+        # 判据在 `relationship.extract_term_request`，与账本同一份实现。
+        term_request = ""
+        if (
+            utterance is not None
+            and utterance.role == "player"
+            and kind in ("statement", "question", "self_question", "group_question")
+        ):
+            term_request = extract_term_request(utterance.text)
+
         # 称号播报：解锁了就必须**说出口**，否则玩家永远不知道它发生过。
         # 只在陈述句/寒暄时播报 —— 玩家在问问题时，先回答问题，
         # 称号留着下一轮再说（"你叫什么"得到一句"你是常客了"是答非所问）。
+        # 玩家带着情绪、或在提议称呼时同样推迟：投诉到一半被播报
+        # "你是常客了"，比不播报更伤。
         title_event = None
         if (
             utterance is not None
             and utterance.role == "player"
             and not utterance.is_question
+            and emotion == "neutral"
+            and not term_request
         ):
             title_event = self.relationships.take_pending(utterance.speaker_id)
+
+        emotion_intent = ""
+        if emotion != "neutral" and kind in (
+            "statement",
+            "self_question",
+            "question",
+            # 「你们这咖啡也太难喝了吧」是冲着全场说的投诉 ——
+            # classify 给它 group_question，但 is_question=False。
+            # 不放行的话，最常见的投诉形态（对着"你们"抱怨）
+            # 恰恰接不到情绪模板。
+            "group_question",
+        ):
+            if emotion == "urgent":
+                if utterance is not None and utterance.is_question:
+                    emotion_intent = (
+                        "respond_urgent_answer"
+                        if self._direct_answer(utterance)
+                        else "respond_urgent"
+                    )
+                else:
+                    emotion_intent = "respond_urgent"
+            elif utterance is not None and not utterance.is_question:
+                emotion_intent = intent_for(emotion)
 
         if title_event is not None:
             intent = "grant_title"
             extra_slots = {"title": title_event.detail}
+        elif term_request:
+            # 专属称呼的「立约 / 拒绝」。拒绝时必须**说清是谁的** ——
+            # 只说"不行"的拒绝，玩家会以为是 NPC 的规矩，而不是
+            # "这个叫法已经有主了"。星布谷地实录里娜洛的拒绝
+            # 之所以立得住，就是因为她记得那是和谁的约定。
+            violated, owner_id = self.relationships.check_term(
+                term_request, utterance.speaker_id if utterance else ""
+            )
+            if violated:
+                owner_name = (
+                    self.state.players.get(owner_id).name
+                    if self.state.players.get(owner_id)
+                    else owner_id
+                )
+                intent = "refuse_term"
+                extra_slots = {"term": term_request, "owner": owner_name}
+            else:
+                self.relationships.make_agreement(
+                    term_request, utterance.speaker_id, self.state.tick
+                )
+                intent = "accept_term"
+                extra_slots = {"term": term_request}
+        elif emotion_intent:
+            # 情绪档的意图（respond_urgent / respond_urgent_answer / soothe /
+            # delight）。`玩家情绪` 这个槽位会同时流进离线模板（没有对应
+            # 占位符的模板会忽略它）和 LLM 提示词的补充事实区 ——
+            # 两条路看到的是同一条判据，评测才有意义。
+            intent = emotion_intent
+            extra_slots = {"玩家情绪": emotion_label(emotion)}
         elif (
             self.pending_motive is not None
             and (utterance is None or not utterance.is_question)
@@ -1159,9 +1248,16 @@ class NPCAgent:
                         intent = "welcome_back"
                         extra_slots = {"stage": self.relationships.stage(guest)}
                 if not intent:
-                    # 没有可推进的目标（或目标映射不到意图）→ 先分享，再找同伴。
+                    # 没有可推进的目标（或目标映射不到意图）→ 先私语，
+                    # 再分享，最后找同伴。顺序的理由：
+                    # 1. **私语**：欠着一句"只有你该听到的话"（关系到了、
+                    #    秘密还没说）—— 冷场正是开小窗的时机；
+                    # 2. 分享：面向全场的信息（店史、知识）；
+                    # 3. 同伴：跟另一个人搭话。
                     # 注意这里**不能**落回 `fallback`：场上没人说话的时候说
                     # 「我听着呢」，玩家会觉得这 NPC 在对空气讲话。
+                    if self._whisper_secret(turn, ctx):
+                        return
                     if self._proactive_share(turn, ctx):
                         # 目标都做完了 → 主动分享店里的事（主动使用工具，而不是干聊）
                         return
@@ -1508,6 +1604,81 @@ class NPCAgent:
             # 玩家换了话题 → 旧账作废。人也是这样。
             self.attention.settle(pid)
 
+    def _whisper_secret(self, turn: AgentTurn, ctx: ToolContext) -> bool:
+        """冷场时把一件**只有他知道的事**私下告诉关系到位的玩家。
+
+        ## 为什么要有这一支
+
+        交接文档里列的"下一轮优先级最高"。产品上的意义：私聊此前只有
+        玩家能开小窗，NPC 永远只能被动接 —— "会保守秘密的人"和
+        "会主动分享秘密的人"是两种关系，后者才叫熟。
+
+        触发三条件，缺一不可：
+        1. **关系到位**（`persona.secret_notes[].min_stage`，按关系阶段）；
+        2. **在场**（目标玩家 active）；
+        3. **一次性**（`bond.secrets_shared` 没记过这条 ——
+           同一条秘密说第二遍就不是秘密，是复读）。
+
+        挑人按好感降序：同样到了"常客"，先告诉关系更近的那个 ——
+        冷场里一次只开一扇小窗，开给最该听到的人。
+
+        私语走 `speak(to=..., private=True)`：只有收件人听得见，
+        传闻网络和对话板都不碰它（发布点各自跳过 `channel=private`）。
+        """
+        notes = list(getattr(self.persona, "secret_notes", None) or [])
+        if not notes:
+            return False
+        candidates = [
+            (bond, note)
+            for player_id, bond in self.relationships.bonds.items()
+            # "在场"的判据是**进过这一场**（state.players 里的人），不是
+            # "和我同位置"：门口和吧台隔三米，递东西要同位，说句悄悄话
+            # 不需要 —— 拿 `here` 过滤会把最常见的"人在店里走动"场景
+            # 全部判成不在场。离场玩家由环境从观察里移除，不在这里判。
+            if player_id in self.state.players
+            for note in notes
+            if note.get("id") not in bond.secrets_shared
+            and stage_rank(self.relationships.stage(player_id))
+            >= stage_rank(str(note.get("min_stage") or "常客"))
+        ]
+        if not candidates:
+            return False
+        # 好感降序、同分按 id —— 决策必须可复现。
+        candidates.sort(key=lambda pair: (-pair[0].score, pair[0].player_id))
+        bond, note = candidates[0]
+        player = self.state.players[bond.player_id]
+        text = self._generate_speech(
+            "whisper_secret",
+            [],
+            None,
+            extra={"secret": str(note.get("hint") or ""), "target": player.name},
+        )
+        if not text:
+            return False
+        call = ActionCall(
+            "speak",
+            {"text": text, "to": bond.player_id, "private": True},
+            reason="关系到了，把只有他知道的事私下告诉他",
+        )
+        result = self.registry.execute(call, ctx)
+        turn.actions.append(call)
+        turn.results.append(result)
+        if result.ok:
+            turn.say = result.detail
+            turn.addressed_to = bond.player_id
+            bond.secrets_shared.append(str(note.get("id")))
+            # 同 `_ask_peer`：占据去重窗口一格，不然它等于没发生过。
+            self._bump_intent("whisper_secret")
+            turn.decision_reason = (
+                f"主动私语：把只告诉{player.name}的事说了（{note.get('id')}）"
+            )
+        else:
+            # 被工具层拦下（剧透/出戏/风格）→ 记为已试过，
+            # 否则冷场每轮都会重试同一句被拦的话。
+            bond.secrets_shared.append(str(note.get("id")))
+            turn.decision_reason = f"主动私语被拦：{result.detail}"
+        return True
+
     def _ask_peer(self, turn: AgentTurn, ctx: ToolContext) -> bool:
         """冷场时跟同伴搭一句话。没有同伴 / 都问过了 → False。
 
@@ -1627,6 +1798,13 @@ class NPCAgent:
         "reply_peer": "接同伴的话。回答他的问题，或者应一声，然后把话头递回去。",
         "ask_peer": "跟同伴搭一句话，问一件具体的小事。",
         "heard_from": "提起从别人那里听来的一件事，说清是谁说的。",
+        "respond_urgent": "玩家语气很急。先关心人：问出了什么事，语气要稳，别添乱。",
+        "respond_urgent_answer": "玩家语气很急且在问问题。先把答案直接给出，再问一句出了什么事。",
+        "soothe": "玩家在投诉或不满。先接住情绪（道歉/安抚），再给一个具体的补救，别辩解。",
+        "delight": "玩家在夸你。接住这份好意，自然一点，别过度客套。",
+        "refuse_term": "对方用了一个只属于你和另一位玩家的专属称呼。温和但明确地拒绝，可以点破这是约定。",
+        "accept_term": "对方提出和你约定一个专属称呼。接受它，并当面把约定说出口。",
+        "whisper_secret": "你决定把一件只有你知道的事私下告诉这位玩家。压低话头，只对他说。",
     }
 
     def _bump_intent(self, intent: str) -> int:

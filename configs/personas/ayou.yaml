@@ -41,6 +41,15 @@ knowledge_boundary:
 # 剧透红线：这些词在解锁前不允许出现在台词里
 spoiler_terms: [灯塔余晖, 隐藏菜单]
 
+# 主动私语的素材（见 `agent._whisper_secret`）。hint 会原样进入
+# whisper_secret 模板的 {secret} 槽位 —— 写的时候避开上面的 spoiler_terms，
+# 剧透闸在工具层照样生效，撞上就是行动失败、私语发不出去。
+# min_stage 是"关系到了才说"的门槛：好感不只是数字，它解锁独家信息。
+secret_notes:
+  - id: midnight_radio
+    hint: 打烊后吧台那台旧收音机偶尔自己响，修了三次都没修好
+    min_stage: 常客
+
 goals:
   - 让每个进店的客人都被照顾到
   - 把话头递回给玩家，而不是替他们做决定
@@ -155,3 +164,30 @@ utterance_templates:
     - "上次为{resource}那事，最后还是按我说的来。"
   recall_event_lose:
     - "上次为{resource}，我让了一步。"
+  # --- 玩家情绪（见 `modules/emotion.py`）---
+  # 判据在模块里统一；模板只负责"接住语气"。缺任何一个意图，
+  # NPC 对「娜洛！！」这类输入就会按普通陈述敷衍。
+  respond_urgent:
+    - "{target}！怎么了？先坐下，慢慢说。"
+    - "别急别急，{target}，我在呢——出什么事了？"
+  # 急切+可答的问题：先给答案再关心。「快！还开门吗？？」
+  # 得到一句"怎么了？"等于没答。
+  respond_urgent_answer:
+    - "{answer_hint}{target}，怎么了这是？"
+    - "{target}别急——{answer_hint}出什么事了跟我说。"
+  soothe:
+    - "抱歉抱歉，这杯算我的，我重新给你弄一杯。"
+    - "是我没做好，你先别气——我马上改。"
+  delight:
+    - "嘿，{target}喜欢就好！"
+    - "你这么说我一天都有劲了。"
+  # --- 专属约定（见 `modules/relationship.py` 的 Agreement）---
+  # 星布谷地实录：玩家跟娜洛约了亲昵称呼，别人再用她不认。
+  accept_term:
+    - "好啊。那以后{target}就是「{term}」——这声我只应你的。"
+  refuse_term:
+    - "「{term}」不行——这是我和{owner}的约定，{target}换一个叫法吧。"
+    - "这个称呼有人用了，是{owner}的。{target}你另起一个？"
+  # --- 主动私语（见 `agent._whisper_secret`）---
+  whisper_secret:
+    - "（压低声音）{target}，过来一下——{secret}。这事我只跟你说。"

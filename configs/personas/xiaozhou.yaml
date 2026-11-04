@@ -33,6 +33,12 @@ knowledge_boundary:
 
 spoiler_terms: [灯塔余晖, 隐藏菜单]
 
+# 主动私语素材（见 ayou.yaml 同段注释）。
+secret_notes:
+  - id: first_stage
+    hint: 第一次上台前她在储物间里站了整整十分钟才敢出去
+    min_stage: 常客
+
 goals:
   - 给店里留一点安静的声音
   - 记住每个客人说过的一句好听的话
@@ -122,3 +128,21 @@ utterance_templates:
     - "……上次{resource}，我赢了。"
   recall_event_lose:
     - "……上次{resource}，我让了。"
+  # --- 玩家情绪 / 专属约定 / 主动私语（见 ayou.yaml 同段注释）---
+  respond_urgent:
+    - "{target}，先深呼吸。我在。"
+    - "……别慌。我听着。"
+  respond_urgent_answer:
+    - "{target}，{answer_hint}……怎么了？"
+  soothe:
+    - "……对不起。这杯我重做。"
+    - "是我的问题。……你别气，我改。"
+  delight:
+    - "……你喜欢，就好。"
+    - "……嗯。开心。"
+  accept_term:
+    - "……好。以后你叫{term}。我只应你。"
+  refuse_term:
+    - "「{term}」……不行。那是{owner}叫的。{target}，换一个。"
+  whisper_secret:
+    - "（凑近）{target}……{secret}。别告诉别人。"

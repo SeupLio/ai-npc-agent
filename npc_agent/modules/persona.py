@@ -81,6 +81,13 @@ class Persona:
     #: 那个解析进了一个没人读的属性；这一个有两个真实消费点 ——
     #: `answer_about_peers()`（离线答话）和 `system_block()`（模型 prompt）。
     peer_facts: list[dict[str, Any]] = field(default_factory=list)
+    #: 主动私语的素材（见 `agent._whisper_secret`）。
+    #:
+    #: `[{id, hint, min_stage}]` —— 到了 `min_stage` 的关系，NPC 会在
+    #: 冷场时**主动开小窗**把 `hint` 私下告诉这位玩家，一次性。
+    #: 这是"关系养成 → 独家内容"的产品闭环：好感不只是数字，
+    #: 它解锁只有你能听到的信息。
+    secret_notes: list[dict[str, Any]] = field(default_factory=list)
     #: 运行期由 `Cast` 填进来的同伴名单 `[{id, name, role}]`。
     #:
     #: 不写进 YAML：同伴是谁取决于**这一场**的演员表，不取决于人设卡。
@@ -104,6 +111,11 @@ class Persona:
             templates=dict(data.get("utterance_templates") or {}),
             self_facts=list(data.get("self_facts") or []),
             peer_facts=list(data.get("peer_facts") or []),
+            # 主动私语的素材：[{id, hint, min_stage}]。hint 是**一句可以直接
+            # 说出口的话**（会被 whisper_secret 模板的 {secret} 槽位用），
+            # 写的人要自己避开 spoiler_terms —— 剧透闸在工具层照样生效，
+            # 撞上就是行动失败，私语不会发出去。
+            secret_notes=list(data.get("secret_notes") or []),
         )
 
     # ------------------------------------------------------------------ #

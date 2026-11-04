@@ -1,0 +1,57 @@
+# 离线回归 —— 每次推送都要全绿的那条线。
+#
+# 只跑 NullLLM 路径（零模型、零网络、零密钥）：
+# 基线 1300+ 条用例全部离线可复现，这是"离线可评测"的直接红利 ——
+# CI 不需要一分钱预算就能守住主分支。
+#
+# 真实模型那一路（compare / judge）不在 CI 里跑：它依赖外部额度，
+# 挂了分不清是代码坏了还是网关坏了 —— 那条路由本地跑批 + 报告
+# 快照（docs/*.html + reports/）守。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Show env
+        run: |
+          python --version
+          python -c "import npc_agent; print('npc_agent imports OK')"
+
+      - name: Offline regression suite
+        env:
+          NPC_AGENT_PROVIDER: null
+        run: |
+          python -m pytest tests -q \
+            --deselect tests/test_minecraft_e2e.py \
+            --deselect tests/test_llm_client.py
+
+      - name: CLI smoke (serve boots, cost renders)
+        run: |
+          python -m npc_agent.cli cost --scenario tutorial --repeats 1 | tail -20
+          python -m npc_agent.cli serve --port 8123 &
+          sleep 2
+          curl -sf http://127.0.0.1:8123/v1/health | head -c 200
