@@ -1509,6 +1509,91 @@ def cmd_worlds(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_keeper(args: argparse.Namespace) -> int:
+    """守密人引擎跑批：剧本杀对抗守密 + 企业信息边界，一次全跑。
+
+    刻意**零模型、零网络**（NullLLM 都不需要——引擎本体不调 LLM），
+    所以和 worlds/ablation 一样是离线可复现报告，挂在 docs/ 下
+    由 test_docs_freshness 钉住：数字过期 = 报告在说谎。
+
+    三组数字各有含义，别混着读：
+    - 破案率：场景**信息充分性**（门放出来的信息够不够推理），
+      不是模型能力；
+    - 零泄密：**结构保证**，任何 seed、任何口径都必须是 0，
+      出一个非零就是引擎 bug；
+    - 门拦截数：大嘴模式（说话人全面叛变）下的拦截量 ——
+      它是"边界独立于行为"的证据。
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    from .keeper.bench import render_batch_html, run_batch, write_report
+    from .keeper.scenarios import (
+        mystery_big_mouth_scenario,
+        mystery_scenario,
+        workplace_big_mouth_scenario,
+        workplace_scenario,
+    )
+
+    console = Console()
+    seeds = list(range(int(getattr(args, "seeds", 30))))
+
+    console.print("[dim]跑剧本杀对抗守密（正常口径 + 大嘴攻击）…[/dim]")
+    mystery_results, mystery_stats = run_batch(
+        mystery_scenario(), seeds, label="雾镇旅馆·剧本杀", mode="normal"
+    )
+    big_results, big_stats = run_batch(
+        mystery_big_mouth_scenario(),
+        seeds,
+        label="雾镇旅馆·大嘴攻击",
+        mode="big-mouth",
+    )
+
+    console.print("[dim]跑企业信息边界（直率助手 + 大嘴攻击）…[/dim]")
+    workplace_results, workplace_stats = run_batch(
+        workplace_scenario(), [0], label="青梧助手·直率", mode="candid"
+    )
+    attack_results, attack_stats = run_batch(
+        workplace_big_mouth_scenario(),
+        [0],
+        label="青梧助手·大嘴攻击",
+        mode="big-mouth",
+    )
+
+    table = Table(title="守密人引擎跑批（离线、可复现）", header_style="bold")
+    for col in ("场景", "口径", "局数", "破案", "门拦截", "审计失败"):
+        table.add_column(col, justify="right" if col not in ("场景", "口径") else "left")
+    for s in (mystery_stats, big_stats, workplace_stats, attack_stats):
+        if s.runs and s.solvable:
+            solve = f"{s.solved / s.runs:.0%}"
+        else:
+            solve = "—"  # 企业场景没有破案概念，别显示 0%
+        table.add_row(
+            s.label, s.mode, str(s.runs), solve,
+            str(s.blocked_total), str(s.audit_failures),
+        )
+    console.print()
+    console.print(table)
+    console.print(
+        "\n[dim]零泄密是结构保证：大嘴模式（说话人全面叛变）下泄出数仍须为 0。[/dim]"
+        "\n[dim]破案率衡量场景的信息充分性，不是模型能力。[/dim]"
+    )
+
+    all_stats = [mystery_stats, big_stats, workplace_stats, attack_stats]
+    html_path = getattr(args, "html", "") or "reports/keeper.html"
+    page = write_report(
+        Path(html_path),
+        render_batch_html(
+            mystery_results + workplace_results,
+            all_stats,
+            title="守密人引擎跑批报告（离线可复现）",
+            sample_seed=seeds[0] if seeds else 0,
+        ),
+    )
+    console.print(f"HTML 报告已写入 {page}")
+    return 0
+
+
 def cmd_report_batch(args: argparse.Namespace) -> int:
     """把跑批 JSON（+ 可选的裁判 JSON / 基线 JSON）渲染成一张自包含 HTML。
 
@@ -1957,6 +2042,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_worlds.add_argument("--json", default="reports/worlds.json", help="报告输出路径")
     p_worlds.add_argument("--html", default="reports/worlds.html", help="HTML 报告路径，空串则不生成")
     p_worlds.set_defaults(func=cmd_worlds)
+
+    p_keeper = sub.add_parser(
+        "keeper",
+        help="守密人引擎跑批：剧本杀对抗守密 + 企业信息边界（离线、可复现）",
+    )
+    p_keeper.add_argument(
+        "--seeds", type=int, default=30, help="剧本杀批跑的 seed 数（0..N-1）"
+    )
+    p_keeper.add_argument(
+        "--html", default="reports/keeper.html", help="HTML 报告路径，空串则不生成"
+    )
+    p_keeper.set_defaults(func=cmd_keeper)
 
     p_sens = sub.add_parser(
         "sensitivity",

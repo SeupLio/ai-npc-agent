@@ -66,6 +66,7 @@ regen_docs = _load_regen()
 # 全部离线报告都默认验。`ablation` 曾经要 ~99s（检查点 O(N²)）所以被排除在外，
 # 修好后 ~5s ⇒ 归队。判据不是"它慢不慢"，而是"默认跑批能不能替我们看见它"。
 # `dialogue`（多 NPC 对话基准）约 1s，同样归队；`living_world` 也是秒级。
+# `keeper`（守密人跑批）62 局全离线，秒级。
 FAST_OFFLINE = (
     "worlds",
     "sensitivity",
@@ -73,6 +74,7 @@ FAST_OFFLINE = (
     "resolution",
     "dialogue",
     "living_world",
+    "keeper",
 )
 
 
@@ -179,9 +181,13 @@ def test_readme_states_each_reports_coverage(filename: str) -> None:
         if f"docs/{filename}" in line
     ]
     assert rows, f"README 里找不到指向 {filename} 的行"
-    assert any(f"{count} 条" in row for row in rows), (
-        f"README 里 {filename} 那一行没写「{count} 条」这个覆盖数。\n"
-        f"报告自己印的是 {count} 条，README 要跟着写 —— "
+    # 单位跟着报告走：用例数是「条」（235 条），对局数是「局」（62 局）。
+    # 守密人跑批量的是对局不是用例，硬写「62 条」反而是说谎。
+    assert any(
+        f"{count} 条" in row or f"{count} 局" in row for row in rows
+    ), (
+        f"README 里 {filename} 那一行没写「{count} 条/局」这个覆盖数。\n"
+        f"报告自己印的是 {count}，README 要跟着写 —— "
         "否则读者会以为它和别的报告是同一个量级。\n"
         f"实际那几行：\n" + "\n".join(rows)
     )

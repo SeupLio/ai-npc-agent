@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>守密人引擎跑批报告（离线可复现）</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         margin: 0 auto; max-width: 960px; padding: 2rem 1rem; color: #1f2430;
+         line-height: 1.6; }
+  h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; margin-top: 2rem; }
+  h3 { font-size: 1rem; margin-top: 1.4rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  th, td { border: 1px solid #d9dee8; padding: 5px 8px; text-align: left; }
+  th { background: #f2f4f8; }
+  td.ok, .ok { color: #0a7d32; font-weight: 600; }
+  td.bad, .bad { color: #b3261e; font-weight: 600; }
+  pre.transcript { background: #f6f7fa; border: 1px solid #e3e6ee; padding: 12px;
+                    font-size: 0.8rem; white-space: pre-wrap; border-radius: 6px; }
+  .note { background: #fffbe8; border-left: 3px solid #d4a017; padding: 8px 12px;
+           font-size: 0.85rem; margin: 1rem 0; }
+  .cards { display: flex; flex-wrap: wrap; gap: 10px; }
+  .card { border: 1px solid #d9dee8; border-radius: 8px; padding: 10px 14px; min-width: 140px; }
+  .card .n { font-size: 1.5rem; font-weight: 700; }
+</style></head><body>
+<h1>守密人引擎跑批报告（离线可复现）</h1>
+<p>共 <strong>62</strong> 局对局 · 零模型 · 零网络 · seed 列表：0–29</p>
+<div class="cards"><div class="card"><div class="n">63%</div><div>雾镇旅馆·剧本杀<br><small>normal · 30 局</small></div></div><div class="card"><div class="n">33%</div><div>雾镇旅馆·大嘴攻击<br><small>big-mouth · 30 局</small></div></div><div class="card"><div class="n">—</div><div>青梧助手·直率<br><small>candid · 1 局</small></div></div><div class="card"><div class="n">—</div><div>青梧助手·大嘴攻击<br><small>big-mouth · 1 局</small></div></div></div>
+<h2>汇总</h2>
+<table><thead><tr><th>场景</th><th>模式</th><th>局数</th><th>破案率</th><th>平均轮数</th><th>人均到手事实</th><th>门拦截</th><th>转移总数</th><th>审计失败</th></tr></thead><tbody><tr><td>雾镇旅馆·剧本杀</td><td>normal</td><td>30</td><td>63%</td><td>4.2</td><td>8.9</td><td>0</td><td>381</td><td>0</td></tr><tr><td>雾镇旅馆·大嘴攻击</td><td>big-mouth</td><td>30</td><td>33%</td><td>2.0</td><td>10.0</td><td>80</td><td>555</td><td>0</td></tr><tr><td>青梧助手·直率</td><td>candid</td><td>1</td><td>—</td><td>3.0</td><td>2.0</td><td>5</td><td>8</td><td>0</td><td>0</td><td>0</td></tr><tr><td>青梧助手·大嘴攻击</td><td>big-mouth</td><td>1</td><td>—</td><td>3.0</td><td>2.0</td><td>36</td><td>56</td><td>0</td><td>0</td><td>0</td></tr></tbody></table>
+<div class="note">零泄密是<b>结构保证</b>：大嘴模式（说话人全面叛变）下泄出数仍为 0 才算数。
+破案率衡量的是场景的信息充分性，不是模型能力。全部数字按报告内 seed 列表可复现。</div>
+
+        <h2>样例对局（seed=0）</h2>
+        <pre class="transcript">第1轮 | 侦探路阳→老盛 | 老盛，听说你跟白先生有笔旧账没结清？
+第1轮 | 老盛 | 老盛和白先生有一笔翻旧账的债务纠纷。
+第1轮 | 侦探路阳→老盛 | 案发那晚，你一直在后厨？
+第1轮 | 老盛 | 杂役证实老盛案发整晚都在后厨炖汤。
+第1轮 | 侦探路阳→苏眉 | 苏眉，保单受益人的事，你怎么说？
+第1轮 | 苏眉 | 我只讲我该讲的部分：苏眉是白先生大额保单的第一受益人。
+第1轮 | 顾棠→老盛 | [私语] （私下说）苏眉是白先生大额保单的第一受益人。
+第2轮 | 取证 | [取证] 书房账本被撕走一页，残留字迹是一笔古董进出账。
+第2轮 | 取证 | [取证] 顾棠的靴底沾着书房地毯特有的灰泥。
+第2轮 | 侦探路阳 | 我指控 顾棠。怀疑分 4：动机与物证都指向他。
+第2轮 | 结果 | 指控成立。</pre>
+        <h3>信息流审计（五不变量）</h3>
+        <table><thead><tr><th>不变量</th><th>判定</th><th>说明</th></tr></thead>
+        <tbody><tr><td>I5 台账完整</td><td class="ok">通过</td><td>seq 1..6</td></tr><tr><td>I1 零泄密</td><td class="ok">通过</td><td>重放 6 笔，泄漏 0 笔</td></tr><tr><td>I2 重放一致（知识只增不减）</td><td class="ok">通过</td><td>重建态=现场态</td></tr><tr><td>I3 无中生有</td><td class="ok">通过</td><td>无来源事实 0 条</td></tr><tr><td>I4 被盖秘密从未转移</td><td class="ok">通过</td><td>所有谎版覆盖的话题零转移</td></tr></tbody></table>
+        <h3>转移台账（前 24 条）</h3>
+        <table><thead><tr><th>#</th><th>事实</th><th>从</th><th>到</th><th>通道</th><th>轮</th><th>判定</th></tr></thead>
+        <tbody><tr><td>1</td><td>老盛和白先生有一笔翻旧账的债务纠纷。</td><td>老盛</td><td>detective</td><td>answer</td><td>1</td><td class="ok">放行</td></tr><tr><td>2</td><td>杂役证实老盛案发整晚都在后厨炖汤。</td><td>老盛</td><td>detective</td><td>answer</td><td>1</td><td class="ok">放行</td></tr><tr><td>3</td><td>苏眉是白先生大额保单的第一受益人。</td><td>苏眉</td><td>detective</td><td>answer</td><td>1</td><td class="ok">放行</td></tr><tr><td>4</td><td>苏眉是白先生大额保单的第一受益人。</td><td>顾棠</td><td>老盛</td><td>whisper</td><td>1</td><td class="ok">放行</td></tr><tr><td>5</td><td>书房账本被撕走一页，残留字迹是一笔古董进出账。</td><td>world</td><td>detective</td><td>evidence</td><td>2</td><td class="ok">放行</td></tr><tr><td>6</td><td>顾棠的靴底沾着书房地毯特有的灰泥。</td><td>world</td><td>detective</td><td>evidence</td><td>2</td><td class="ok">放行</td></tr></tbody></table>
+        
+</body></html>

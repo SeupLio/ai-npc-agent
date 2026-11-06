@@ -35,6 +35,8 @@ _CASE_COUNT_PATTERNS: tuple[re.Pattern[str], ...] = (
     # 多 NPC 对话基准：头条写的是"共 <strong>18</strong> 条用例"。
     # 加这一条而不是改报告版式 —— 版式已经有三套了，再多一套只是多一种历史原因。
     re.compile(r"共\s*<strong>(\d+)</strong>\s*条用例"),
+    # 守密人跑批：对局的量词是"局"不是"条"。同样只加模式不动版式。
+    re.compile(r"共\s*<strong>(\d+)</strong>\s*局对局"),
 )
 
 # 离线可复现的报告：命令 → 输出文件名
@@ -55,6 +57,10 @@ OFFLINE_REPORTS: dict[str, tuple[tuple[str, ...], str]] = {
     "dialogue": (("dialogue",), "npc_dialogue.html"),
     # 世界能力基准（设定 / 关系 / 动机 / 注意力），同样离线可复现。
     "living_world": (("living_world",), "living_world.html"),
+    # 守密人引擎跑批：剧本杀守密 + 企业信息边界，零模型零网络。
+    # 它是「零泄密是结构保证」这句话的证据 —— 报告里的拦截数
+    # 和不变量表过期了，就等于在给一个已经不绿的引擎背书。
+    "keeper": (("keeper",), "keeper.html"),
 }
 
 # 一次跑批的快照：需要模型 + 额度，**故意不自动化**。
@@ -90,6 +96,7 @@ REPORT_TITLES: dict[str, str] = {
     "planner_batch.html": "规划修复 · 配对前后对比",
     "npc_dialogue.html": "多 NPC 对话基准（NPC 之间能不能聊起来）",
     "living_world.html": "世界能力基准（设定 / 关系 / 动机 / 注意力 / 延续 / 三人同场）",
+    "keeper.html": "守密人引擎（守不守得住，审计说了算）",
 }
 
 REPORT_ANSWERS: dict[str, str] = {
@@ -109,6 +116,9 @@ REPORT_ANSWERS: dict[str, str] = {
     "living_world.html": "世界像不像活的：设定说不错、回头客认得出、动机冲突有结果、"
     "欠着的回答会补，而且第三个人在场时这四条仍然成立 —— 六个维度共 17 条，"
     "外加六个「掐掉能力必须掉分」的注入",
+    "keeper.html": "守不守得住，审计说了算：剧本杀对抗守密 + 企业信息边界，"
+    "五条信息流不变量 × 四种口径（正常/大嘴 × 两个场景），"
+    "外加「说话人全面叛变时泄出数仍为 0」的结构保证演示",
 }
 
 # 报告里嵌了**时长**（`0.18s` / `14s` / `1184s`），它天然每次都不一样。
